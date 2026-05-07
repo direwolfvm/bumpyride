@@ -1,0 +1,121 @@
+import SwiftUI
+
+struct SettingsView: View {
+    @Bindable var settings: AppSettings
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    preview
+                        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                } header: {
+                    Text("Color Scale Preview")
+                } footer: {
+                    Text("Map segments and bumpiness readouts use this scale. Thresholds are in g (1 g ≈ gravity).")
+                }
+
+                Section("Thresholds") {
+                    thresholdRow(
+                        label: "Yellow at",
+                        color: settings.color(for: settings.yellowG),
+                        value: $settings.yellowG,
+                        range: 0.1...settings.orangeG - 0.05
+                    )
+                    thresholdRow(
+                        label: "Orange at",
+                        color: settings.color(for: settings.orangeG),
+                        value: $settings.orangeG,
+                        range: (settings.yellowG + 0.05)...(settings.redG - 0.05)
+                    )
+                    thresholdRow(
+                        label: "Red at",
+                        color: settings.color(for: settings.redG),
+                        value: $settings.redG,
+                        range: (settings.orangeG + 0.05)...(settings.purpleG - 0.05)
+                    )
+                    thresholdRow(
+                        label: "Purple at",
+                        color: settings.color(for: settings.purpleG),
+                        value: $settings.purpleG,
+                        range: (settings.redG + 0.05)...5.0
+                    )
+                }
+
+                Section {
+                    Toggle(isOn: $settings.pocketModeEnabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Pocket Mode")
+                            Text("Filter out pedaling motion when the phone is on your body.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Text("Sensing")
+                } footer: {
+                    Text("Applies a 3 Hz high-pass to the vertical-acceleration channel so the rider's pedaling cadence (≈1–2 Hz) doesn't register as bumpiness. Leave off for handlebar or frame mounts.")
+                }
+
+                Section {
+                    Button(role: .destructive) {
+                        settings.resetToDefaults()
+                    } label: {
+                        Label("Reset to Defaults", systemImage: "arrow.counterclockwise")
+                    }
+                }
+            }
+            .navigationTitle("Settings")
+        }
+    }
+
+    private var preview: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            GeometryReader { geo in
+                Canvas { ctx, size in
+                    let steps = 160
+                    let maxG = max(0.5, settings.purpleG) * 1.05
+                    for i in 0..<steps {
+                        let t = Double(i) / Double(steps - 1)
+                        let g = t * maxG
+                        let x = CGFloat(t) * size.width
+                        let w = size.width / CGFloat(steps) + 0.5
+                        let rect = CGRect(x: x, y: 0, width: w, height: size.height)
+                        ctx.fill(Path(rect), with: .color(settings.color(for: g)))
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .frame(height: 22)
+
+            HStack {
+                Text("0 g")
+                Spacer()
+                Text(String(format: "%.1f g", max(0.5, settings.purpleG) * 1.05))
+            }
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private func thresholdRow(label: String, color: Color, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 4).fill(color).frame(width: 22, height: 16)
+                Text(label)
+                Spacer()
+                Text(String(format: "%.2f g", value.wrappedValue))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: value, in: safeRange(range), step: 0.05)
+        }
+    }
+
+    private func safeRange(_ r: ClosedRange<Double>) -> ClosedRange<Double> {
+        let lo = min(r.lowerBound, r.upperBound)
+        let hi = max(r.lowerBound, r.upperBound)
+        if lo == hi { return lo...(hi + 0.05) }
+        return lo...hi
+    }
+}
