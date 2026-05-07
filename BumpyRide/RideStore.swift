@@ -1,6 +1,9 @@
 import Foundation
 import Observation
 
+/// On-disk persistence for saved rides: one ISO-8601 JSON file per ride at
+/// `<Documents>/Rides/<UUID>.json`.  Loads everything into memory at init (rides are
+/// small; thousands fit comfortably) and keeps `rides` sorted newest-first for the UI.
 @Observable
 final class RideStore {
     private(set) var rides: [Ride] = []

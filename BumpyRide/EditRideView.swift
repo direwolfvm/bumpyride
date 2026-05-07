@@ -1,5 +1,9 @@
 import SwiftUI
 
+/// Modal editor for trimming or splitting a saved ride.  Two sliders define a
+/// `[startIdx, endIdx]` range over the ride's points.  "Trim" replaces the original
+/// ride with the slice; "Split at marker" returns both halves via `onCommit` so the
+/// caller can save them as separate rides.
 struct EditRideView: View {
     let original: Ride
     let settings: AppSettings

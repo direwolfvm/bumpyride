@@ -1,6 +1,9 @@
 import SwiftUI
 import Observation
 
+/// User-tunable settings persisted in `UserDefaults`: the bumpiness color thresholds
+/// (yellow / orange / red / purple breakpoints in g) and the Pocket Mode toggle.
+/// Provides `color(for:)` / `uiColor(for:)` helpers used everywhere bumpiness is shown.
 @Observable
 final class AppSettings {
     private static let keyYellow = "bumpThresholdYellow"

@@ -1,5 +1,8 @@
 import SwiftUI
 
+/// The Bump Map tab — a full-screen `BumpMapView` with a floating footer showing
+/// rides / cells / resolution.  Triggers `BumpMapStore.rebuildIfNeeded` on appear and
+/// whenever the rides collection changes, so saves/deletes/edits flow through.
 struct BumpMapTabView: View {
     @Bindable var store: RideStore
     @Bindable var bumpMap: BumpMapStore

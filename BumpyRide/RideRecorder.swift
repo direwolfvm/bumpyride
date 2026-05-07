@@ -2,6 +2,10 @@ import Foundation
 import CoreLocation
 import Observation
 
+/// The recording coordinator: owns a `LocationManager` and `MotionManager`, ingests
+/// each location update by stamping it with the current bumpiness and accelerometer
+/// window, and on `stop()` returns a `Ride` ready to be saved.  Tracks the Pocket
+/// Mode flag at start time so the produced ride is correctly tagged.
 @Observable
 final class RideRecorder {
     enum State { case idle, recording, finished }

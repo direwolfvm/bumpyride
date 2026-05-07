@@ -1,5 +1,8 @@
 import SwiftUI
 
+/// Root view: a `TabView` hosting Ride, Saved, Bump Map, and Settings tabs.  Owns the
+/// long-lived state objects (recorder, store, settings, app state, bump map) and passes
+/// references down — this is the single source of truth for the running app.
 struct ContentView: View {
     @State private var recorder = RideRecorder()
     @State private var store = RideStore()

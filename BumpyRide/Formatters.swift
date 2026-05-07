@@ -1,5 +1,8 @@
 import Foundation
 
+/// Static helpers for formatting human-readable distance, duration, and date/time
+/// strings used throughout the UI.  Distance auto-switches between feet and miles;
+/// duration omits the hours field when the ride is under an hour.
 enum Formatters {
     static func distance(_ meters: Double) -> String {
         let miles = meters / 1609.344

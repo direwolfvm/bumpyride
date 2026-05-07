@@ -1,5 +1,8 @@
 import SwiftUI
 
+/// The Settings tab.  Shows a live preview of the bumpiness color gradient, sliders
+/// for the four threshold breakpoints (each constrained to stay ordered relative to
+/// its neighbors), the Pocket Mode toggle, and a reset-to-defaults button.
 struct SettingsView: View {
     @Bindable var settings: AppSettings
 

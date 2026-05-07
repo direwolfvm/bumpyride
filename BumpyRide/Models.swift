@@ -1,6 +1,9 @@
 import Foundation
 import CoreLocation
 
+/// A single sample emitted while recording a ride: GPS position, the current
+/// bumpiness RMS at the time of sampling, and a snapshot of the recent vertical
+/// acceleration window (used to redraw the seismograph during playback).
 struct RidePoint: Codable, Identifiable, Hashable {
     var id: UUID = UUID()
     var timestamp: Date
@@ -15,6 +18,10 @@ struct RidePoint: Codable, Identifiable, Hashable {
     }
 }
 
+/// A complete saved ride: title, time bounds, ordered points, and the sensing mode
+/// that was active when it was recorded.  Provides derived metrics (distance, max
+/// and average bumpiness) plus pure-functional `trimmed` and `split` helpers used
+/// by the editor.
 struct Ride: Codable, Identifiable, Hashable {
     var id: UUID = UUID()
     var title: String

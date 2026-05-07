@@ -1,5 +1,9 @@
 import SwiftUI
 
+/// The Saved tab.  Shows a list of all saved rides with summary metadata, a colored
+/// bar reflecting average bumpiness, and a Pocket Mode badge for rides recorded with
+/// the high-pass filter on.  Tapping a row loads the ride into the Ride tab for
+/// playback; swipe-to-delete removes it from the store.
 struct SavedRidesView: View {
     @Bindable var store: RideStore
     @Bindable var appState: AppState

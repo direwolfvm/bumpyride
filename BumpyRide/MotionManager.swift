@@ -2,6 +2,10 @@ import Foundation
 import CoreMotion
 import Observation
 
+/// Wraps `CMMotionManager`.  Each device-motion sample is projected onto the gravity
+/// unit vector to extract scalar vertical acceleration (orientation-agnostic),
+/// optionally high-pass filtered for Pocket Mode, and pushed into a 5 s ring buffer.
+/// The published `currentBumpiness` is the RMS of the most recent 1 s window.
 @Observable
 final class MotionManager {
     private let manager = CMMotionManager()

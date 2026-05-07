@@ -2,6 +2,10 @@ import SwiftUI
 import MapKit
 import CoreLocation
 
+/// SwiftUI map view used in the Ride tab.  Renders the route as a series of short
+/// `MapPolyline` segments so each segment can be colored independently by the average
+/// bumpiness of its endpoints.  Optionally pins a marker at the scrubber's current
+/// position during playback.
 struct RouteMapView: View {
     var points: [RidePoint]
     var followUser: Bool

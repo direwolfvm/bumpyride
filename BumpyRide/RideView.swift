@@ -2,6 +2,11 @@ import SwiftUI
 import UIKit
 import CoreLocation
 
+/// The Ride tab: shows the live recording UI when no ride is loaded, or the playback
+/// UI (seismograph chart + colored map + scrubber + zoom) when `appState.loadedRide`
+/// is set.  Owns the save sheet, the trim/split editor, rename/delete alerts, and
+/// the export-to-Photos flow.  Drives the screen-on idle timer and pushes Pocket Mode
+/// state changes into the `MotionManager`.
 struct RideView: View {
     @Bindable var recorder: RideRecorder
     @Bindable var appState: AppState

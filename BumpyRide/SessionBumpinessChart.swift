@@ -1,5 +1,8 @@
 import SwiftUI
 
+/// Static bumpiness-vs-position chart shown in the Ride tab during playback of a
+/// saved ride.  Honors a zoom level (1.0 = whole ride, smaller = a tighter window
+/// centered on the scrubber) so the user can inspect a specific segment closely.
 struct SessionBumpinessChart: View {
     var points: [RidePoint]
     var scrubIndex: Int

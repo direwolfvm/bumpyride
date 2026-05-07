@@ -1,5 +1,9 @@
 import SwiftUI
 
+/// Live oscilloscope-style waveform of vertical acceleration on a black background.
+/// `samples` is the recent ring-buffer contents from `MotionManager`; `bumpiness` is
+/// the current 1 s RMS displayed numerically in the corner.  Slow scroll comes from
+/// using a 5 s buffer instead of a tighter window.
 struct SeismographView: View {
     var samples: [Float]
     var bumpiness: Double

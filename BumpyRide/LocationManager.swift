@@ -2,6 +2,11 @@ import Foundation
 import CoreLocation
 import Observation
 
+/// Wraps `CLLocationManager` for ride recording.  Configured for cycling-grade GPS
+/// (`kCLLocationAccuracyBestForNavigation`, 3 m distance filter, `.fitness` activity)
+/// and toggles `allowsBackgroundLocationUpdates` so location continues delivering
+/// while the screen is locked or the app is backgrounded — which also keeps the
+/// process alive long enough for `MotionManager` to keep producing samples.
 @Observable
 final class LocationManager: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()

@@ -3,6 +3,10 @@ import MapKit
 import UIKit
 import CoreLocation
 
+/// Renders a saved ride to a single image (map snapshot + bumpiness chart) suitable
+/// for sharing.  `export` builds a SwiftUI composite via `ImageRenderer`, then flattens
+/// it into an opaque-RGB `UIImage` so the resulting PNG has no alpha channel — Photos
+/// would otherwise log a warning about saving an opaque image with stored alpha.
 @MainActor
 enum RideImageExporter {
     enum ExportError: Error {
