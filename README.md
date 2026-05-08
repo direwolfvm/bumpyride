@@ -147,14 +147,15 @@ BumpyRide/
 
 ## Info.plist permissions
 
-Set via `INFOPLIST_KEY_*` build settings in the Xcode project (no separate Info.plist file):
+The project uses a manual `Info.plist` (`Info.plist` next to the `.xcodeproj`, with `GENERATE_INFOPLIST_FILE = NO`). The build-setting form (`INFOPLIST_KEY_UIBackgroundModes`) was tried first but Xcode 26 silently drops that specific key, leading to a runtime crash (`CLClientIsBackgroundable` assertion) when the app sets `allowsBackgroundLocationUpdates = true`.
 
 | Key | Why |
 |-----|-----|
 | `NSLocationWhenInUseUsageDescription` | GPS path tracking during rides |
 | `NSLocationAlwaysAndWhenInUseUsageDescription` | Background recording when screen locks |
 | `NSMotionUsageDescription` | Accelerometer access for bumpiness |
-| `UIBackgroundModes = location` | Keeps the app process alive while recording in background |
+| `NSPhotoLibraryAddUsageDescription` | Saving exported ride images |
+| `UIBackgroundModes = ["location"]` | Keeps the app process alive while recording in background |
 
 At runtime, `LocationManager` sets `allowsBackgroundLocationUpdates = true` and `showsBackgroundLocationIndicator = true` for the duration of a ride, then drops both at stop.
 
