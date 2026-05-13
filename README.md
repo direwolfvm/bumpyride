@@ -4,6 +4,10 @@ A SwiftUI iOS app that uses an iPhone's GPS and accelerometer to map road bumpin
 
 While you ride, BumpyRide records your route and continuously measures vertical acceleration to assess pavement quality. Over many rides, the **Bump Map** tab aggregates everything into a heat-map at 20 ft resolution — useful for picking smoother routes or flagging streets to a city for repair.
 
+## Related repositories
+
+- **[direwolfvm/bumpyride-web](https://github.com/direwolfvm/bumpyride-web)** — companion web aggregator that ingests ride data from multiple riders and serves a public heat map. The ingest contract is defined by [`docs/SCHEMA.md`](docs/SCHEMA.md) in this repo; the iOS app's `Codable` encoding of `Ride` is the source of truth.
+
 ## Features
 
 - **Live recording** — GPS path + 50 Hz accelerometer, sampled every 10 ft of travel. Vertical-only filtering via gravity projection so the rider's pedal stroke and braking don't read as bumpiness.
@@ -77,7 +81,7 @@ Views        ContentView (TabView root)
 
 ### Storage format
 
-The on-disk JSON format is also the canonical wire format for a future server / aggregator. The full specification is in [`docs/SCHEMA.md`](docs/SCHEMA.md), with a parser-fixture example in [`docs/sample-ride.json`](docs/sample-ride.json). Each ride is a single JSON file at `<Documents>/Rides/<UUID>.json`:
+The on-disk JSON format is also the canonical wire format for the [bumpyride-web aggregator](https://github.com/direwolfvm/bumpyride-web). The full specification is in [`docs/SCHEMA.md`](docs/SCHEMA.md), with a parser-fixture example in [`docs/sample-ride.json`](docs/sample-ride.json). Each ride is a single JSON file at `<Documents>/Rides/<UUID>.json`:
 
 ```jsonc
 {
