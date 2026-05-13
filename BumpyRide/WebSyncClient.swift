@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// Thin HTTP client for `bumpyride.me`.  Modeled on the reference `SyncClient`
 /// in [`bumpyride-web/docs/IOS_INTEGRATION.md`](https://github.com/direwolfvm/bumpyride-web/blob/main/docs/IOS_INTEGRATION.md).
@@ -30,6 +31,7 @@ actor WebSyncClient {
 
     private let baseURL: URL
     private let session: URLSession
+    private let log = Logger(subsystem: "com.herbertindustries.BumpyRide", category: "websync")
 
     init(baseURL: URL = WebSyncClient.defaultBaseURL, session: URLSession = .shared) {
         self.baseURL = baseURL
@@ -157,6 +159,7 @@ actor WebSyncClient {
     /// on the caller's actor.  This avoids hopping `Ride`'s MainActor-isolated
     /// `Encodable` conformance into this non-MainActor actor.
     func uploadRide(jsonBody: Data, token: String) async throws {
+        log.info("POST /api/sync/ride — \(jsonBody.count, privacy: .public) byte body")
         var request = URLRequest(url: baseURL.appendingPathComponent("api/sync/ride"))
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

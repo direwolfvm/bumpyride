@@ -88,6 +88,18 @@ struct ContentView: View {
             store.onRideDeleted = { id in
                 syncCoordinator.remove(id)
             }
+            // If the user was already paired in a prior session (token in Keychain →
+            // WebAccount.init() set state to .connected before the view was even built),
+            // .onChange(of: isConnected) won't fire — SwiftUI only observes transitions.
+            // Without this, any locally saved rides would silently sit outside the
+            // queue, and status(forRide:) would return .synced for them ("not in queue"
+            // is its current definition of synced), producing a false "everything
+            // synced" UI with zero actual POSTs to /api/sync/ride.  Server upserts are
+            // idempotent on Ride.id, so re-seeding on every launch is safe — at most
+            // one duplicate-but-successful POST per ride per launch.
+            if webAccount.isConnected {
+                syncCoordinator.backfillAll(rideIds: store.rides.map(\.id))
+            }
             // Drain anything queued from prior sessions / paired devices.
             syncCoordinator.kick()
         }
