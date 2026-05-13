@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var settings = AppSettings()
     @State private var appState = AppState()
     @State private var bumpMap = BumpMapStore()
+    @State private var webAccount = WebAccount()
 
     var body: some View {
         TabView(selection: Binding(
@@ -40,7 +41,7 @@ struct ContentView: View {
             .tabItem { Label("Bump Map", systemImage: "square.grid.3x3.fill") }
             .tag(AppState.Tab.bumpMap)
 
-            SettingsView(settings: settings)
+            SettingsView(settings: settings, webAccount: webAccount)
                 .tabItem { Label("Settings", systemImage: "gear") }
                 .tag(AppState.Tab.settings)
         }

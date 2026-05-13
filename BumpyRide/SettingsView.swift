@@ -2,9 +2,11 @@ import SwiftUI
 
 /// The Settings tab.  Shows a live preview of the bumpiness color gradient, sliders
 /// for the four threshold breakpoints (each constrained to stay ordered relative to
-/// its neighbors), the Pocket Mode toggle, and a reset-to-defaults button.
+/// its neighbors), the Pocket Mode toggle, a Web Account row that pushes into the
+/// `WebAccountView` pairing UI, and a reset-to-defaults button.
 struct SettingsView: View {
     @Bindable var settings: AppSettings
+    @Bindable var webAccount: WebAccount
 
     var body: some View {
         NavigationStack {
@@ -61,6 +63,18 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    NavigationLink {
+                        WebAccountView(account: webAccount)
+                    } label: {
+                        webAccountRow
+                    }
+                } header: {
+                    Text("Web Account")
+                } footer: {
+                    Text("Connect a bumpyride.me account to back up rides off-device. Token-only — your password never leaves the web app.")
+                }
+
+                Section {
                     Button(role: .destructive) {
                         settings.resetToDefaults()
                     } label: {
@@ -98,6 +112,30 @@ struct SettingsView: View {
             }
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.secondary)
+        }
+    }
+
+    private var webAccountRow: some View {
+        HStack(spacing: 12) {
+            Image(systemName: webAccount.isConnected ? "person.crop.circle.fill.badge.checkmark" : "person.crop.circle.badge.plus")
+                .font(.title3)
+                .foregroundStyle(webAccount.isConnected ? Color.green : .secondary)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(webAccount.isConnected ? "Connected" : "Not connected")
+                    .font(.body)
+                if let email = webAccount.connectedEmail {
+                    Text(email)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else {
+                    Text("bumpyride.me")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 
