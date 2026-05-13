@@ -72,6 +72,83 @@ actor WebSyncClient {
         }
     }
 
+    /// The shape of `/api/me/sharing` responses.  Both GET and PATCH return at least
+    /// `shareToPublicMap`; PATCH additionally returns `changed`, which we don't read.
+    private struct SharingResponse: Decodable {
+        let shareToPublicMap: Bool
+    }
+
+    /// Read the user's public-bump-map opt-in setting.
+    func getSharing(token: String) async throws -> Bool {
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/me/sharing"))
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 10
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw ClientError.transport
+        }
+        guard let http = response as? HTTPURLResponse else { throw ClientError.transport }
+
+        switch http.statusCode {
+        case 200..<300:
+            do {
+                return try JSONDecoder().decode(SharingResponse.self, from: data).shareToPublicMap
+            } catch {
+                throw ClientError.decoding
+            }
+        case 401:
+            throw ClientError.unauthorized
+        default:
+            throw ClientError.http(status: http.statusCode)
+        }
+    }
+
+    /// Flip the public-bump-map opt-in.  The server atomically backfills (or subtracts)
+    /// the user's existing rides into the public aggregate, which for large libraries
+    /// can take ~2 s — hence the longer-than-default timeout.  Idempotent: sending the
+    /// same value the server already has returns 200 with `changed: false`, which we
+    /// treat as success.
+    func setSharing(shareToPublicMap: Bool, token: String) async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/me/sharing"))
+        request.httpMethod = "PATCH"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 10  // ~2 s expected; 10 s slack for retry & DNS
+
+        let body = ["shareToPublicMap": shareToPublicMap]
+        do {
+            request.httpBody = try JSONEncoder().encode(body)
+        } catch {
+            throw ClientError.validationFailed
+        }
+
+        let response: URLResponse
+        do {
+            (_, response) = try await session.data(for: request)
+        } catch {
+            throw ClientError.transport
+        }
+        guard let http = response as? HTTPURLResponse else { throw ClientError.transport }
+
+        switch http.statusCode {
+        case 200..<300:
+            return
+        case 400:
+            throw ClientError.validationFailed
+        case 401:
+            throw ClientError.unauthorized
+        default:
+            throw ClientError.http(status: http.statusCode)
+        }
+    }
+
     /// Upload a single ride to `POST /api/sync/ride`.  Idempotent on `Ride.id` —
     /// re-uploading the same ride (after a trim/split, after a retry, etc.) is safe
     /// and reconciles the server-side aggregate.

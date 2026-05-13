@@ -12,6 +12,15 @@ struct WebAccountView: View {
 
     @State private var tokenInput: String = ""
 
+    /// Local cache of `shareToPublicMap` from `/api/me/sharing`.  The server is
+    /// canonical; this is just the on-screen reflection.  Refreshed on screen
+    /// appear and whenever the connected account changes (e.g. pair / re-pair),
+    /// so toggling via the web is picked up next time the user opens this view.
+    @State private var publicMapSharing: Bool = false
+    @State private var publicMapSharingLoaded: Bool = false
+    @State private var publicMapSharingUpdating: Bool = false
+    @State private var publicMapSharingError: String?
+
     private let tokensURL = URL(string: "https://bumpyride.me/settings/tokens")!
     private let landingURL = URL(string: "https://bumpyride.me")!
 
@@ -20,6 +29,7 @@ struct WebAccountView: View {
             switch account.state {
             case .connected(let email):
                 connectedSection(email: email)
+                publicBumpMapSection
                 syncSection
             case .notConnected, .connecting, .error:
                 signInSection
@@ -32,6 +42,12 @@ struct WebAccountView: View {
         }
         .navigationTitle("Web Account")
         .navigationBarTitleDisplayMode(.inline)
+        // `id:` re-runs the task whenever the connected email changes (nil ⇄ email
+        // and email-to-email), covering both first-load and post-pair refresh
+        // without a separate .onChange.
+        .task(id: account.connectedEmail) {
+            await refreshPublicMapSharing()
+        }
     }
 
     // MARK: - Primary: seamless sign-in
@@ -133,6 +149,100 @@ struct WebAccountView: View {
             Text("Connection")
         } footer: {
             Text("Disconnecting removes the token from this device only. To revoke it on the server too, visit bumpyride.me/settings/tokens.")
+        }
+    }
+
+    // MARK: - Public bump map opt-in (shown when connected)
+
+    private var publicBumpMapSection: some View {
+        Section {
+            Toggle(isOn: publicMapSharingBinding) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Share my rides on the public bump map")
+                    Text("Adds your bumpiness samples to the public heat map at bumpyride.me/map. Routes, timestamps, and per-user attribution are not published — only the per-cell average. Cells with fewer than 3 samples stay hidden, so a solo segment never appears.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .disabled(!publicMapSharingLoaded || publicMapSharingUpdating)
+
+            if publicMapSharingUpdating {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(publicMapSharing ? "Adding your rides to the public map…" : "Removing your rides from the public map…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let error = publicMapSharingError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        } header: {
+            Text("Public bump map")
+        } footer: {
+            Text("Toggling on backfills your existing rides into the public aggregate; toggling off subtracts them. You can change this at any time.")
+        }
+    }
+
+    /// A binding that does the optimistic flip synchronously (so the toggle's visual
+    /// state moves immediately on tap, no snap-back flicker) and kicks off the PATCH
+    /// asynchronously.  Reverts on failure via `applyPublicMapSharing`.
+    private var publicMapSharingBinding: Binding<Bool> {
+        Binding(
+            get: { publicMapSharing },
+            set: { newValue in
+                publicMapSharing = newValue
+                publicMapSharingError = nil
+                Task { await applyPublicMapSharing(newValue) }
+            }
+        )
+    }
+
+    private func refreshPublicMapSharing() async {
+        guard case .connected = account.state else {
+            publicMapSharingLoaded = false
+            return
+        }
+        do {
+            let value = try await account.fetchSharing()
+            publicMapSharing = value
+            publicMapSharingLoaded = true
+            publicMapSharingError = nil
+        } catch WebSyncClient.ClientError.unauthorized {
+            // WebAccount.fetchSharing already invalidated; view will re-render
+            // with the not-connected section. Nothing else to do here.
+            publicMapSharingLoaded = false
+        } catch {
+            // Quiet failure — the toggle stays disabled and the next screen-appear
+            // will retry.  Don't show a banner for a background refresh.
+            publicMapSharingLoaded = false
+        }
+    }
+
+    private func applyPublicMapSharing(_ newValue: Bool) async {
+        publicMapSharingUpdating = true
+        defer { publicMapSharingUpdating = false }
+        do {
+            try await account.setSharing(newValue)
+        } catch WebSyncClient.ClientError.unauthorized {
+            // Account already invalidated; view will transition away from the
+            // connected section.  No revert needed (section will disappear).
+        } catch WebSyncClient.ClientError.transport {
+            publicMapSharing = !newValue
+            publicMapSharingError = "Couldn't reach bumpyride.me. Check your network and try again."
+        } catch WebSyncClient.ClientError.validationFailed {
+            publicMapSharing = !newValue
+            publicMapSharingError = "The server didn't accept that change. Try again later."
+        } catch WebSyncClient.ClientError.http(let status) {
+            publicMapSharing = !newValue
+            publicMapSharingError = "Server returned an unexpected status (\(status)). Try again."
+        } catch {
+            publicMapSharing = !newValue
+            publicMapSharingError = "Couldn't update setting. Try again."
         }
     }
 

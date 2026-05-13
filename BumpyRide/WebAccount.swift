@@ -106,6 +106,38 @@ final class WebAccount {
         state = .error(message: "Your sync connection was invalidated. Sign in again to keep syncing rides.")
     }
 
+    // MARK: - Public bump map sharing
+
+    /// Read the user's public-bump-map opt-in from `/api/me/sharing`.  Surfaces a
+    /// 401 by calling `invalidate()` (same semantics as a 401 from `/api/sync/ride`)
+    /// and then rethrowing so the caller knows the fetch failed.
+    func fetchSharing() async throws -> Bool {
+        guard let stored = storage.load() else {
+            throw WebSyncClient.ClientError.unauthorized
+        }
+        do {
+            return try await client.getSharing(token: stored.token)
+        } catch WebSyncClient.ClientError.unauthorized {
+            invalidate()
+            throw WebSyncClient.ClientError.unauthorized
+        }
+    }
+
+    /// Write the user's public-bump-map opt-in.  Server atomically backfills (or
+    /// subtracts) the user's rides into the public aggregate.  Surfaces 401 the same
+    /// way `fetchSharing` does.
+    func setSharing(_ newValue: Bool) async throws {
+        guard let stored = storage.load() else {
+            throw WebSyncClient.ClientError.unauthorized
+        }
+        do {
+            try await client.setSharing(shareToPublicMap: newValue, token: stored.token)
+        } catch WebSyncClient.ClientError.unauthorized {
+            invalidate()
+            throw WebSyncClient.ClientError.unauthorized
+        }
+    }
+
     // MARK: - Private
 
     private func validateAndStore(token: String) async {
