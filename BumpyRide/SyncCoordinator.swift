@@ -2,6 +2,18 @@ import Foundation
 import Observation
 import OSLog
 
+/// Per-ride status used by `SavedRidesView` to decorate each row with an icon.
+/// "Synced" means "not in the unsynced queue right now" — which, for users who have
+/// never paired, also means "no syncing has been attempted".  The view layer is
+/// responsible for hiding the icon entirely when the user isn't connected.
+enum RideSyncStatus: Equatable {
+    case synced
+    case queued
+    case uploading
+    case paused
+    case waitingForAuth
+}
+
 /// Drives the upload of unsynced rides to bumpyride.me.  Owned by `ContentView` and
 /// wired to:
 ///
@@ -26,8 +38,30 @@ final class SyncCoordinator {
     }
 
     private(set) var state: State = .idle
+    /// The ID of the ride currently being uploaded, or `nil` if nothing is in flight.
+    /// Views observe this to mark the specific row with an "uploading right now"
+    /// indicator instead of the generic "queued" one.
+    private(set) var currentUploadingId: UUID?
 
-    private let queue: SyncQueue
+    /// Snapshot of how many rides are pending upload.  Exposed for tab-badge binding
+    /// since `SyncQueue.ids` already changes are observable through this class.
+    var unsyncedCount: Int { queue.count }
+
+    /// Whether a given ride is in the queue.  Useful for per-row UI checks.
+    func isQueued(_ id: UUID) -> Bool { queue.contains(id) }
+
+    /// Per-ride status used by row UI in `SavedRidesView`.
+    func status(forRide id: UUID) -> RideSyncStatus {
+        if currentUploadingId == id { return .uploading }
+        guard queue.contains(id) else { return .synced }
+        switch state {
+        case .paused: return .paused
+        case .waitingForAuth: return .waitingForAuth
+        case .syncing, .idle: return .queued
+        }
+    }
+
+    let queue: SyncQueue
     private let client: WebSyncClient
     private let storage: TokenStorage
     private weak var rideStore: RideStore?
@@ -68,6 +102,14 @@ final class SyncCoordinator {
 
     func remove(_ rideId: UUID) {
         queue.remove(rideId)
+    }
+
+    /// Mark every ride ID as unsynced.  Called when the user first pairs a web
+    /// account so their existing local rides back up.  Already-queued rides are
+    /// a no-op (`SyncQueue.insert` dedups), and the server-side upsert is
+    /// idempotent on `Ride.id`, so this is also safe to call on every re-pair.
+    func backfillAll(rideIds: some Sequence<UUID>) {
+        for id in rideIds { queue.insert(id) }
     }
 
     /// Try to drain the queue if conditions are right.  Idempotent — safe to call
@@ -139,6 +181,9 @@ final class SyncCoordinator {
                 queue.remove(next.id)
                 continue
             }
+
+            currentUploadingId = next.id
+            defer { currentUploadingId = nil }
 
             do {
                 try await client.uploadRide(jsonBody: body, token: stored.token)

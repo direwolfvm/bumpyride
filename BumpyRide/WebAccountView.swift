@@ -7,6 +7,8 @@ import SwiftUI
 /// available).
 struct WebAccountView: View {
     @Bindable var account: WebAccount
+    @Bindable var syncCoordinator: SyncCoordinator
+    @Bindable var syncQueue: SyncQueue
 
     @State private var tokenInput: String = ""
 
@@ -18,9 +20,13 @@ struct WebAccountView: View {
             switch account.state {
             case .connected(let email):
                 connectedSection(email: email)
+                syncSection
             case .notConnected, .connecting, .error:
                 signInSection
                 manualTokenSection
+                if !syncQueue.isEmpty {
+                    pendingWhileDisconnectedSection
+                }
             }
             aboutSection
         }
@@ -130,6 +136,128 @@ struct WebAccountView: View {
         }
     }
 
+    // MARK: - Sync (shown when connected)
+
+    private var syncSection: some View {
+        Section {
+            syncStatusRow
+            Button {
+                syncCoordinator.kick()
+            } label: {
+                Label("Sync now", systemImage: "arrow.clockwise.icloud")
+            }
+            .disabled(!shouldEnableSyncNow)
+        } header: {
+            Text("Sync")
+        } footer: {
+            Text("Rides upload automatically as you save them. Use Sync now if a transient error has put sync into backoff and you want to retry sooner.")
+        }
+    }
+
+    private var syncStatusRow: some View {
+        HStack(spacing: 12) {
+            syncStatusIcon
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(syncStatusTitle)
+                    .font(.body)
+                if let detail = syncStatusDetail {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private var syncStatusIcon: some View {
+        switch syncCoordinator.state {
+        case .idle:
+            Image(systemName: "checkmark.icloud.fill")
+                .font(.title3)
+                .foregroundStyle(.green)
+        case .syncing:
+            ProgressView()
+                .controlSize(.small)
+        case .paused:
+            Image(systemName: "exclamationmark.icloud.fill")
+                .font(.title3)
+                .foregroundStyle(.orange)
+        case .waitingForAuth:
+            Image(systemName: "key.icloud.fill")
+                .font(.title3)
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private var syncStatusTitle: String {
+        switch syncCoordinator.state {
+        case .idle:
+            return syncQueue.isEmpty ? "All up to date" : "Idle"
+        case .syncing(let remaining):
+            return remaining == 1 ? "Syncing 1 ride" : "Syncing \(remaining) rides"
+        case .paused:
+            return "Paused — will retry"
+        case .waitingForAuth:
+            return "Waiting to sign in again"
+        }
+    }
+
+    private var syncStatusDetail: String? {
+        switch syncCoordinator.state {
+        case .idle:
+            return nil
+        case .syncing:
+            return nil
+        case .paused(let reason, let retryAt):
+            return "\(reason) · retry \(Self.retryTimeFormatter.string(from: retryAt))"
+        case .waitingForAuth:
+            return "Tap Sign in above to resume."
+        }
+    }
+
+    private var shouldEnableSyncNow: Bool {
+        switch syncCoordinator.state {
+        case .paused: return true
+        case .idle: return !syncQueue.isEmpty   // useful as a "kick the tires" force
+        case .syncing, .waitingForAuth: return false
+        }
+    }
+
+    private static let retryTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.timeStyle = .short
+        f.dateStyle = .none
+        return f
+    }()
+
+    // MARK: - Pending uploads while disconnected
+
+    private var pendingWhileDisconnectedSection: some View {
+        Section {
+            HStack(spacing: 12) {
+                Image(systemName: "key.icloud.fill")
+                    .font(.title3)
+                    .foregroundStyle(.orange)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(syncQueue.count) ride\(syncQueue.count == 1 ? "" : "s") waiting to sync")
+                        .font(.body)
+                    Text("Sign in to a web account to upload them.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+        } header: {
+            Text("Pending uploads")
+        }
+    }
+
     // MARK: - About
 
     private var aboutSection: some View {
@@ -139,14 +267,20 @@ struct WebAccountView: View {
             }
         } header: {
             Text("About")
-        } footer: {
-            Text("Once connected, future versions of BumpyRide will sync your rides to your web account. This release only validates and stores the token.")
         }
     }
 }
 
 #Preview("Not connected") {
     NavigationStack {
-        WebAccountView(account: WebAccount())
+        WebAccountView(
+            account: WebAccount(),
+            syncCoordinator: SyncCoordinator(
+                queue: SyncQueue(),
+                rideStore: RideStore(),
+                webAccount: WebAccount()
+            ),
+            syncQueue: SyncQueue()
+        )
     }
 }

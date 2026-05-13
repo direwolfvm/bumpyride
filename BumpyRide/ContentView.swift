@@ -1,17 +1,39 @@
 import SwiftUI
 
 /// Root view: a `TabView` hosting Ride, Saved, Bump Map, and Settings tabs.  Owns the
-/// long-lived state objects (recorder, store, settings, app state, bump map) and passes
-/// references down — this is the single source of truth for the running app.
+/// long-lived state objects (recorder, store, settings, app state, bump map, sync
+/// queue, sync coordinator, web account) and passes references down — this is the
+/// single source of truth for the running app.
+///
+/// The sync stack is built eagerly in `init` so child views can take a non-optional
+/// `SyncCoordinator` via `@Bindable`.  Callbacks (`RideStore.onRideSaved`, etc.) are
+/// wired in `.task` since those want to run once per appearance, not once per view
+/// rebuild.
 struct ContentView: View {
     @State private var recorder = RideRecorder()
-    @State private var store = RideStore()
     @State private var settings = AppSettings()
     @State private var appState = AppState()
     @State private var bumpMap = BumpMapStore()
-    @State private var webAccount = WebAccount()
-    @State private var syncQueue = SyncQueue()
-    @State private var syncCoordinator: SyncCoordinator?
+
+    @State private var store: RideStore
+    @State private var webAccount: WebAccount
+    @State private var syncQueue: SyncQueue
+    @State private var syncCoordinator: SyncCoordinator
+
+    init() {
+        let store = RideStore()
+        let webAccount = WebAccount()
+        let queue = SyncQueue()
+        let coordinator = SyncCoordinator(
+            queue: queue,
+            rideStore: store,
+            webAccount: webAccount
+        )
+        _store = State(initialValue: store)
+        _webAccount = State(initialValue: webAccount)
+        _syncQueue = State(initialValue: queue)
+        _syncCoordinator = State(initialValue: coordinator)
+    }
 
     var body: some View {
         TabView(selection: Binding(
@@ -30,9 +52,12 @@ struct ContentView: View {
             SavedRidesView(
                 store: store,
                 appState: appState,
-                settings: settings
+                settings: settings,
+                syncCoordinator: syncCoordinator,
+                webAccount: webAccount
             )
             .tabItem { Label("Saved", systemImage: "list.bullet.rectangle") }
+            .badge(syncQueue.count)
             .tag(AppState.Tab.saved)
 
             BumpMapTabView(
@@ -43,37 +68,37 @@ struct ContentView: View {
             .tabItem { Label("Bump Map", systemImage: "square.grid.3x3.fill") }
             .tag(AppState.Tab.bumpMap)
 
-            SettingsView(settings: settings, webAccount: webAccount)
-                .tabItem { Label("Settings", systemImage: "gear") }
-                .tag(AppState.Tab.settings)
+            SettingsView(
+                settings: settings,
+                webAccount: webAccount,
+                syncCoordinator: syncCoordinator,
+                syncQueue: syncQueue
+            )
+            .tabItem { Label("Settings", systemImage: "gear") }
+            .tag(AppState.Tab.settings)
         }
         .task {
-            // Build the coordinator once we have references to its collaborators,
-            // then wire RideStore's save/delete hooks into it.  All on first appear;
-            // .task semantics make this safe to re-enter if the view reloads.
-            if syncCoordinator == nil {
-                let coord = SyncCoordinator(
-                    queue: syncQueue,
-                    rideStore: store,
-                    webAccount: webAccount
-                )
-                syncCoordinator = coord
-                store.onRideSaved = { ride in
-                    coord.enqueue(ride.id)
-                    coord.kick()
-                }
-                store.onRideDeleted = { id in
-                    coord.remove(id)
-                }
+            // Connect RideStore save/delete to the sync queue.  Idempotent — re-running
+            // just overwrites the same closure references.
+            store.onRideSaved = { ride in
+                syncCoordinator.enqueue(ride.id)
+                syncCoordinator.kick()
+            }
+            store.onRideDeleted = { id in
+                syncCoordinator.remove(id)
             }
             // Drain anything queued from prior sessions / paired devices.
-            syncCoordinator?.kick()
+            syncCoordinator.kick()
         }
         .onChange(of: webAccount.isConnected) { _, isConnected in
-            // Re-pairing or first-time pairing should immediately drain pending
-            // rides.  Disconnect doesn't need a kick — the coordinator will just
-            // park on `.waitingForAuth` next time it checks Keychain.
-            if isConnected { syncCoordinator?.kick() }
+            // When a user pairs (or re-pairs after disconnect), seed the queue with
+            // every existing local ride so their back catalog gets backed up.  Server
+            // upserts are idempotent on Ride.id, so this is safe to call every time
+            // and a no-op for rides already in the queue or already synced earlier.
+            if isConnected {
+                syncCoordinator.backfillAll(rideIds: store.rides.map(\.id))
+                syncCoordinator.kick()
+            }
         }
     }
 }

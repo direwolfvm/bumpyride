@@ -7,6 +7,8 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var settings: AppSettings
     @Bindable var webAccount: WebAccount
+    @Bindable var syncCoordinator: SyncCoordinator
+    @Bindable var syncQueue: SyncQueue
 
     var body: some View {
         NavigationStack {
@@ -64,7 +66,11 @@ struct SettingsView: View {
 
                 Section {
                     NavigationLink {
-                        WebAccountView(account: webAccount)
+                        WebAccountView(
+                            account: webAccount,
+                            syncCoordinator: syncCoordinator,
+                            syncQueue: syncQueue
+                        )
                     } label: {
                         webAccountRow
                     }
@@ -125,17 +131,33 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(webAccount.isConnected ? "Connected" : "Not connected")
                     .font(.body)
-                if let email = webAccount.connectedEmail {
-                    Text(email)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else {
-                    Text("bumpyride.me")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text(webAccountRowDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
+        }
+    }
+
+    /// Secondary line in the Web Account row.  Prefers showing live sync state when
+    /// there's something interesting to report; otherwise falls back to the user's
+    /// email (when connected) or the brand name (when not).
+    private var webAccountRowDetail: String {
+        switch syncCoordinator.state {
+        case .syncing(let remaining):
+            return remaining == 1 ? "Syncing 1 ride" : "Syncing \(remaining) rides"
+        case .paused:
+            return "Sync paused — will retry"
+        case .waitingForAuth:
+            if syncQueue.count > 0 {
+                return "\(syncQueue.count) ride\(syncQueue.count == 1 ? "" : "s") waiting to sync"
+            }
+            return "Sign in to sync"
+        case .idle:
+            if let email = webAccount.connectedEmail {
+                return email
+            }
+            return "bumpyride.me"
         }
     }
 

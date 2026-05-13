@@ -8,6 +8,10 @@ struct SavedRidesView: View {
     @Bindable var store: RideStore
     @Bindable var appState: AppState
     var settings: AppSettings
+    /// Per-row cloud icons are derived from the coordinator's queue + state, and
+    /// hidden entirely when the user isn't connected to a web account.
+    @Bindable var syncCoordinator: SyncCoordinator
+    @Bindable var webAccount: WebAccount
 
     var body: some View {
         NavigationStack {
@@ -78,11 +82,50 @@ struct SavedRidesView: View {
                     .foregroundStyle(.secondary)
             }
 
+            syncIndicator(for: ride)
+
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.tertiary)
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func syncIndicator(for ride: Ride) -> some View {
+        // Hide entirely when the user has no web account — keep the row clean for
+        // people who don't use sync.  Still show queued rides if the user paired
+        // then disconnected (queue persists; reconnecting drains it).
+        let status = syncCoordinator.status(forRide: ride.id)
+        let shouldShow = webAccount.isConnected || status != .synced
+        if shouldShow {
+            switch status {
+            case .synced:
+                Image(systemName: "checkmark.icloud.fill")
+                    .font(.callout)
+                    .foregroundStyle(.green)
+                    .accessibilityLabel("Synced")
+            case .queued:
+                Image(systemName: "icloud.and.arrow.up")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Queued to sync")
+            case .uploading:
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Uploading")
+            case .paused:
+                Image(systemName: "exclamationmark.icloud.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel("Sync paused — will retry")
+            case .waitingForAuth:
+                Image(systemName: "key.icloud.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel("Sign in to sync")
+            }
+        }
     }
 }
