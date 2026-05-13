@@ -19,6 +19,7 @@ struct ContentView: View {
     @State private var webAccount: WebAccount
     @State private var syncQueue: SyncQueue
     @State private var syncCoordinator: SyncCoordinator
+    @State private var reachability = NetworkReachability()
 
     init() {
         let store = RideStore()
@@ -99,6 +100,14 @@ struct ContentView: View {
                 syncCoordinator.backfillAll(rideIds: store.rides.map(\.id))
                 syncCoordinator.kick()
             }
+        }
+        .onChange(of: reachability.isReachable) { _, isReachable in
+            // The network coming back is another implicit "do it now" signal — kick the
+            // coordinator so a queued upload doesn't sit on its 30 s+ backoff timer
+            // while we're already online again.  The kick is idempotent; if we're not
+            // paused it's a no-op.  We don't react to going offline because the
+            // coordinator's existing transport-error path already handles that.
+            if isReachable { syncCoordinator.kick() }
         }
     }
 }
