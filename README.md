@@ -77,10 +77,11 @@ Views        ContentView (TabView root)
 
 ### Storage format
 
-Each ride is a single JSON file at `<Documents>/Rides/<UUID>.json`:
+The on-disk JSON format is also the canonical wire format for a future server / aggregator. The full specification is in [`docs/SCHEMA.md`](docs/SCHEMA.md), with a parser-fixture example in [`docs/sample-ride.json`](docs/sample-ride.json). Each ride is a single JSON file at `<Documents>/Rides/<UUID>.json`:
 
 ```jsonc
 {
+  "schemaVersion": 1,
   "id": "...",
   "title": "Ride Apr 23, 3:09 PM",
   "startedAt": "2026-04-23T19:09:00Z",
@@ -101,7 +102,7 @@ Each ride is a single JSON file at `<Documents>/Rides/<UUID>.json`:
 }
 ```
 
-`pocketMode` is `Optional<Bool>`; rides recorded before the field was added decode as `nil`.
+`pocketMode` is `Optional<Bool>`; rides recorded before the field was added decode as `nil`. `schemaVersion` defaults to `1` if missing in older files. See [`docs/SCHEMA.md`](docs/SCHEMA.md) for field-by-field semantics, units, and forward-compatibility expectations.
 
 The `BumpGrid` is **not** persisted — it's rebuilt from the rides on demand, which takes tens of milliseconds even for years of riding data. Cheaper than keeping an incremental index in sync.
 
@@ -142,6 +143,10 @@ BumpyRide/
 │   ├── Formatters.swift              # distance / duration helpers
 │   ├── Assets.xcassets/              # app icon + accent color
 │   └── ...
+├── Info.plist                        # manual Info.plist (see Permissions below)
+├── docs/
+│   ├── SCHEMA.md                     # canonical ride wire-format spec
+│   └── sample-ride.json              # parser fixture
 └── README.md
 ```
 

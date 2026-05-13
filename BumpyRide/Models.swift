@@ -4,6 +4,10 @@ import CoreLocation
 /// A single sample emitted while recording a ride: GPS position, the current
 /// bumpiness RMS at the time of sampling, and a snapshot of the recent vertical
 /// acceleration window (used to redraw the seismograph during playback).
+///
+/// The JSON wire-format keys are locked via the explicit `CodingKeys` enum so
+/// downstream consumers (server, exports) don't break if a Swift property is
+/// renamed during a refactor.  See `docs/SCHEMA.md` for the field-by-field spec.
 struct RidePoint: Codable, Identifiable, Hashable {
     var id: UUID = UUID()
     var timestamp: Date
@@ -16,23 +20,83 @@ struct RidePoint: Codable, Identifiable, Hashable {
     var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case timestamp
+        case latitude
+        case longitude
+        case speed
+        case bumpiness
+        case accelWindow
+    }
 }
 
 /// A complete saved ride: title, time bounds, ordered points, and the sensing mode
 /// that was active when it was recorded.  Provides derived metrics (distance, max
 /// and average bumpiness) plus pure-functional `trimmed` and `split` helpers used
 /// by the editor.
+///
+/// The JSON wire-format keys are locked via the explicit `CodingKeys` enum, and the
+/// custom `init(from:)` supplies sensible defaults for fields that didn't exist in
+/// earlier on-disk records (`schemaVersion` → 1, `pocketMode` → nil), so old files
+/// keep decoding after schema additions.  See `docs/SCHEMA.md`.
 struct Ride: Codable, Identifiable, Hashable {
-    var id: UUID = UUID()
+    var id: UUID
     var title: String
     var startedAt: Date
     var endedAt: Date
     var points: [RidePoint]
     /// Whether the high-pass "pocket mode" filter was active when this ride was recorded.
-    /// Optional so older saved rides (recorded before the field existed) decode cleanly as
-    /// `nil`, which we treat as "unknown / pre-filter".  Trim/split ops preserve the tag
-    /// because they copy the whole struct (`var copy = self`).
-    var pocketMode: Bool? = nil
+    /// `nil` for rides recorded before the field existed.  Trim/split ops preserve the
+    /// tag because they copy the whole struct (`var copy = self`).
+    var pocketMode: Bool?
+    /// Wire-format schema version.  Currently always 1.  Records on disk that predate
+    /// the version field decode as `1` via the custom `init(from:)`.  When a future
+    /// version makes a breaking change to the JSON shape, bump this and add a migration
+    /// path in `init(from:)` that handles the older version.
+    var schemaVersion: Int
+
+    init(
+        id: UUID = UUID(),
+        title: String,
+        startedAt: Date,
+        endedAt: Date,
+        points: [RidePoint],
+        pocketMode: Bool? = nil,
+        schemaVersion: Int = 1
+    ) {
+        self.id = id
+        self.title = title
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.points = points
+        self.pocketMode = pocketMode
+        self.schemaVersion = schemaVersion
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case startedAt
+        case endedAt
+        case points
+        case pocketMode
+        case schemaVersion
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.title = try c.decode(String.self, forKey: .title)
+        self.startedAt = try c.decode(Date.self, forKey: .startedAt)
+        self.endedAt = try c.decode(Date.self, forKey: .endedAt)
+        self.points = try c.decode([RidePoint].self, forKey: .points)
+        self.pocketMode = try c.decodeIfPresent(Bool.self, forKey: .pocketMode)
+        // Records written before schemaVersion existed are treated as v1 — the format
+        // they were emitted in.
+        self.schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+    }
 
     var duration: TimeInterval { endedAt.timeIntervalSince(startedAt) }
 
