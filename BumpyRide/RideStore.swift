@@ -8,6 +8,17 @@ import Observation
 final class RideStore {
     private(set) var rides: [Ride] = []
 
+    /// Fired after every successful `save(_:)` write — whether for a brand-new ride or
+    /// an in-place update from rename / trim / split.  `ContentView` wires this to
+    /// `SyncCoordinator.enqueue(_:)` + `kick()` so the upload path doesn't have to
+    /// reach into `RideStore` itself.
+    var onRideSaved: ((Ride) -> Void)?
+
+    /// Fired after `delete(_:)` removes a ride from disk.  Wired to
+    /// `SyncCoordinator.remove(_:)` so we don't waste a network round trip uploading
+    /// something the user already deleted locally.
+    var onRideDeleted: ((UUID) -> Void)?
+
     private let directoryURL: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -49,6 +60,7 @@ final class RideStore {
                 rides.insert(ride, at: 0)
                 rides.sort { $0.startedAt > $1.startedAt }
             }
+            onRideSaved?(ride)
         } catch {
         }
     }
@@ -57,6 +69,7 @@ final class RideStore {
         let url = directoryURL.appendingPathComponent("\(ride.id.uuidString).json")
         try? FileManager.default.removeItem(at: url)
         rides.removeAll { $0.id == ride.id }
+        onRideDeleted?(ride.id)
     }
 
     func rename(_ ride: Ride, to title: String) {

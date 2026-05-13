@@ -97,6 +97,15 @@ final class WebAccount {
         state = .notConnected
     }
 
+    /// Called by `SyncCoordinator` when an upload comes back with 401 — the token
+    /// has been revoked server-side (or was never valid).  Wipes Keychain and puts
+    /// the account into an error state so the Settings row reflects "needs to
+    /// re-pair" rather than a stale "Connected as …".
+    func invalidate() {
+        storage.delete()
+        state = .error(message: "Your sync connection was invalidated. Sign in again to keep syncing rides.")
+    }
+
     // MARK: - Private
 
     private func validateAndStore(token: String) async {

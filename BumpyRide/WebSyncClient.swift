@@ -14,6 +14,8 @@ actor WebSyncClient {
 
     enum ClientError: Error, Equatable {
         case unauthorized            // 401
+        case validationFailed        // 400 — payload doesn't match SCHEMA.md
+        case conflict                // 409 — ride owned by a different account
         case http(status: Int)       // any other non-2xx
         case transport               // URLSession threw (offline, DNS, TLS)
         case decoding                // 2xx with a body we can't parse
@@ -65,6 +67,48 @@ actor WebSyncClient {
             }
         case 401:
             throw ClientError.unauthorized
+        default:
+            throw ClientError.http(status: http.statusCode)
+        }
+    }
+
+    /// Upload a single ride to `POST /api/sync/ride`.  Idempotent on `Ride.id` —
+    /// re-uploading the same ride (after a trim/split, after a retry, etc.) is safe
+    /// and reconciles the server-side aggregate.
+    ///
+    /// The body is passed in as pre-encoded JSON `Data` so the encode step happens
+    /// on the caller's actor.  This avoids hopping `Ride`'s MainActor-isolated
+    /// `Encodable` conformance into this non-MainActor actor.
+    func uploadRide(jsonBody: Data, token: String) async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/sync/ride"))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Rides can be several MB once accelWindow is included; allow the network
+        // stack longer than the default for /api/me.
+        request.timeoutInterval = 60
+        request.httpBody = jsonBody
+
+        let response: URLResponse
+        do {
+            (_, response) = try await session.data(for: request)
+        } catch {
+            throw ClientError.transport
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw ClientError.transport
+        }
+
+        switch http.statusCode {
+        case 200..<300:
+            return
+        case 400:
+            throw ClientError.validationFailed
+        case 401:
+            throw ClientError.unauthorized
+        case 409:
+            throw ClientError.conflict
         default:
             throw ClientError.http(status: http.statusCode)
         }

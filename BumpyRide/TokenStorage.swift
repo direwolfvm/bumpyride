@@ -14,14 +14,19 @@ import Security
 /// who it belongs to; loading returns the email alongside the token so we can show
 /// "Connected as …" without a second round trip.  Only one connection is supported
 /// at a time — saving replaces any previously stored item under the same service.
+/// `nonisolated`-by-method: SecItem* operations are thread-safe and we want
+/// `TokenStorage` to be usable from `SyncCoordinator`'s drain context (which crosses
+/// actor boundaries) without forcing MainActor hops on every Keychain access.  The
+/// project's `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` would otherwise scope this
+/// class to the main actor.
 final class TokenStorage {
-    let service: String
+    nonisolated let service: String
 
-    init(service: String = "me.bumpyride.web") {
+    nonisolated init(service: String = "me.bumpyride.web") {
         self.service = service
     }
 
-    struct Stored: Equatable {
+    struct Stored: Equatable, Sendable {
         let token: String
         let email: String
     }
@@ -33,7 +38,7 @@ final class TokenStorage {
 
     /// Persist a token associated with the given email, atomically replacing any
     /// existing connection for this service.
-    func save(token: String, email: String) throws {
+    nonisolated func save(token: String, email: String) throws {
         // Remove any existing item under this service, regardless of account.
         let deleteQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -55,7 +60,7 @@ final class TokenStorage {
     }
 
     /// Return the stored credentials, or `nil` if nothing is saved.
-    func load() -> Stored? {
+    nonisolated func load() -> Stored? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -75,7 +80,7 @@ final class TokenStorage {
     }
 
     /// Remove the stored token (if any).  Safe to call when nothing is saved.
-    func delete() {
+    nonisolated func delete() {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service
