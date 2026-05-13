@@ -5,8 +5,17 @@ import Observation
 /// (Keychain) and the `WebSyncClient` (HTTP).  Views observe `state` to decide whether
 /// to show "Not connected", "Connecting…", "Connected as …", or an error message.
 ///
-/// Phase-1 scope (current): paste a token, validate via `/api/me`, persist on success.
-/// Phase 2+ will add a sync queue and an `uploadRide` path.
+/// Two connect paths:
+///
+/// - `connectViaPairing()` — seamless flow.  Opens `ASWebAuthenticationSession` at
+///   `bumpyride.me/ios-pair`, captures the redirected token automatically.
+/// - `connect(token:)` — manual fallback.  Validates a token the user has pasted from
+///   `bumpyride.me/settings/tokens`.
+///
+/// Both routes funnel into `validateAndStore(token:)` so the post-validation behavior
+/// is identical: hit `/api/me`, persist on success, surface typed errors on failure.
+///
+/// Phase 2+ will add an `uploadRide` queue.
 @Observable
 final class WebAccount {
     enum State: Equatable {
@@ -18,10 +27,16 @@ final class WebAccount {
 
     private(set) var state: State
 
+    private let baseURL: URL
     private let client: WebSyncClient
     private let storage: TokenStorage
 
-    init(client: WebSyncClient = WebSyncClient(), storage: TokenStorage = TokenStorage()) {
+    init(
+        baseURL: URL = WebSyncClient.defaultBaseURL,
+        client: WebSyncClient = WebSyncClient(),
+        storage: TokenStorage = TokenStorage()
+    ) {
+        self.baseURL = baseURL
         self.client = client
         self.storage = storage
         if let stored = storage.load() {
@@ -41,22 +56,56 @@ final class WebAccount {
         return nil
     }
 
-    /// Validate a pasted token and, on success, persist it.  Maps client errors to
-    /// user-readable copy.
+    /// Run the seamless `ASWebAuthenticationSession` pairing flow.  On success the
+    /// returned token is validated and persisted just like a manually pasted one.
+    func connectViaPairing() async {
+        state = .connecting
+        let pairing = WebPairingService()
+        let token: String
+        do {
+            token = try await pairing.pair(baseURL: baseURL)
+        } catch WebPairingService.PairingError.userCancelled {
+            // Quietly return to "not connected" without an error banner — user
+            // explicitly dismissed the sheet.
+            state = .notConnected
+            return
+        } catch let error as WebPairingService.PairingError {
+            state = .error(message: error.errorDescription ?? "Couldn't sign in.")
+            return
+        } catch {
+            state = .error(message: "Couldn't sign in: \(error.localizedDescription)")
+            return
+        }
+        await validateAndStore(token: token)
+    }
+
+    /// Validate a manually pasted token and, on success, persist it.
     func connect(token rawToken: String) async {
         let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty else {
             state = .error(message: "Please paste a token from bumpyride.me/settings/tokens.")
             return
         }
-
         state = .connecting
+        await validateAndStore(token: token)
+    }
+
+    /// Clear the stored token from the device.  The token remains valid on the
+    /// server until the user revokes it at `bumpyride.me/settings/tokens`.
+    func disconnect() {
+        storage.delete()
+        state = .notConnected
+    }
+
+    // MARK: - Private
+
+    private func validateAndStore(token: String) async {
         do {
             let me = try await client.getMe(token: token)
             try storage.save(token: token, email: me.email)
             state = .connected(email: me.email)
         } catch WebSyncClient.ClientError.unauthorized {
-            state = .error(message: "That token isn't valid. Copy a fresh one from bumpyride.me/settings/tokens.")
+            state = .error(message: "That token isn't valid. Try signing in again, or copy a fresh one from bumpyride.me/settings/tokens.")
         } catch WebSyncClient.ClientError.transport {
             state = .error(message: "Couldn't reach bumpyride.me. Check your network and try again.")
         } catch WebSyncClient.ClientError.http(let status) {
@@ -73,12 +122,5 @@ final class WebAccount {
         } catch {
             state = .error(message: "Unexpected error: \(error.localizedDescription)")
         }
-    }
-
-    /// Clear the stored token from the device.  The token remains valid on the
-    /// server until the user revokes it at `bumpyride.me/settings/tokens`.
-    func disconnect() {
-        storage.delete()
-        state = .notConnected
     }
 }

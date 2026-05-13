@@ -6,7 +6,9 @@ While you ride, BumpyRide records your route and continuously measures vertical 
 
 ## Related repositories
 
-- **[direwolfvm/bumpyride-web](https://github.com/direwolfvm/bumpyride-web)** — companion web aggregator that ingests ride data from multiple riders and serves a public heat map. The ingest contract is defined by [`docs/SCHEMA.md`](docs/SCHEMA.md) in this repo; the iOS app's `Codable` encoding of `Ride` is the source of truth.
+- **[direwolfvm/bumpyride-web](https://github.com/direwolfvm/bumpyride-web)** — companion web aggregator that ingests ride data from multiple riders and serves a public heat map.
+  - Ride wire format: [`docs/SCHEMA.md`](docs/SCHEMA.md) in this repo (iOS app's `Codable` encoding is the source of truth).
+  - Seamless sign-in flow: [`docs/WEB_PAIRING.md`](docs/WEB_PAIRING.md) — contract for the `/ios-pair` endpoint the iOS app targets via `ASWebAuthenticationSession`.
 
 ## Features
 
@@ -150,7 +152,8 @@ BumpyRide/
 ├── Info.plist                        # manual Info.plist (see Permissions below)
 ├── docs/
 │   ├── SCHEMA.md                     # canonical ride wire-format spec
-│   └── sample-ride.json              # parser fixture
+│   ├── sample-ride.json              # parser fixture
+│   └── WEB_PAIRING.md                # /ios-pair contract for the web app
 └── README.md
 ```
 

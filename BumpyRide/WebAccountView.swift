@@ -1,7 +1,10 @@
 import SwiftUI
 
-/// Settings → Web Account.  Either prompts the user to paste a token and validates
-/// it against `/api/me`, or shows the connected email + a disconnect button.
+/// Settings → Web Account.  Primary path is "Sign in with bumpyride.me", which opens
+/// an `ASWebAuthenticationSession` and captures the token automatically.  Manual
+/// paste-a-token is kept as a fallback for power users or for when the seamless
+/// flow can't be used (e.g. on a device whose Safari is signed out and no keyboard
+/// available).
 struct WebAccountView: View {
     @Bindable var account: WebAccount
 
@@ -16,7 +19,8 @@ struct WebAccountView: View {
             case .connected(let email):
                 connectedSection(email: email)
             case .notConnected, .connecting, .error:
-                connectSection
+                signInSection
+                manualTokenSection
             }
             aboutSection
         }
@@ -24,13 +28,48 @@ struct WebAccountView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    // MARK: - Connect (not yet connected)
+    // MARK: - Primary: seamless sign-in
 
-    private var connectSection: some View {
+    private var signInSection: some View {
         Section {
-            instructionText
+            Button {
+                Task { await account.connectViaPairing() }
+            } label: {
+                HStack(spacing: 8) {
+                    if account.state == .connecting {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Signing in…")
+                    } else {
+                        Image(systemName: "arrow.up.forward.circle.fill")
+                        Text("Sign in with bumpyride.me")
+                            .fontWeight(.semibold)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(account.state == .connecting)
+
+            if case .error(let message) = account.state {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            }
+        } header: {
+            Text("Connect")
+        } footer: {
+            Text("Opens bumpyride.me in a secure window so you can sign in (or sign up). If you're already signed in on this device, it'll connect right away. The token is sent back to this app automatically — Safari history never sees it.")
+        }
+    }
+
+    // MARK: - Fallback: manual paste
+
+    private var manualTokenSection: some View {
+        Section {
             Link(destination: tokensURL) {
-                Label("Open bumpyride.me/settings/tokens", systemImage: "safari")
+                Label("Open /settings/tokens", systemImage: "safari")
             }
 
             TextField("Paste token", text: $tokenInput, axis: .vertical)
@@ -40,47 +79,25 @@ struct WebAccountView: View {
                 .font(.callout.monospaced())
                 .disabled(account.state == .connecting)
 
-            if case .error(let message) = account.state {
-                Label(message, systemImage: "exclamationmark.triangle")
-                    .font(.callout)
-                    .foregroundStyle(.red)
-            }
-
-            Button(action: { Task { await connectTapped() } }) {
-                HStack {
-                    if account.state == .connecting {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Connecting…")
-                    } else {
-                        Text("Connect")
-                    }
-                }
-                .frame(maxWidth: .infinity)
+            Button {
+                Task { await pasteConnect() }
+            } label: {
+                Text("Connect with this token")
+                    .frame(maxWidth: .infinity)
             }
             .disabled(account.state == .connecting || tokenIsEmpty)
         } header: {
-            Text("Connect")
+            Text("Or paste a token")
         } footer: {
-            Text("Syncing is optional. Without an account, your rides stay on this device only.")
+            Text("Create one at bumpyride.me/settings/tokens and paste it here. Useful if the Sign-in button isn't working for some reason.")
         }
-    }
-
-    private var instructionText: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("1. Sign up at bumpyride.me in a browser.")
-            Text("2. Create a token at /settings/tokens and copy it.")
-            Text("3. Paste it below and tap Connect.")
-        }
-        .font(.callout)
-        .foregroundStyle(.secondary)
     }
 
     private var tokenIsEmpty: Bool {
         tokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func connectTapped() async {
+    private func pasteConnect() async {
         await account.connect(token: tokenInput)
         if case .connected = account.state {
             tokenInput = ""
