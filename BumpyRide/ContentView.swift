@@ -89,6 +89,27 @@ struct ContentView: View {
             .tag(AppState.Tab.settings)
         }
         .task {
+            // Check for a recoverable ride journal first — this is the recovery
+            // path for users whose last session ended abruptly (OS kill, crash,
+            // force-quit).  Has to happen before anything else might touch the
+            // recorder.  RideView watches `appState.recoveredRide` and shows the
+            // alert.  We deliberately don't force-switch tabs here; if a user is
+            // on Saved Rides and there's a recovered ride, they'll see the
+            // recovery alert when they next visit Ride.
+            if let recoverable = RideJournal.loadRecoverable() {
+                let endedAt = recoverable.points.last?.timestamp ?? recoverable.header.startedAt
+                appState.recoveredRide = Ride(
+                    id: recoverable.header.rideId,
+                    title: Ride.defaultTitle(for: recoverable.header.startedAt),
+                    startedAt: recoverable.header.startedAt,
+                    endedAt: endedAt,
+                    points: recoverable.points,
+                    pocketMode: nil,
+                    schemaVersion: recoverable.header.schemaVersion
+                )
+                appState.selectedTab = .ride
+            }
+
             // Connect RideStore save/delete to the sync queue + calibration recompute.
             // Idempotent — re-running just overwrites the same closure references.
             store.onRideSaved = { ride in

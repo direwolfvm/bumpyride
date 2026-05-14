@@ -16,11 +16,16 @@ final class RideRecorder {
 
     let location = LocationManager()
     let motion = MotionManager()
+    let journal = RideJournal()
 
     private(set) var state: State = .idle
     private(set) var points: [RidePoint] = []
     private(set) var startedAt: Date?
     private(set) var endedAt: Date?
+    /// Stable ride id assigned at `start()` time and used by both the journal and
+    /// the eventual `Ride` returned from `stop()`.  Lets us recover the exact same
+    /// ride identity if the app dies and the user accepts recovery on relaunch.
+    private var pendingRideId: UUID?
 
     var liveSamples: [Float] { motion.latestSamples }
     var currentBumpiness: Double { motion.currentBumpiness }
@@ -39,8 +44,14 @@ final class RideRecorder {
     func start() {
         guard state != .recording else { return }
         points = []
-        startedAt = Date()
+        let now = Date()
+        startedAt = now
         endedAt = nil
+        let rideId = UUID()
+        pendingRideId = rideId
+        // Open the crash-safe journal.  Failures are non-fatal — recording still
+        // happens in memory, we just lose the ability to recover on force-quit.
+        try? journal.start(rideId: rideId, startedAt: now, schemaVersion: 2)
         state = .recording
         motion.start()
         location.startUpdating()
@@ -52,11 +63,16 @@ final class RideRecorder {
         motion.stop()
         endedAt = Date()
         state = .finished
+        // Close the file handle but leave the journal on disk until the user
+        // saves or discards.  If the user kills the app before resolving the
+        // save sheet, recovery on next launch picks up where we left off.
+        journal.close()
         guard let start = startedAt, let end = endedAt, !points.isEmpty else { return nil }
         // pocketMode is left nil here — the save flow runs `MountStyleDetector` and
         // decides.  Per Option C the recording is always raw; the mode label is a
         // post-hoc characterization, not a pre-flight setting.
         return Ride(
+            id: pendingRideId ?? UUID(),
             title: Ride.defaultTitle(for: start),
             startedAt: start,
             endedAt: end,
@@ -69,9 +85,14 @@ final class RideRecorder {
         motion.stop()
         location.stopUpdating()
         motion.reset()
+        // Discard any in-progress journal as well.  Called from save / discard
+        // paths in RideView, and from start-over flows.  Safe to call when no
+        // journal exists.
+        journal.clear()
         points = []
         startedAt = nil
         endedAt = nil
+        pendingRideId = nil
         state = .idle
     }
 
@@ -89,5 +110,8 @@ final class RideRecorder {
             accelWindow: window
         )
         points.append(point)
+        // Persist immediately to the journal so a process kill in the next
+        // microsecond doesn't lose this point.
+        journal.append(point)
     }
 }

@@ -11,6 +11,14 @@ final class AppState {
     var selectedTab: Tab = .ride
     var loadedRide: Ride?
 
+    /// Set by `ContentView.task` on cold launch when `RideJournal.loadRecoverable()`
+    /// returns a non-empty in-progress recording from a prior session that ended
+    /// abruptly (force-quit, OS kill, crash).  `RideView` watches this and shows
+    /// a one-time recovery alert; on Recover, the value flows into the save sheet
+    /// the same way a freshly-stopped ride does.  Cleared once the user resolves
+    /// the prompt either way.
+    var recoveredRide: Ride?
+
     func open(_ ride: Ride) {
         loadedRide = ride
         selectedTab = .ride

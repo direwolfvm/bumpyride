@@ -42,6 +42,10 @@ struct RideView: View {
     /// extremely short rides or accelWindow data missing entirely.
     @State private var pendingMountDetection: MountStyleDetector.Result?
 
+    /// Controls the "Recover unfinished ride?" alert that fires when
+    /// `ContentView.task` finds a non-empty journal on launch.
+    @State private var showingRecoveryAlert: Bool = false
+
     private func setIdleTimer(disabled: Bool) {
         UIApplication.shared.isIdleTimerDisabled = disabled
     }
@@ -69,6 +73,29 @@ struct RideView: View {
                 ))
                 .sheet(isPresented: $showingSaveSheet, onDismiss: { pendingRide = nil }) { saveSheet }
                 .sheet(isPresented: $showingEditSheet) { editSheet }
+                .task {
+                    // ContentView.task sets recoveredRide on launch (before this view
+                    // first renders, usually).  .onChange won't fire for already-set
+                    // values, so check here on appear too.  No-op if already nil.
+                    if appState.recoveredRide != nil {
+                        showingRecoveryAlert = true
+                    }
+                }
+                .onChange(of: appState.recoveredRide?.id) { _, newID in
+                    if newID != nil {
+                        showingRecoveryAlert = true
+                    }
+                }
+                .alert("Recover unfinished ride?", isPresented: $showingRecoveryAlert, presenting: appState.recoveredRide) { recovered in
+                    Button("Recover") {
+                        acceptRecovery()
+                    }
+                    Button("Discard", role: .destructive) {
+                        declineRecovery()
+                    }
+                } message: { recovered in
+                    Text("BumpyRide found an unfinished recording from \(Formatters.dateTime(recovered.startedAt)) with \(recovered.points.count) sample\(recovered.points.count == 1 ? "" : "s"). The recording was interrupted before it was saved — recover it now, or discard.")
+                }
                 .modifier(RideViewAlertsModifier(
                     showingRename: $showingRenameAlert,
                     renameText: $renameText,
@@ -102,6 +129,37 @@ struct RideView: View {
                 appState.loadedRide = updated
             }
         }
+    }
+
+    /// Open the save sheet pre-populated for `ride` — running the auto-detect to
+    /// prime the pocket-mode toggle.  Called from both the Stop button (freshly-
+    /// recorded ride) and the recovery accept path (ride reconstructed from the
+    /// on-disk journal).
+    private func presentSaveSheet(for ride: Ride) {
+        pendingRide = ride
+        editableTitle = ride.title
+        let detection = MountStyleDetector.analyze(ride)
+        pendingMountDetection = detection
+        pendingPocketMode = (detection?.verdict == .likelyPocket)
+        showingSaveSheet = true
+    }
+
+    /// User tapped "Recover" in the recovery alert.  Route the recovered ride
+    /// into the save sheet, identical to a just-stopped ride.
+    private func acceptRecovery() {
+        guard let recovered = appState.recoveredRide else { return }
+        appState.recoveredRide = nil
+        presentSaveSheet(for: recovered)
+        // The save sheet's Save / Discard paths both call `recorder.reset()`,
+        // which in turn calls `journal.clear()`, so we don't have to do
+        // anything extra to clean up the on-disk journal here.
+    }
+
+    /// User tapped "Discard" in the recovery alert.  Drop the recovered ride
+    /// and clear the on-disk journal.
+    private func declineRecovery() {
+        appState.recoveredRide = nil
+        RideJournal.clearAny()
     }
 
     private func commitRename() {
@@ -249,15 +307,7 @@ struct RideView: View {
             case .recording:
                 Button(role: .destructive) {
                     if let ride = recorder.stop() {
-                        pendingRide = ride
-                        editableTitle = ride.title
-                        // Run the detector (sub-millisecond on typical rides) and use
-                        // its verdict as the default for the save-sheet toggle.  User
-                        // can flip if they disagree.
-                        let detection = MountStyleDetector.analyze(ride)
-                        pendingMountDetection = detection
-                        pendingPocketMode = (detection?.verdict == .likelyPocket)
-                        showingSaveSheet = true
+                        presentSaveSheet(for: ride)
                     } else {
                         recorder.reset()
                     }
