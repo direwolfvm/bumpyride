@@ -52,8 +52,8 @@ struct SettingsView: View {
                 Section {
                     Toggle(isOn: $settings.pocketModeEnabled) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Pocket Mode")
-                            Text("Filter out pedaling motion when the phone is on your body.")
+                            Text("Default pocket setting")
+                            Text("New rides start with this value. Override per ride from the Ride tab.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -61,7 +61,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Sensing")
                 } footer: {
-                    Text("Applies a 3 Hz high-pass to the vertical-acceleration channel so the rider's pedaling cadence (≈1–2 Hz) doesn't register as bumpiness. Leave off for handlebar or frame mounts.")
+                    Text("Pocket mode applies a 3 Hz high-pass to the vertical-acceleration channel so the rider's pedaling cadence (≈1–2 Hz) doesn't register as bumpiness. Leave it off as the default for handlebar / frame mounts; toggle it on per ride when you pocket the phone.")
                 }
 
                 Section {

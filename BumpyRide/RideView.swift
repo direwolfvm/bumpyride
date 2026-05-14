@@ -31,6 +31,13 @@ struct RideView: View {
     @State private var exportAlertMessage: String = ""
     @State private var isExporting: Bool = false
 
+    /// Per-ride pocket-mode override.  Initialized from `settings.pocketModeEnabled`
+    /// when the view first appears with an idle recorder, and reset to the same
+    /// default after each ride ends.  Mid-ride toggling changes the live filter
+    /// (and seismograph readout) but doesn't change the `pocketMode` tag stamped
+    /// onto the saved Ride — that's snapshotted at `recorder.start()` time.
+    @State private var pocketEnabled: Bool = false
+
     private func setIdleTimer(disabled: Bool) {
         UIApplication.shared.isIdleTimerDisabled = disabled
     }
@@ -42,15 +49,29 @@ struct RideView: View {
                 .modifier(RideViewLifecycleModifier(
                     recorder: recorder,
                     loadedId: appState.loadedRide?.id,
-                    pocketModeEnabled: settings.pocketModeEnabled,
                     onAppearAction: {
                         recorder.requestPermissions()
-                        recorder.motion.highPassEnabled = settings.pocketModeEnabled
+                        // When the view appears with an idle recorder, sync the per-ride
+                        // pocket toggle to the user's default.  Skip if we're mid-recording
+                        // so a tab-switch doesn't clobber a value the user explicitly set.
+                        if recorder.state == .idle {
+                            pocketEnabled = settings.pocketModeEnabled
+                            recorder.motion.highPassEnabled = pocketEnabled
+                        }
                         setIdleTimer(disabled: recorder.state == .recording)
                     },
-                    onStateChange: { setIdleTimer(disabled: $0 == .recording) },
+                    onStateChange: { newState in
+                        setIdleTimer(disabled: newState == .recording)
+                        // After a ride ends (finished → idle via recorder.reset()), snap
+                        // the toggle back to whatever the current default is — so the next
+                        // ride starts fresh from Settings rather than carrying the last
+                        // override forward.
+                        if newState == .idle {
+                            pocketEnabled = settings.pocketModeEnabled
+                            recorder.motion.highPassEnabled = pocketEnabled
+                        }
+                    },
                     onLoadedChange: { scrubIndex = 0; zoom = 1.0 },
-                    onPocketModeChange: { recorder.motion.highPassEnabled = $0 },
                     onDisappearAction: {
                         if recorder.state != .recording {
                             setIdleTimer(disabled: false)
@@ -184,10 +205,49 @@ struct RideView: View {
             )
             .padding(.horizontal)
 
+            pocketToggleRow
+                .padding(.horizontal)
+
             controlButtons
                 .padding(.horizontal)
                 .padding(.bottom, 8)
         }
+    }
+
+    /// Per-ride pocket-mode override.  The toggle binding propagates the new value
+    /// to the live motion filter immediately, so the seismograph reflects the
+    /// change without restarting recording.  Default is reset to
+    /// `settings.pocketModeEnabled` whenever the recorder returns to .idle.
+    private var pocketToggleRow: some View {
+        Toggle(isOn: pocketBinding) {
+            HStack(spacing: 10) {
+                Image(systemName: "wave.3.right.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(pocketEnabled ? Color.accentColor : Color.secondary)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Pocket mode")
+                        .font(.callout.weight(.medium))
+                    Text("Filter pedaling motion when the phone is on your body")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var pocketBinding: Binding<Bool> {
+        Binding(
+            get: { pocketEnabled },
+            set: { newValue in
+                pocketEnabled = newValue
+                recorder.motion.highPassEnabled = newValue
+            }
+        )
     }
 
     private var controlButtons: some View {
@@ -444,11 +504,9 @@ private struct RideViewNavModifier<Toolbar: ToolbarContent>: ViewModifier {
 private struct RideViewLifecycleModifier: ViewModifier {
     let recorder: RideRecorder
     let loadedId: UUID?
-    let pocketModeEnabled: Bool
     let onAppearAction: () -> Void
     let onStateChange: (RideRecorder.State) -> Void
     let onLoadedChange: () -> Void
-    let onPocketModeChange: (Bool) -> Void
     let onDisappearAction: () -> Void
 
     func body(content: Content) -> some View {
@@ -456,7 +514,6 @@ private struct RideViewLifecycleModifier: ViewModifier {
             .onAppear(perform: onAppearAction)
             .onChange(of: recorder.state) { _, newState in onStateChange(newState) }
             .onChange(of: loadedId) { _, _ in onLoadedChange() }
-            .onChange(of: pocketModeEnabled) { _, newValue in onPocketModeChange(newValue) }
             .onDisappear(perform: onDisappearAction)
     }
 }
