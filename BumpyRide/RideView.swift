@@ -38,6 +38,11 @@ struct RideView: View {
     /// onto the saved Ride — that's snapshotted at `recorder.start()` time.
     @State private var pocketEnabled: Bool = false
 
+    /// Editable copy of the just-recorded ride's pocketMode for the save sheet —
+    /// gives the user a last chance to correct a forgotten toggle flip before the
+    /// ride is committed.  Primed from `recorder.stop()`'s returned Ride.
+    @State private var pendingPocketMode: Bool = false
+
     private func setIdleTimer(disabled: Bool) {
         UIApplication.shared.isIdleTimerDisabled = disabled
     }
@@ -123,6 +128,23 @@ struct RideView: View {
         appState.loadedRide = ride
     }
 
+    /// Binding for the toolbar's Recording mode submenu picker.  Reading returns the
+    /// loaded ride's current `pocketMode` (including `nil` for legacy untagged rides,
+    /// which means no Picker option is checked).  Writing updates the ride in place
+    /// and re-saves — which fans out to the sync queue (re-uploads with new tag) and
+    /// the calibration store (recomputes with the corrected mode bucket).
+    private var pocketModeBinding: Binding<Bool?> {
+        Binding(
+            get: { appState.loadedRide?.pocketMode },
+            set: { newValue in
+                guard let new = newValue, var ride = appState.loadedRide, ride.pocketMode != new else { return }
+                ride.pocketMode = new
+                store.save(ride)
+                appState.loadedRide = ride
+            }
+        )
+    }
+
     private func commitDelete() {
         if let ride = appState.loadedRide {
             store.delete(ride)
@@ -154,6 +176,13 @@ struct RideView: View {
                         renameText = appState.loadedRide?.title ?? ""
                         showingRenameAlert = true
                     } label: { Label("Rename", systemImage: "pencil") }
+
+                    Picker(selection: pocketModeBinding) {
+                        Text("Mounted").tag(Bool?.some(false))
+                        Text("Pocket").tag(Bool?.some(true))
+                    } label: {
+                        Label("Recording mode", systemImage: "wave.3.right.circle")
+                    }
 
                     Button {
                         showingEditSheet = true
@@ -267,6 +296,7 @@ struct RideView: View {
                     if let ride = recorder.stop() {
                         pendingRide = ride
                         editableTitle = ride.title
+                        pendingPocketMode = ride.pocketMode ?? false
                         showingSaveSheet = true
                     } else {
                         recorder.reset()
@@ -433,6 +463,22 @@ struct RideView: View {
                     TextField("Ride title", text: $editableTitle)
                         .textInputAutocapitalization(.sentences)
                 }
+
+                Section {
+                    Toggle(isOn: $pendingPocketMode) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Recorded in pocket mode")
+                            Text("Was the phone on your body during this ride? Flip if you forgot to set the toggle before starting.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Text("Sensing")
+                } footer: {
+                    Text("You can also edit this from the saved ride's menu later.")
+                }
+
                 if let ride = pendingRide {
                     Section("Summary") {
                         LabeledContent("Distance", value: Formatters.distance(ride.distanceMeters))
@@ -457,6 +503,7 @@ struct RideView: View {
                             ride.title = editableTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                 ? Ride.defaultTitle(for: ride.startedAt)
                                 : editableTitle
+                            ride.pocketMode = pendingPocketMode
                             store.save(ride)
                             appState.loadedRide = ride
                         }
