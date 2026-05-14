@@ -27,29 +27,47 @@ final class BumpMapStore {
     }
 
     /// Rebuild the grid from the given rides, unless the input hasn't changed.
-    func rebuildIfNeeded(from rides: [Ride]) {
-        let sig = Self.signature(rides)
+    ///
+    /// `calibration` lets the caller correct for pocket-mode systematic damping —
+    /// pocket-tagged samples get multiplied by `calibration.pocketGain` before they
+    /// enter the grid.  Untagged and explicitly-mounted samples flow through
+    /// unchanged.  The calibration value is included in the cache-busting signature
+    /// so a recalibration after new overlapping data triggers a rebuild.
+    func rebuildIfNeeded(
+        from rides: [Ride],
+        calibration: CalibrationStore.PocketCalibration = .init()
+    ) {
+        let sig = Self.signature(rides, calibration: calibration)
         guard sig != lastSignature else { return }
         lastSignature = sig
 
+        let pocketGain = calibration.pocketGain
+        let useCalibration = calibration.confidence >= CalibrationStore.minOverlappingCells
+
         var g = BumpGrid()
         for r in rides {
+            let gain = (useCalibration && r.pocketMode == true) ? pocketGain : 1.0
             for p in r.points {
-                g.add(lat: p.latitude, lon: p.longitude, bumpiness: p.bumpiness)
+                g.add(lat: p.latitude, lon: p.longitude, bumpiness: p.bumpiness * gain)
             }
         }
         grid = g
         dataVersion &+= 1
     }
 
-    private static func signature(_ rides: [Ride]) -> String {
+    private static func signature(_ rides: [Ride], calibration: CalibrationStore.PocketCalibration) -> String {
         // Ride id + point count is enough — editing trims points, which changes count.
+        // Calibration gain rounded to 4 decimals so trivial recomputes don't churn.
         var parts: [String] = []
-        parts.reserveCapacity(rides.count)
+        parts.reserveCapacity(rides.count + 1)
         for r in rides {
             parts.append("\(r.id.uuidString):\(r.points.count)")
         }
         parts.sort()
+        let k = (calibration.confidence >= CalibrationStore.minOverlappingCells)
+            ? String(format: "%.4f", calibration.pocketGain)
+            : "1"
+        parts.append("k=\(k)")
         return parts.joined(separator: "|")
     }
 }

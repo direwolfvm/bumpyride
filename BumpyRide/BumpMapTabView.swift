@@ -13,6 +13,7 @@ struct BumpMapTabView: View {
     @Bindable var store: RideStore
     @Bindable var bumpMap: BumpMapStore
     @Bindable var settings: AppSettings
+    @Bindable var calibration: CalibrationStore
 
     var body: some View {
         NavigationStack {
@@ -33,13 +34,16 @@ struct BumpMapTabView: View {
             .navigationTitle("Bump Map")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
-                bumpMap.rebuildIfNeeded(from: filteredRides)
+                bumpMap.rebuildIfNeeded(from: filteredRides, calibration: calibration.calibration)
             }
             .onChange(of: store.rides) { _, _ in
-                bumpMap.rebuildIfNeeded(from: filteredRides)
+                bumpMap.rebuildIfNeeded(from: filteredRides, calibration: calibration.calibration)
             }
             .onChange(of: settings.bumpMapFilter) { _, _ in
-                bumpMap.rebuildIfNeeded(from: filteredRides)
+                bumpMap.rebuildIfNeeded(from: filteredRides, calibration: calibration.calibration)
+            }
+            .onChange(of: calibration.calibration) { _, _ in
+                bumpMap.rebuildIfNeeded(from: filteredRides, calibration: calibration.calibration)
             }
         }
     }

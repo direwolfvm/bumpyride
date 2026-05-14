@@ -9,6 +9,7 @@ struct SettingsView: View {
     @Bindable var webAccount: WebAccount
     @Bindable var syncCoordinator: SyncCoordinator
     @Bindable var syncQueue: SyncQueue
+    @Bindable var calibration: CalibrationStore
 
     var body: some View {
         NavigationStack {
@@ -58,10 +59,11 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    calibrationStatusRow
                 } header: {
                     Text("Sensing")
                 } footer: {
-                    Text("Pocket mode applies a 3 Hz high-pass to the vertical-acceleration channel so the rider's pedaling cadence (≈1–2 Hz) doesn't register as bumpiness. Leave it off as the default for handlebar / frame mounts; toggle it on per ride when you pocket the phone.")
+                    Text("Pocket mode applies a 3 Hz high-pass to the vertical-acceleration channel so the rider's pedaling cadence (≈1–2 Hz) doesn't register as bumpiness. Leave it off as the default for handlebar / frame mounts; toggle it on per ride when you pocket the phone.\n\nCalibration is opportunistic: every time you save a ride, the app looks for cells you've ridden in both modes and derives a per-rider correction. The Bump Map applies it automatically once enough overlap accumulates.")
                 }
 
                 Section {
@@ -119,6 +121,35 @@ struct SettingsView: View {
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.secondary)
         }
+    }
+
+    @ViewBuilder
+    private var calibrationStatusRow: some View {
+        HStack(spacing: 12) {
+            Image(systemName: calibration.hasCalibration ? "checkmark.seal.fill" : "hourglass")
+                .font(.title3)
+                .foregroundStyle(calibration.hasCalibration ? Color.green : Color.secondary)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Pocket calibration")
+                    .font(.body)
+                Text(calibrationDetailText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var calibrationDetailText: String {
+        if calibration.hasCalibration {
+            return String(
+                format: "Pocket × %.2f · %d overlapping cells",
+                calibration.calibration.pocketGain,
+                calibration.calibration.confidence
+            )
+        }
+        return "Not enough overlap yet — needs ≥ \(CalibrationStore.minOverlappingCells) cells ridden in both modes."
     }
 
     private var webAccountRow: some View {

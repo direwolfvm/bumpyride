@@ -153,7 +153,8 @@ BumpyRide/
 ├── docs/
 │   ├── SCHEMA.md                     # canonical ride wire-format spec
 │   ├── sample-ride.json              # parser fixture
-│   └── WEB_PAIRING.md                # /ios-pair contract for the web app
+│   ├── WEB_PAIRING.md                # /ios-pair contract for the web app
+│   └── CALIBRATION.md                # /api/me/calibration contract
 └── README.md
 ```
 
