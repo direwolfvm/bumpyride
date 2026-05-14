@@ -31,22 +31,15 @@ struct RideView: View {
     @State private var exportAlertMessage: String = ""
     @State private var isExporting: Bool = false
 
-    /// Per-ride pocket-mode toggle.  Initial value is `false` (off) and resets to
-    /// `false` after each ride ends; user flips it explicitly per ride from the
-    /// Ride tab's toggle row.  Mid-ride flipping changes the live filter (and
-    /// seismograph readout) but doesn't change the `pocketMode` tag stamped onto
-    /// the saved Ride — that's snapshotted at `recorder.start()` time.
-    @State private var pocketEnabled: Bool = false
-
-    /// Editable copy of the just-recorded ride's pocketMode for the save sheet —
-    /// gives the user a last chance to correct a forgotten toggle flip before the
-    /// ride is committed.  Primed from `recorder.stop()`'s returned Ride.
+    /// Pocket-mode value the save sheet will commit.  Primed from
+    /// `MountStyleDetector`'s verdict on Stop; user can override via the toggle in
+    /// the Sensing section before tapping Save.
     @State private var pendingPocketMode: Bool = false
 
-    /// Result of running `MountStyleDetector` on the just-recorded ride.  Drives
-    /// the "this looks pocketed" suggestion banner in the save sheet.  `nil` when
-    /// detection couldn't run (pocket-tagged ride with HPF-stripped data, or too
-    /// little signal accumulated).
+    /// Auto-detect result for the just-recorded ride.  Surfaced as a small caption
+    /// on the Sensing section so the user can see what the detector concluded
+    /// (and decide whether to override).  `nil` when detection couldn't run —
+    /// extremely short rides or accelWindow data missing entirely.
     @State private var pendingMountDetection: MountStyleDetector.Result?
 
     private func setIdleTimer(disabled: Bool) {
@@ -62,25 +55,10 @@ struct RideView: View {
                     loadedId: appState.loadedRide?.id,
                     onAppearAction: {
                         recorder.requestPermissions()
-                        // Re-sync the motion filter to the per-ride toggle on appear,
-                        // so a tab return doesn't leave them out of step.  Don't touch
-                        // `pocketEnabled` itself — a value the user set before switching
-                        // tabs should persist.
-                        if recorder.state == .idle {
-                            recorder.motion.highPassEnabled = pocketEnabled
-                        }
                         setIdleTimer(disabled: recorder.state == .recording)
                     },
                     onStateChange: { newState in
                         setIdleTimer(disabled: newState == .recording)
-                        // After a ride ends (finished → idle via recorder.reset()), snap
-                        // the toggle back to off so the next ride starts fresh.  Users
-                        // who pocket regularly will flip it again — that's the cost of
-                        // not having a stored default, but auto-detect catches mistakes.
-                        if newState == .idle {
-                            pocketEnabled = false
-                            recorder.motion.highPassEnabled = false
-                        }
                     },
                     onLoadedChange: { scrubIndex = 0; zoom = 1.0 },
                     onDisappearAction: {
@@ -136,15 +114,25 @@ struct RideView: View {
 
     /// Binding for the toolbar's Recording mode submenu picker.  Reading returns the
     /// loaded ride's current `pocketMode` (including `nil` for legacy untagged rides,
-    /// which means no Picker option is checked).  Writing updates the ride in place
-    /// and re-saves — which fans out to the sync queue (re-uploads with new tag) and
-    /// the calibration store (recomputes with the corrected mode bucket).
+    /// which means no Picker option is checked).  Writing updates the ride in place,
+    /// recomputes bumpiness through the appropriate filter (for v2 rides where the
+    /// raw accelWindow is preserved), and re-saves — which fans out to the sync
+    /// queue (re-uploads with new tag + recomputed values) and the calibration store
+    /// (recomputes with the corrected mode bucket).
     private var pocketModeBinding: Binding<Bool?> {
         Binding(
             get: { appState.loadedRide?.pocketMode },
             set: { newValue in
                 guard let new = newValue, var ride = appState.loadedRide, ride.pocketMode != new else { return }
                 ride.pocketMode = new
+                // For v2 rides we have the raw accelWindow on disk, so we can
+                // recompute bumpiness in either direction without information loss.
+                // For v1 rides the accelWindow was already filtered when the
+                // original tag was pocket — we can't undo that, so just flip the
+                // tag and accept the slight inconsistency.
+                if ride.schemaVersion >= 2 {
+                    ride = new ? ride.reprocessedWithPocketHPF() : ride.reprocessedAsMounted()
+                }
                 store.save(ride)
                 appState.loadedRide = ride
             }
@@ -240,49 +228,10 @@ struct RideView: View {
             )
             .padding(.horizontal)
 
-            pocketToggleRow
-                .padding(.horizontal)
-
             controlButtons
                 .padding(.horizontal)
                 .padding(.bottom, 8)
         }
-    }
-
-    /// Per-ride pocket-mode toggle.  The binding propagates the new value to the
-    /// live motion filter immediately, so the seismograph reflects the change
-    /// without restarting recording.  Resets to `false` whenever the recorder
-    /// returns to .idle (after a ride ends).
-    private var pocketToggleRow: some View {
-        Toggle(isOn: pocketBinding) {
-            HStack(spacing: 10) {
-                Image(systemName: "wave.3.right.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(pocketEnabled ? Color.accentColor : Color.secondary)
-                    .frame(width: 28)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Pocket mode")
-                        .font(.callout.weight(.medium))
-                    Text("Filter pedaling motion when the phone is on your body")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 12)
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-
-    private var pocketBinding: Binding<Bool> {
-        Binding(
-            get: { pocketEnabled },
-            set: { newValue in
-                pocketEnabled = newValue
-                recorder.motion.highPassEnabled = newValue
-            }
-        )
     }
 
     private var controlButtons: some View {
@@ -302,12 +251,12 @@ struct RideView: View {
                     if let ride = recorder.stop() {
                         pendingRide = ride
                         editableTitle = ride.title
-                        pendingPocketMode = ride.pocketMode ?? false
-                        // Detection runs synchronously on the in-memory ride; for
-                        // typical ride lengths it's sub-millisecond.  Result is nil
-                        // for pocket-tagged rides (we can't recover stripped cadence)
-                        // and short rides without enough signal.
-                        pendingMountDetection = MountStyleDetector.analyze(ride)
+                        // Run the detector (sub-millisecond on typical rides) and use
+                        // its verdict as the default for the save-sheet toggle.  User
+                        // can flip if they disagree.
+                        let detection = MountStyleDetector.analyze(ride)
+                        pendingMountDetection = detection
+                        pendingPocketMode = (detection?.verdict == .likelyPocket)
                         showingSaveSheet = true
                     } else {
                         recorder.reset()
@@ -465,63 +414,22 @@ struct RideView: View {
         recorder.points.map(\.bumpiness).max() ?? recorder.currentBumpiness
     }
 
-    // MARK: Save sheet — mount-style suggestion
-
-    /// Show the suggestion banner only when the signal-derived verdict disagrees
-    /// with the user's current `pendingPocketMode` choice.  Because the detector
-    /// can't analyze pocket-tagged rides (HPF strips the cadence band), today the
-    /// only direction we suggest is "looks pocketed but you have it as Mounted."
-    private var shouldShowMountSuggestion: Bool {
-        guard let detection = pendingMountDetection else { return false }
-        switch detection.verdict {
-        case .likelyPocket where !pendingPocketMode:
-            return true
-        case .likelyMounted where pendingPocketMode:
-            // Can't actually happen today (detector returns nil for pocket-tagged
-            // rides), but kept for symmetry if we ever extend detection upstream.
-            return true
-        default:
-            return false
-        }
-    }
-
-    @ViewBuilder
-    private var mountSuggestionContent: some View {
-        if let detection = pendingMountDetection {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.title3)
-                    .foregroundStyle(.orange)
-                    .frame(width: 28)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(detection.verdict == .likelyPocket
-                         ? "This looks like a pocket recording"
-                         : "This looks like a handlebar recording")
-                        .font(.callout.weight(.semibold))
-                    Text(detection.verdict == .likelyPocket
-                         ? "The signal has strong 1–3 Hz content typical of body-mounted recordings. Was the phone in your pocket?"
-                         : "The signal looks like a fixed mount on the bike. Was the phone actually on the handlebar?")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .padding(.vertical, 4)
-
-            Button {
-                pendingPocketMode = (detection.verdict == .likelyPocket)
-            } label: {
-                Label(
-                    detection.verdict == .likelyPocket
-                        ? "Switch to Pocket mode"
-                        : "Switch to Mounted",
-                    systemImage: "wave.3.right.circle.fill"
-                )
-            }
-        }
-    }
-
     // MARK: Save sheet
+
+    /// Caption shown under the Sensing toggle reflecting what `MountStyleDetector`
+    /// concluded.  The toggle's initial state was primed from this verdict, so the
+    /// caption explains *why* the toggle is in its current position.
+    private var detectionCaption: String? {
+        guard let detection = pendingMountDetection else { return nil }
+        switch detection.verdict {
+        case .likelyPocket:
+            return "Auto-detected as pocket mode based on this ride's vibration signature."
+        case .likelyMounted:
+            return "Auto-detected as mounted based on this ride's vibration signature."
+        case .ambiguous:
+            return "Vibration signature was inconclusive — defaulting to mounted. Flip if needed."
+        }
+    }
 
     private var saveSheet: some View {
         NavigationStack {
@@ -531,29 +439,26 @@ struct RideView: View {
                         .textInputAutocapitalization(.sentences)
                 }
 
-                if shouldShowMountSuggestion {
-                    Section {
-                        mountSuggestionContent
-                    } header: {
-                        Text("Heads up")
-                    } footer: {
-                        Text("Detected by checking the 1–3 Hz cadence band relative to the 3+ Hz bump band in this ride's accelerometer data. Strong cadence content is a body-mounted signature.")
-                    }
-                }
-
                 Section {
                     Toggle(isOn: $pendingPocketMode) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Recorded in pocket mode")
-                            Text("Was the phone on your body during this ride? Flip if you forgot to set the toggle before starting.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            if let caption = detectionCaption {
+                                Text(caption)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            } else {
+                                Text("Was the phone on your body during this ride?")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                 } header: {
                     Text("Sensing")
                 } footer: {
-                    Text("You can also edit this from the saved ride's menu later.")
+                    Text("BumpyRide reads the 1–3 Hz cadence band against the 3+ Hz bump band and tags the ride accordingly. If pocket: the saved bumpiness gets recomputed through a 3 Hz high-pass before storage. You can edit the tag from the saved ride's menu later.")
                 }
 
                 if let ride = pendingRide {
@@ -581,6 +486,13 @@ struct RideView: View {
                                 ? Ride.defaultTitle(for: ride.startedAt)
                                 : editableTitle
                             ride.pocketMode = pendingPocketMode
+                            // v2 rides are recorded raw — if this is pocket-tagged,
+                            // re-run each point's accelWindow through the HPF and
+                            // recompute bumpiness so the saved values match the
+                            // "pocket-mode RMS" semantic (no cadence noise).
+                            if pendingPocketMode {
+                                ride = ride.reprocessedWithPocketHPF()
+                            }
                             store.save(ride)
                             appState.loadedRide = ride
                         }

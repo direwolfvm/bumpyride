@@ -4,8 +4,12 @@ import Observation
 
 /// The recording coordinator: owns a `LocationManager` and `MotionManager`, ingests
 /// each location update by stamping it with the current bumpiness and accelerometer
-/// window, and on `stop()` returns a `Ride` ready to be saved.  Tracks the Pocket
-/// Mode flag at start time so the produced ride is correctly tagged.
+/// window, and on `stop()` returns a `Ride` ready to be saved.
+///
+/// The returned ride has `pocketMode = nil` ("undetermined") and raw `bumpiness` /
+/// raw `accelWindow` values.  `MountStyleDetector` decides pocketMode at save time,
+/// and if pocket: `Ride.reprocessedWithPocketHPF()` retroactively recomputes
+/// bumpiness through the 3 Hz HPF before the ride is persisted.
 @Observable
 final class RideRecorder {
     enum State { case idle, recording, finished }
@@ -17,9 +21,6 @@ final class RideRecorder {
     private(set) var points: [RidePoint] = []
     private(set) var startedAt: Date?
     private(set) var endedAt: Date?
-    /// Snapshot of `motion.highPassEnabled` at ride start time — gets stamped onto the
-    /// saved Ride so the bump map can later filter by sensing mode.
-    private var startedInPocketMode: Bool = false
 
     var liveSamples: [Float] { motion.latestSamples }
     var currentBumpiness: Double { motion.currentBumpiness }
@@ -40,7 +41,6 @@ final class RideRecorder {
         points = []
         startedAt = Date()
         endedAt = nil
-        startedInPocketMode = motion.highPassEnabled
         state = .recording
         motion.start()
         location.startUpdating()
@@ -53,12 +53,15 @@ final class RideRecorder {
         endedAt = Date()
         state = .finished
         guard let start = startedAt, let end = endedAt, !points.isEmpty else { return nil }
+        // pocketMode is left nil here — the save flow runs `MountStyleDetector` and
+        // decides.  Per Option C the recording is always raw; the mode label is a
+        // post-hoc characterization, not a pre-flight setting.
         return Ride(
             title: Ride.defaultTitle(for: start),
             startedAt: start,
             endedAt: end,
             points: points,
-            pocketMode: startedInPocketMode
+            pocketMode: nil
         )
     }
 

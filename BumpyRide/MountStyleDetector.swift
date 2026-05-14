@@ -2,7 +2,7 @@ import Foundation
 
 /// Heuristic detector that decides whether a saved Ride's vibration signature looks
 /// like a pocket recording vs. a handlebar/frame recording.  Used at save time to
-/// catch users who forgot to flip the per-ride pocket toggle.
+/// auto-tag the recording, and on demand to flag mistagged saved rides.
 ///
 /// **The physics:** pedaling at 60–110 RPM produces a 1.0–1.83 Hz vertical body bob
 /// that dominates a phone in a pocket but is barely visible on a fixed bike mount
@@ -13,12 +13,11 @@ import Foundation
 ///   - **Mounted**: ratio is low (≪ 1) — most of the signal is in the bump band.
 ///   - **Pocket**:  ratio is high (≳ 1) — cadence body bob dominates.
 ///
-/// **The critical asymmetry:** when `pocketMode` was true at recording time, the 3 Hz
-/// HPF has already stripped the cadence content from the stored `accelWindow`s.  We
-/// literally cannot detect cadence in those windows — the signal is gone.  So this
-/// detector only runs on rides with `pocketMode != true`, and it can only suggest
-/// "this looks pocketed" (the more harmful failure mode anyway — see notes on
-/// calibration bias in the design discussion).
+/// **schemaVersion sensitivity:** on v2 rides the `accelWindow` is always raw, so
+/// detection is reliable in both directions.  On v1 rides where `pocketMode == true`,
+/// the cadence content was filtered out at recording time and detection would
+/// incorrectly read as mounted — callers should gate on `schemaVersion >= 2` or
+/// `pocketMode != true` before using the verdict.
 struct MountStyleDetector {
     enum Verdict: Equatable {
         case likelyMounted
@@ -46,12 +45,13 @@ struct MountStyleDetector {
     static let likelyMountedThreshold: Double = 0.2
 
     /// Run the detector on a saved Ride.  Returns `nil` when detection isn't
-    /// possible — pocket-tagged rides (HPF already applied) and rides with too
-    /// little stored `accelWindow` data.
+    /// possible — too little stored `accelWindow` data, or a `schemaVersion 1` ride
+    /// with `pocketMode == true` (HPF stripped the cadence band at record time).
     static func analyze(_ ride: Ride) -> Result? {
-        // Pocket-tagged rides have the cadence band already stripped; we can't
-        // tell pocket from mounted in that case.
-        if ride.pocketMode == true { return nil }
+        // v1 pocket-tagged rides have the cadence band already stripped; we can't
+        // tell pocket from mounted in that case.  v2 rides always have raw
+        // accelWindow so detection works regardless of the current tag.
+        if ride.pocketMode == true, ride.schemaVersion < 2 { return nil }
         guard !ride.points.isEmpty else { return nil }
 
         let sampleRateHz: Double = 50.0

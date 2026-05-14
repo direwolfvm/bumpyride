@@ -20,9 +20,23 @@ The Swift source of truth lives in [`BumpyRide/Models.swift`](../BumpyRide/Model
 
 ## Versioning
 
-Each `Ride` carries a `schemaVersion` integer. Today the only emitted value is `1`. Records written before this field existed (i.e. older on-disk ride files) decode as `1` — that's the format they were emitted in.
+Each `Ride` carries a `schemaVersion` integer. The current emitted value is `2`. Records written before the field existed decode as `1` via the iOS `init(from:)` shim.
 
-Future breaking changes to the JSON shape will bump `schemaVersion` to `2` and add a migration path. Old iOS clients will continue to emit `schemaVersion: 1` until they are updated, so consumers must be prepared to accept both versions concurrently for some period after a bump.
+Consumers should be prepared to accept **both `1` and `2`** concurrently — old iOS installs that haven't updated yet continue to emit `1`, and edited / re-uploaded historical rides still carry their original version.
+
+### What's different between v1 and v2
+
+The semantics of `accelWindow` and `bumpiness` differ depending on the recording-time pocket-mode setting:
+
+| Version | `accelWindow` content | `bumpiness` |
+|---|---|---|
+| `1`, `pocketMode == true` | post-3 Hz-HPF vertical samples (cadence band stripped at record time) | RMS of the last 1 s of the same post-HPF signal |
+| `1`, `pocketMode != true` | raw vertical samples | RMS of the last 1 s of raw |
+| `2`, **any pocketMode** | **always raw vertical samples** | for `pocketMode == true`: RMS of the same window passed through a 3 Hz HPF at save time; for `pocketMode != true`: RMS of the raw window |
+
+So in v2, the `accelWindow` always represents what the sensor actually saw, regardless of the user's pocket-mode tag, and `bumpiness` is a derived value that consumes the appropriate slice of frequency spectrum based on the tag. This lets the user retag a ride later in either direction without information loss — re-running `Ride.reprocessedWithPocketHPF()` or `Ride.reprocessedAsMounted()` on iOS recomputes `bumpiness` correctly from the preserved raw window.
+
+For aggregation on the server side, this distinction mostly doesn't matter: the server reads `bumpiness` directly and applies the per-user `pocketGain` from `/api/me/calibration`. The `accelWindow` value is stored but not currently used in any server-side calculation.
 
 Non-breaking additions (adding a new optional field, adding a new enum case) do NOT bump `schemaVersion`. Consumers should be tolerant of fields they don't recognize.
 
@@ -32,15 +46,15 @@ The top-level object.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| `schemaVersion` | integer | no¹ | Wire-format version. Currently `1`. Missing → treat as `1`. |
+| `schemaVersion` | integer | no¹ | Wire-format version. New rides emit `2`; legacy on-disk records are `1`. Missing → treat as `1`. |
 | `id` | UUID string | yes | Stable identity. Persists across edits (trim/split changes the second half's id). |
 | `title` | string | yes | Human-readable. Default for new rides: `"Ride <date>"`. User-editable. |
 | `startedAt` | ISO-8601 date | yes | When recording began (or, after a trim, the timestamp of the first kept point). |
 | `endedAt` | ISO-8601 date | yes | When recording ended. `endedAt >= startedAt`. |
 | `points` | array of `RidePoint` | yes | Ordered chronologically. May be empty for a discarded recording, but typically ≥1 element. |
-| `pocketMode` | boolean | no² | `true` = recorded with the 3 Hz body-bob HPF on; `false` = filter off (handlebar/frame mount); `null`/missing = recorded before the field existed (unknown sensing mode). |
+| `pocketMode` | boolean | no² | `true` = phone was on the rider's body; `false` = phone was on a fixed bike mount; `null`/missing = mode not determined (legacy or undecided). Set at save time by `MountStyleDetector`, user-overridable. See the "Versioning" section for what this affects in `accelWindow` and `bumpiness`. |
 
-¹ Default: `1`. ² Default: `null` (unknown).
+¹ Default: `1` for records lacking the field. ² Default: `null` (unknown).
 
 ### Derived values (NOT in the wire format)
 
@@ -69,12 +83,15 @@ One entry per emitted sample. The iOS app emits a sample each time CoreLocation 
 ### `accelWindow` encoding
 
 - **Units:** g, signed (positive = upward in world frame).
-- **Source:** scalar projection of `CMDeviceMotion.userAcceleration` onto the gravity unit vector, optionally then passed through the 3 Hz Butterworth HPF when `pocketMode == true`.
+- **Source:** scalar projection of `CMDeviceMotion.userAcceleration` onto the gravity unit vector.
+  - In `schemaVersion 2`: **always raw** — no filtering at record time.
+  - In `schemaVersion 1` with `pocketMode == true`: the raw signal was passed through a 3 Hz Butterworth HPF before storage.
+  - In `schemaVersion 1` with `pocketMode != true`: raw (same as v2).
 - **Order:** chronological, oldest-first / most-recent-last.
 - **Length:** typically `250` (5 s × 50 Hz sample rate). May be shorter (`< 250`) at the very start of a ride, before the ring buffer has filled. Server consumers should not assume a fixed length.
 - **Values:** finite numbers, typically in `[-1.5, 1.5]`. Outliers may exceed this — do not clamp on ingest.
 
-This array is intentionally redundant with `bumpiness` (RMS of the trailing 1 s). It exists so playback can redraw the seismograph waveform at any scrubbed point in a saved ride.
+This array is intentionally redundant with `bumpiness`. It exists so playback can redraw the seismograph waveform at any scrubbed point in a saved ride, and so the iOS app can retroactively recompute `bumpiness` if the user retags the ride (in v2, the raw signal is preserved, so retag in either direction is lossless).
 
 ## Sample
 

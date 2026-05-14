@@ -51,10 +51,17 @@ struct Ride: Codable, Identifiable, Hashable {
     /// `nil` for rides recorded before the field existed.  Trim/split ops preserve the
     /// tag because they copy the whole struct (`var copy = self`).
     var pocketMode: Bool?
-    /// Wire-format schema version.  Currently always 1.  Records on disk that predate
-    /// the version field decode as `1` via the custom `init(from:)`.  When a future
-    /// version makes a breaking change to the JSON shape, bump this and add a migration
-    /// path in `init(from:)` that handles the older version.
+    /// Wire-format schema version.  Records on disk that predate the version field
+    /// decode as `1` via the custom `init(from:)`.
+    ///
+    /// `1` — `accelWindow` was post-filter when `pocketMode == true` (the high-pass
+    /// ran live during recording); raw otherwise.  `bumpiness` was RMS of the same.
+    ///
+    /// `2` — `accelWindow` is always raw vertical acceleration.  `bumpiness` is the
+    /// raw RMS at recording time, but is recomputed via `reprocessedWithPocketHPF()`
+    /// at save time / on retag when `pocketMode == true`, applying the HPF to the
+    /// raw window before taking RMS.  Lets us decide mode after the fact and retag
+    /// either direction without information loss.
     var schemaVersion: Int
 
     init(
@@ -64,7 +71,7 @@ struct Ride: Codable, Identifiable, Hashable {
         endedAt: Date,
         points: [RidePoint],
         pocketMode: Bool? = nil,
-        schemaVersion: Int = 1
+        schemaVersion: Int = 2
     ) {
         self.id = id
         self.title = title
@@ -152,5 +159,60 @@ struct Ride: Codable, Identifiable, Hashable {
         second.title = title + " (part 2)"
         first.title = title + " (part 1)"
         return (first, second)
+    }
+
+    /// Return a copy of this Ride with each point's `bumpiness` recomputed as the
+    /// RMS of the last 1 s of an HPF'd version of its `accelWindow`.  This is the
+    /// pocket-mode bumpiness — what the value would have been if the 3 Hz HPF had
+    /// run live during recording.
+    ///
+    /// Safe for **v2** rides where `accelWindow` is raw.  For **v1** rides where
+    /// `accelWindow` was already filtered at recording time (when `pocketMode` was
+    /// true), this re-filters already-filtered data and is a slight distortion —
+    /// callers should gate on `schemaVersion >= 2` before applying.
+    ///
+    /// Doesn't touch `accelWindow` itself, so the raw signal is preserved on disk
+    /// for any future re-tagging in either direction.
+    func reprocessedWithPocketHPF() -> Ride {
+        let sampleRateHz: Double = 50.0
+        let cutoffHz: Double = 3.0
+        let rmsTailSamples: Int = 50  // last 1 s — matches live computation in MotionManager
+
+        var copy = self
+        for i in copy.points.indices {
+            let window = copy.points[i].accelWindow
+            guard !window.isEmpty else { continue }
+            var filter = Biquad.butterworthHighPass(cutoffHz: cutoffHz, sampleRateHz: sampleRateHz)
+            var filtered: [Float] = []
+            filtered.reserveCapacity(window.count)
+            for s in window {
+                filtered.append(Float(filter.process(Double(s))))
+            }
+            let tail = filtered.suffix(rmsTailSamples)
+            var sumSq: Double = 0
+            for s in tail { sumSq += Double(s) * Double(s) }
+            let rms = sqrt(sumSq / Double(max(tail.count, 1)))
+            copy.points[i].bumpiness = rms
+        }
+        return copy
+    }
+
+    /// Inverse of `reprocessedWithPocketHPF` — recompute `bumpiness` as the raw RMS
+    /// of each `accelWindow` (no filtering).  Used when retagging a v2 ride from
+    /// pocket back to mounted.  No-op for v1 rides since their `accelWindow` was
+    /// already filtered (we can't undo that); callers should gate on `schemaVersion >= 2`.
+    func reprocessedAsMounted() -> Ride {
+        let rmsTailSamples: Int = 50
+        var copy = self
+        for i in copy.points.indices {
+            let window = copy.points[i].accelWindow
+            guard !window.isEmpty else { continue }
+            let tail = window.suffix(rmsTailSamples)
+            var sumSq: Double = 0
+            for s in tail { sumSq += Double(s) * Double(s) }
+            let rms = sqrt(sumSq / Double(max(tail.count, 1)))
+            copy.points[i].bumpiness = rms
+        }
+        return copy
     }
 }
