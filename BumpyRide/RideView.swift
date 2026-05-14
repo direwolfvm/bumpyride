@@ -43,6 +43,12 @@ struct RideView: View {
     /// ride is committed.  Primed from `recorder.stop()`'s returned Ride.
     @State private var pendingPocketMode: Bool = false
 
+    /// Result of running `MountStyleDetector` on the just-recorded ride.  Drives
+    /// the "this looks pocketed" suggestion banner in the save sheet.  `nil` when
+    /// detection couldn't run (pocket-tagged ride with HPF-stripped data, or too
+    /// little signal accumulated).
+    @State private var pendingMountDetection: MountStyleDetector.Result?
+
     private func setIdleTimer(disabled: Bool) {
         UIApplication.shared.isIdleTimerDisabled = disabled
     }
@@ -297,6 +303,11 @@ struct RideView: View {
                         pendingRide = ride
                         editableTitle = ride.title
                         pendingPocketMode = ride.pocketMode ?? false
+                        // Detection runs synchronously on the in-memory ride; for
+                        // typical ride lengths it's sub-millisecond.  Result is nil
+                        // for pocket-tagged rides (we can't recover stripped cadence)
+                        // and short rides without enough signal.
+                        pendingMountDetection = MountStyleDetector.analyze(ride)
                         showingSaveSheet = true
                     } else {
                         recorder.reset()
@@ -454,6 +465,62 @@ struct RideView: View {
         recorder.points.map(\.bumpiness).max() ?? recorder.currentBumpiness
     }
 
+    // MARK: Save sheet — mount-style suggestion
+
+    /// Show the suggestion banner only when the signal-derived verdict disagrees
+    /// with the user's current `pendingPocketMode` choice.  Because the detector
+    /// can't analyze pocket-tagged rides (HPF strips the cadence band), today the
+    /// only direction we suggest is "looks pocketed but you have it as Mounted."
+    private var shouldShowMountSuggestion: Bool {
+        guard let detection = pendingMountDetection else { return false }
+        switch detection.verdict {
+        case .likelyPocket where !pendingPocketMode:
+            return true
+        case .likelyMounted where pendingPocketMode:
+            // Can't actually happen today (detector returns nil for pocket-tagged
+            // rides), but kept for symmetry if we ever extend detection upstream.
+            return true
+        default:
+            return false
+        }
+    }
+
+    @ViewBuilder
+    private var mountSuggestionContent: some View {
+        if let detection = pendingMountDetection {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.orange)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(detection.verdict == .likelyPocket
+                         ? "This looks like a pocket recording"
+                         : "This looks like a handlebar recording")
+                        .font(.callout.weight(.semibold))
+                    Text(detection.verdict == .likelyPocket
+                         ? "The signal has strong 1–3 Hz content typical of body-mounted recordings. Was the phone in your pocket?"
+                         : "The signal looks like a fixed mount on the bike. Was the phone actually on the handlebar?")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.vertical, 4)
+
+            Button {
+                pendingPocketMode = (detection.verdict == .likelyPocket)
+            } label: {
+                Label(
+                    detection.verdict == .likelyPocket
+                        ? "Switch to Pocket mode"
+                        : "Switch to Mounted",
+                    systemImage: "wave.3.right.circle.fill"
+                )
+            }
+        }
+    }
+
     // MARK: Save sheet
 
     private var saveSheet: some View {
@@ -462,6 +529,16 @@ struct RideView: View {
                 Section("Title") {
                     TextField("Ride title", text: $editableTitle)
                         .textInputAutocapitalization(.sentences)
+                }
+
+                if shouldShowMountSuggestion {
+                    Section {
+                        mountSuggestionContent
+                    } header: {
+                        Text("Heads up")
+                    } footer: {
+                        Text("Detected by checking the 1–3 Hz cadence band relative to the 3+ Hz bump band in this ride's accelerometer data. Strong cadence content is a body-mounted signature.")
+                    }
                 }
 
                 Section {
