@@ -21,6 +21,13 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 
+	<!-- App Store export compliance: BumpyRide only uses standard iOS TLS/HTTPS
+	     for its sync transport — no custom or non-exempt cryptography.  Setting
+	     this to false qualifies for the standard exemption so App Store Connect
+	     stops asking on every upload. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>BumpyRide uses your location to map the route of your ride.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
