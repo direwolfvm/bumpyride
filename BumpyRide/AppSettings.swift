@@ -26,15 +26,18 @@ enum BumpMapModeFilter: String, CaseIterable, Hashable {
 }
 
 /// User-tunable settings persisted in `UserDefaults`: the bumpiness color thresholds
-/// (yellow / orange / red / purple breakpoints in g) and the Pocket Mode toggle.
+/// (yellow / orange / red / purple breakpoints in g) and the Bump Map mode filter.
 /// Provides `color(for:)` / `uiColor(for:)` helpers used everywhere bumpiness is shown.
+///
+/// Pocket mode is *not* configured here.  The per-ride toggle on the Ride tab is the
+/// only place that controls it — there's no global default, and auto-detect catches
+/// any mistagging at save time.
 @Observable
 final class AppSettings {
     private static let keyYellow = "bumpThresholdYellow"
     private static let keyOrange = "bumpThresholdOrange"
     private static let keyRed = "bumpThresholdRed"
     private static let keyPurple = "bumpThresholdPurple"
-    private static let keyPocketMode = "pocketModeEnabled"
     private static let keyBumpMapFilter = "bumpMapModeFilter"
 
     var yellowG: Double = 0.5 {
@@ -48,16 +51,6 @@ final class AppSettings {
     }
     var purpleG: Double = 2.0 {
         didSet { UserDefaults.standard.set(purpleG, forKey: Self.keyPurple) }
-    }
-
-    /// When the phone rides in a pocket (or anywhere on the rider's body), the rider's
-    /// pedaling cadence shows up as a 1–2 Hz oscillation in vertical acceleration.  This
-    /// toggle enables a 3 Hz Butterworth high-pass that suppresses that oscillation while
-    /// preserving the higher-frequency bump signal.  Today this is the *default* for new
-    /// rides — `RideView`'s per-ride toggle is the actual source-of-truth at recording
-    /// time and overrides this value for any specific ride.
-    var pocketModeEnabled: Bool = false {
-        didSet { UserDefaults.standard.set(pocketModeEnabled, forKey: Self.keyPocketMode) }
     }
 
     /// Persistent Bump Map filter.  Defaults to `.mountedOrUntagged` since pocket data
@@ -74,7 +67,6 @@ final class AppSettings {
         if let v = d.object(forKey: Self.keyOrange) as? Double { orangeG = v }
         if let v = d.object(forKey: Self.keyRed) as? Double { redG = v }
         if let v = d.object(forKey: Self.keyPurple) as? Double { purpleG = v }
-        if let v = d.object(forKey: Self.keyPocketMode) as? Bool { pocketModeEnabled = v }
         if let raw = d.string(forKey: Self.keyBumpMapFilter),
            let f = BumpMapModeFilter(rawValue: raw) {
             bumpMapFilter = f
@@ -86,7 +78,6 @@ final class AppSettings {
         orangeG = 1.0
         redG = 1.5
         purpleG = 2.0
-        pocketModeEnabled = false
         bumpMapFilter = .mountedOrUntagged
     }
 

@@ -31,11 +31,11 @@ struct RideView: View {
     @State private var exportAlertMessage: String = ""
     @State private var isExporting: Bool = false
 
-    /// Per-ride pocket-mode override.  Initialized from `settings.pocketModeEnabled`
-    /// when the view first appears with an idle recorder, and reset to the same
-    /// default after each ride ends.  Mid-ride toggling changes the live filter
-    /// (and seismograph readout) but doesn't change the `pocketMode` tag stamped
-    /// onto the saved Ride — that's snapshotted at `recorder.start()` time.
+    /// Per-ride pocket-mode toggle.  Initial value is `false` (off) and resets to
+    /// `false` after each ride ends; user flips it explicitly per ride from the
+    /// Ride tab's toggle row.  Mid-ride flipping changes the live filter (and
+    /// seismograph readout) but doesn't change the `pocketMode` tag stamped onto
+    /// the saved Ride — that's snapshotted at `recorder.start()` time.
     @State private var pocketEnabled: Bool = false
 
     /// Editable copy of the just-recorded ride's pocketMode for the save sheet —
@@ -62,11 +62,11 @@ struct RideView: View {
                     loadedId: appState.loadedRide?.id,
                     onAppearAction: {
                         recorder.requestPermissions()
-                        // When the view appears with an idle recorder, sync the per-ride
-                        // pocket toggle to the user's default.  Skip if we're mid-recording
-                        // so a tab-switch doesn't clobber a value the user explicitly set.
+                        // Re-sync the motion filter to the per-ride toggle on appear,
+                        // so a tab return doesn't leave them out of step.  Don't touch
+                        // `pocketEnabled` itself — a value the user set before switching
+                        // tabs should persist.
                         if recorder.state == .idle {
-                            pocketEnabled = settings.pocketModeEnabled
                             recorder.motion.highPassEnabled = pocketEnabled
                         }
                         setIdleTimer(disabled: recorder.state == .recording)
@@ -74,12 +74,12 @@ struct RideView: View {
                     onStateChange: { newState in
                         setIdleTimer(disabled: newState == .recording)
                         // After a ride ends (finished → idle via recorder.reset()), snap
-                        // the toggle back to whatever the current default is — so the next
-                        // ride starts fresh from Settings rather than carrying the last
-                        // override forward.
+                        // the toggle back to off so the next ride starts fresh.  Users
+                        // who pocket regularly will flip it again — that's the cost of
+                        // not having a stored default, but auto-detect catches mistakes.
                         if newState == .idle {
-                            pocketEnabled = settings.pocketModeEnabled
-                            recorder.motion.highPassEnabled = pocketEnabled
+                            pocketEnabled = false
+                            recorder.motion.highPassEnabled = false
                         }
                     },
                     onLoadedChange: { scrubIndex = 0; zoom = 1.0 },
@@ -249,10 +249,10 @@ struct RideView: View {
         }
     }
 
-    /// Per-ride pocket-mode override.  The toggle binding propagates the new value
-    /// to the live motion filter immediately, so the seismograph reflects the
-    /// change without restarting recording.  Default is reset to
-    /// `settings.pocketModeEnabled` whenever the recorder returns to .idle.
+    /// Per-ride pocket-mode toggle.  The binding propagates the new value to the
+    /// live motion filter immediately, so the seismograph reflects the change
+    /// without restarting recording.  Resets to `false` whenever the recorder
+    /// returns to .idle (after a ride ends).
     private var pocketToggleRow: some View {
         Toggle(isOn: pocketBinding) {
             HStack(spacing: 10) {

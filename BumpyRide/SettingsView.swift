@@ -51,19 +51,11 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Toggle(isOn: $settings.pocketModeEnabled) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Default pocket setting")
-                            Text("New rides start with this value. Override per ride from the Ride tab.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
                     calibrationStatusRow
                 } header: {
                     Text("Sensing")
                 } footer: {
-                    Text("Pocket mode applies a 3 Hz high-pass to the vertical-acceleration channel so the rider's pedaling cadence (≈1–2 Hz) doesn't register as bumpiness. Leave it off as the default for handlebar / frame mounts; toggle it on per ride when you pocket the phone.\n\nCalibration is opportunistic: every time you save a ride, the app looks for cells you've ridden in both modes and derives a per-rider correction. The Bump Map applies it automatically once enough overlap accumulates.")
+                    Text("Pocket mode applies a 3 Hz high-pass to the vertical-acceleration channel so the rider's pedaling cadence (≈1–2 Hz) doesn't register as bumpiness. Toggle it per ride from the Ride tab; auto-detect catches mistagged rides at save time.\n\nCalibration is opportunistic: every time you save a ride, the app looks for cells you've ridden in both modes and derives a per-rider correction. The Bump Map applies it automatically once enough overlap accumulates.")
                 }
 
                 Section {
