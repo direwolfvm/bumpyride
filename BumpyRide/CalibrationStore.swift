@@ -138,6 +138,40 @@ final class CalibrationStore {
         }
     }
 
+    // MARK: - Server sync
+
+    /// If the server has a calibration backed by more overlapping cells than ours,
+    /// adopt it.  This is the multi-device backfill path: a fresh install on an
+    /// already-paired account starts with `confidence = 0`, so the server's value
+    /// (set by another device) wins and bootstraps the new device.  When local has
+    /// more confidence (because the user has accumulated more data on this device),
+    /// the local value stays — our next push will update the server.
+    ///
+    /// Uses strict `>` so equal-confidence values keep local — avoids a thrash
+    /// between two devices that have identical overlap counts but slightly different
+    /// medians.
+    func applyRemoteIfBetter(_ remote: WebSyncClient.ServerCalibration) {
+        guard remote.confidence > calibration.confidence else { return }
+        let adopted = PocketCalibration(
+            pocketGain: remote.pocketGain,
+            confidence: remote.confidence,
+            lastComputed: remote.lastComputedAt
+        )
+        guard adopted != calibration else { return }
+        calibration = adopted
+        persist()
+    }
+
+    /// Snapshot the local calibration as the wire-format type — suitable for handing
+    /// to `WebAccount.setCalibration`.
+    func toServerCalibration() -> WebSyncClient.ServerCalibration {
+        WebSyncClient.ServerCalibration(
+            pocketGain: calibration.pocketGain,
+            confidence: calibration.confidence,
+            lastComputedAt: calibration.lastComputed
+        )
+    }
+
     // MARK: - Persistence
 
     private func load() {

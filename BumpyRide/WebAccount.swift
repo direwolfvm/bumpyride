@@ -138,6 +138,38 @@ final class WebAccount {
         }
     }
 
+    // MARK: - Pocket-mode calibration
+
+    /// Read the server's stored pocket-mode calibration.  Same 401-then-invalidate
+    /// semantics as `fetchSharing`.
+    func fetchCalibration() async throws -> WebSyncClient.ServerCalibration {
+        guard let stored = storage.load() else {
+            throw WebSyncClient.ClientError.unauthorized
+        }
+        do {
+            return try await client.getCalibration(token: stored.token)
+        } catch WebSyncClient.ClientError.unauthorized {
+            invalidate()
+            throw WebSyncClient.ClientError.unauthorized
+        }
+    }
+
+    /// Push a calibration value to the server.  Idempotent; safe to retry on
+    /// transport failure.  Used by `ContentView` whenever the local
+    /// `CalibrationStore` produces a new value, or whenever a connection / network
+    /// state change suggests our last push may have been lost.
+    func setCalibration(_ value: WebSyncClient.ServerCalibration) async throws {
+        guard let stored = storage.load() else {
+            throw WebSyncClient.ClientError.unauthorized
+        }
+        do {
+            try await client.setCalibration(value, token: stored.token)
+        } catch WebSyncClient.ClientError.unauthorized {
+            invalidate()
+            throw WebSyncClient.ClientError.unauthorized
+        }
+    }
+
     // MARK: - Private
 
     private func validateAndStore(token: String) async {

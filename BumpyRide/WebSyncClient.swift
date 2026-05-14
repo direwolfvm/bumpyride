@@ -80,6 +80,16 @@ actor WebSyncClient {
         let shareToPublicMap: Bool
     }
 
+    /// Wire-format type for `/api/me/calibration`.  Mirrors the spec at
+    /// `docs/CALIBRATION.md`: `pocketGain` is the multiplier the server applies to
+    /// pocket-mode samples; `confidence` is the count of overlapping cells the iOS
+    /// algorithm used (the server applies the gain only when `confidence >= 3`).
+    struct ServerCalibration: Codable, Equatable, Sendable {
+        let pocketGain: Double
+        let confidence: Int
+        let lastComputedAt: Date?
+    }
+
     /// Read the user's public-bump-map opt-in setting.
     func getSharing(token: String) async throws -> Bool {
         var request = URLRequest(url: baseURL.appendingPathComponent("api/me/sharing"))
@@ -127,6 +137,82 @@ actor WebSyncClient {
         let body = ["shareToPublicMap": shareToPublicMap]
         do {
             request.httpBody = try JSONEncoder().encode(body)
+        } catch {
+            throw ClientError.validationFailed
+        }
+
+        let response: URLResponse
+        do {
+            (_, response) = try await session.data(for: request)
+        } catch {
+            throw ClientError.transport
+        }
+        guard let http = response as? HTTPURLResponse else { throw ClientError.transport }
+
+        switch http.statusCode {
+        case 200..<300:
+            return
+        case 400:
+            throw ClientError.validationFailed
+        case 401:
+            throw ClientError.unauthorized
+        default:
+            throw ClientError.http(status: http.statusCode)
+        }
+    }
+
+    /// Read the user's stored pocket-mode calibration from `GET /api/me/calibration`.
+    /// Defaults (for users who've never PUT) come back as
+    /// `{ pocketGain: 1.0, confidence: 0, lastComputedAt: null }`.
+    func getCalibration(token: String) async throws -> ServerCalibration {
+        log.info("GET /api/me/calibration")
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/me/calibration"))
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 10
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw ClientError.transport
+        }
+        guard let http = response as? HTTPURLResponse else { throw ClientError.transport }
+
+        switch http.statusCode {
+        case 200..<300:
+            do {
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                return try decoder.decode(ServerCalibration.self, from: data)
+            } catch {
+                throw ClientError.decoding
+            }
+        case 401:
+            throw ClientError.unauthorized
+        default:
+            throw ClientError.http(status: http.statusCode)
+        }
+    }
+
+    /// Write the user's pocket-mode calibration via `PUT /api/me/calibration`.
+    /// Idempotent: writing the same value twice is harmless.  Server enforces the
+    /// `[0.5, 5.0]` clamp on `pocketGain` and a non-negative `confidence`.
+    func setCalibration(_ value: ServerCalibration, token: String) async throws {
+        log.info("PUT /api/me/calibration — gain=\(value.pocketGain, privacy: .public) conf=\(value.confidence, privacy: .public)")
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/me/calibration"))
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 10
+
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            request.httpBody = try encoder.encode(value)
         } catch {
             throw ClientError.validationFailed
         }

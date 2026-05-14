@@ -22,6 +22,10 @@ struct ContentView: View {
     @State private var calibration: CalibrationStore
     @State private var reachability = NetworkReachability()
 
+    /// Last calibration value we successfully PUT to the server.  Used to short-circuit
+    /// no-op pushes on triggers like reachability returning while nothing has changed.
+    @State private var lastPushedCalibration: WebSyncClient.ServerCalibration?
+
     init() {
         let store = RideStore()
         let webAccount = WebAccount()
@@ -113,6 +117,11 @@ struct ContentView: View {
             }
             // Drain anything queued from prior sessions / paired devices.
             syncCoordinator.kick()
+            // Pull server calibration on launch (covers the multi-device case: a fresh
+            // install on an already-paired account adopts the value the user computed
+            // on their other phone).  Then push, in case the local recompute above
+            // produced a meaningfully different value.
+            await pullThenPushCalibration()
         }
         .onChange(of: webAccount.isConnected) { _, isConnected in
             // When a user pairs (or re-pairs after disconnect), seed the queue with
@@ -122,6 +131,7 @@ struct ContentView: View {
             if isConnected {
                 syncCoordinator.backfillAll(rideIds: store.rides.map(\.id))
                 syncCoordinator.kick()
+                Task { await pullThenPushCalibration() }
             }
         }
         .onChange(of: reachability.isReachable) { _, isReachable in
@@ -130,7 +140,42 @@ struct ContentView: View {
             // while we're already online again.  The kick is idempotent; if we're not
             // paused it's a no-op.  We don't react to going offline because the
             // coordinator's existing transport-error path already handles that.
-            if isReachable { syncCoordinator.kick() }
+            if isReachable {
+                syncCoordinator.kick()
+                // Retry any calibration push that may have failed while offline.
+                Task { await pushCalibrationIfChanged() }
+            }
+        }
+        .onChange(of: calibration.calibration) { _, _ in
+            // Every meaningful local change triggers a push.  Idempotent on the server
+            // and short-circuited locally if the value matches our last successful PUT.
+            Task { await pushCalibrationIfChanged() }
+        }
+    }
+
+    /// GET the server's calibration, adopt if it has more overlap data than us, then
+    /// push our (possibly newly-adopted, possibly newly-recomputed) value back.
+    private func pullThenPushCalibration() async {
+        guard webAccount.isConnected else { return }
+        if let remote = try? await webAccount.fetchCalibration() {
+            calibration.applyRemoteIfBetter(remote)
+        }
+        await pushCalibrationIfChanged()
+    }
+
+    /// PUT the current local calibration to the server if it differs from the last
+    /// value we successfully pushed.  Silent on failure — the next triggering event
+    /// (ride save, reconnect, reachability return) will retry.
+    private func pushCalibrationIfChanged() async {
+        guard webAccount.isConnected else { return }
+        let snapshot = calibration.toServerCalibration()
+        if snapshot == lastPushedCalibration { return }
+        do {
+            try await webAccount.setCalibration(snapshot)
+            lastPushedCalibration = snapshot
+        } catch {
+            // Will retry on the next triggering event.  Failures are common during
+            // network blips; not worth surfacing.
         }
     }
 }
