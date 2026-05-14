@@ -1,6 +1,30 @@
 import SwiftUI
 import Observation
 
+/// Bump-map filter — which rides should be aggregated into the personal heat map.
+///
+/// Pocket-mode rides systematically underreport bumpiness (clothing / body damping
+/// attenuates high-frequency content), so mixing them with mounted rides produces
+/// inconsistent colors per cell.  Until we have a calibration / normalization step,
+/// the filter lets the user partition the data they look at.
+///
+/// `mountedOrUntagged` includes legacy rides recorded before `pocketMode` existed
+/// (`pocketMode == nil`), under the assumption that those rides are most likely
+/// mounted — splitting them out would penalize early users with no recourse.
+enum BumpMapModeFilter: String, CaseIterable, Hashable {
+    case all
+    case mountedOrUntagged
+    case pocketOnly
+
+    var displayName: String {
+        switch self {
+        case .all: return "All"
+        case .mountedOrUntagged: return "Mounted"
+        case .pocketOnly: return "Pocket"
+        }
+    }
+}
+
 /// User-tunable settings persisted in `UserDefaults`: the bumpiness color thresholds
 /// (yellow / orange / red / purple breakpoints in g) and the Pocket Mode toggle.
 /// Provides `color(for:)` / `uiColor(for:)` helpers used everywhere bumpiness is shown.
@@ -11,6 +35,7 @@ final class AppSettings {
     private static let keyRed = "bumpThresholdRed"
     private static let keyPurple = "bumpThresholdPurple"
     private static let keyPocketMode = "pocketModeEnabled"
+    private static let keyBumpMapFilter = "bumpMapModeFilter"
 
     var yellowG: Double = 0.5 {
         didSet { UserDefaults.standard.set(yellowG, forKey: Self.keyYellow) }
@@ -28,9 +53,19 @@ final class AppSettings {
     /// When the phone rides in a pocket (or anywhere on the rider's body), the rider's
     /// pedaling cadence shows up as a 1–2 Hz oscillation in vertical acceleration.  This
     /// toggle enables a 3 Hz Butterworth high-pass that suppresses that oscillation while
-    /// preserving the higher-frequency bump signal.
+    /// preserving the higher-frequency bump signal.  Today this is the *default* for new
+    /// rides — `RideView`'s per-ride toggle is the actual source-of-truth at recording
+    /// time and overrides this value for any specific ride.
     var pocketModeEnabled: Bool = false {
         didSet { UserDefaults.standard.set(pocketModeEnabled, forKey: Self.keyPocketMode) }
+    }
+
+    /// Persistent Bump Map filter.  Defaults to `.mountedOrUntagged` since pocket data
+    /// reads systematically softer than mounted data and mixing them produces
+    /// inconsistent colors per cell.  Users can flip to `.all` or `.pocketOnly` from
+    /// the Bump Map tab's filter chip.
+    var bumpMapFilter: BumpMapModeFilter = .mountedOrUntagged {
+        didSet { UserDefaults.standard.set(bumpMapFilter.rawValue, forKey: Self.keyBumpMapFilter) }
     }
 
     init() {
@@ -40,6 +75,10 @@ final class AppSettings {
         if let v = d.object(forKey: Self.keyRed) as? Double { redG = v }
         if let v = d.object(forKey: Self.keyPurple) as? Double { purpleG = v }
         if let v = d.object(forKey: Self.keyPocketMode) as? Bool { pocketModeEnabled = v }
+        if let raw = d.string(forKey: Self.keyBumpMapFilter),
+           let f = BumpMapModeFilter(rawValue: raw) {
+            bumpMapFilter = f
+        }
     }
 
     func resetToDefaults() {
@@ -48,6 +87,7 @@ final class AppSettings {
         redG = 1.5
         purpleG = 2.0
         pocketModeEnabled = false
+        bumpMapFilter = .mountedOrUntagged
     }
 
     private struct Stop {
