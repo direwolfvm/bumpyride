@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import OSLog
 
 /// On-disk persistence for saved rides: one ISO-8601 JSON file per ride at
 /// `<Documents>/Rides/<UUID>.json`.  Loads everything into memory at init (rides are
@@ -18,6 +19,14 @@ final class RideStore {
     /// `SyncCoordinator.remove(_:)` so we don't waste a network round trip uploading
     /// something the user already deleted locally.
     var onRideDeleted: ((UUID) -> Void)?
+
+    /// Fired when `save(_:)` fails to write the ride to disk.  Unwired by default —
+    /// callers (typically the view that just initiated the save) can attach a
+    /// handler to surface an alert.  Failure is rare (disk full, IO error, sandbox
+    /// permission revoked) but historically silent; this hook makes it actionable.
+    var onSaveFailed: ((Ride, any Error) -> Void)?
+
+    private static let log = Logger(subsystem: "com.herbertindustries.BumpyRide", category: "ridestore")
 
     private let directoryURL: URL
     private let encoder: JSONEncoder
@@ -62,6 +71,14 @@ final class RideStore {
             }
             onRideSaved?(ride)
         } catch {
+            // Silent save failure has historically been the worst failure mode of
+            // this app — the ride looks saved but isn't on disk.  Log loudly via
+            // OSLog (visible in Console.app) and surface to whoever wired up
+            // onSaveFailed, so future versions can show a banner.  The in-memory
+            // rides array is left unchanged so the rest of the app behaves
+            // consistently with disk state.
+            Self.log.error("Failed to save ride \(ride.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            onSaveFailed?(ride, error)
         }
     }
 

@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import CoreLocation
+import CoreMotion
 
 /// The Ride tab: shows the live recording UI when no ride is loaded, or the playback
 /// UI (seismograph chart + colored map + scrubber + zoom) when `appState.loadedRide`
@@ -286,10 +287,100 @@ struct RideView: View {
             )
             .padding(.horizontal)
 
+            if let banner = permissionBanner() {
+                banner
+                    .padding(.horizontal)
+            }
+
             controlButtons
                 .padding(.horizontal)
                 .padding(.bottom, 8)
         }
+    }
+
+    /// Banner rendered above the Start/Stop button when the app can't actually
+    /// record because of a permission state.  Currently surfaces:
+    ///   - Location denied / restricted: a Settings shortcut.
+    ///   - Motion unavailable: explanatory text (no Settings action since the
+    ///     iOS Motion & Fitness privacy toggle doesn't deep-link easily and
+    ///     unavailability is rare in practice).
+    /// Returns nil when everything is good — caller doesn't render anything.
+    private func permissionBanner() -> AnyView? {
+        let locationStatus = recorder.location.authorizationStatus
+        if locationStatus == .denied || locationStatus == .restricted {
+            return AnyView(permissionBannerRow(
+                icon: "location.slash.fill",
+                title: "Location access is off",
+                subtitle: "BumpyRide needs your location to record routes. Tap to open Settings and re-enable it.",
+                actionLabel: "Open Settings",
+                action: openAppSettings
+            ))
+        }
+        if !recorder.motion.isAvailable {
+            return AnyView(permissionBannerRow(
+                icon: "exclamationmark.triangle.fill",
+                title: "Motion sensing unavailable",
+                subtitle: "This device doesn't report accelerometer data, so bumpiness can't be measured.",
+                actionLabel: nil,
+                action: nil
+            ))
+        }
+        return nil
+    }
+
+    private func permissionBannerRow(
+        icon: String,
+        title: String,
+        subtitle: String,
+        actionLabel: String?,
+        action: (() -> Void)?
+    ) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .font(.title3)
+                .foregroundStyle(.orange)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.callout.weight(.semibold))
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let actionLabel, let action {
+                    Button(action: action) {
+                        Text(actionLabel)
+                            .font(.callout.weight(.medium))
+                    }
+                    .padding(.top, 2)
+                }
+            }
+            Spacer()
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .background(Color.orange.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.orange.opacity(0.3))
+        )
+    }
+
+    private func openAppSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
+    }
+
+    /// Whether the Start Ride button should be enabled.  Disabled when we know
+    /// for sure recording can't produce useful data.  `.notDetermined` is allowed
+    /// because the first tap will trigger the system permission prompt.
+    private var canStartRecording: Bool {
+        let status = recorder.location.authorizationStatus
+        let locationOK = status == .authorizedAlways
+            || status == .authorizedWhenInUse
+            || status == .notDetermined
+        return locationOK && recorder.motion.isAvailable
     }
 
     private var controlButtons: some View {
@@ -303,6 +394,7 @@ struct RideView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.green)
                 .controlSize(.large)
+                .disabled(!canStartRecording)
 
             case .recording:
                 Button(role: .destructive) {
