@@ -1,6 +1,90 @@
 import Foundation
 import Observation
 
+/// Diagnostic snapshot of the calibration algorithm's state, suitable for the
+/// in-app Inspector view and for serialization (export / upload to server).
+/// Computed on demand from a list of rides — not persisted.
+struct CalibrationDiagnostics: Codable, Equatable {
+    let computedAt: Date
+
+    /// The currently-in-use, clamped gain stored in `CalibrationStore.calibration`.
+    let currentGain: Double
+    /// The matching confidence count.
+    let currentConfidence: Int
+    /// When the persisted value was last updated (`calibration.lastComputed`).
+    let lastPersistedAt: Date?
+
+    /// Median of the qualifying cell ratios before clamping to `[minGain, maxGain]`.
+    /// `nil` when there aren't enough qualifying cells for a meaningful median.
+    let unclampedMedian: Double?
+
+    /// Min / max / mean / std-dev across qualifying cell ratios.  All `nil` when
+    /// no cells qualify.
+    let minRatio: Double?
+    let maxRatio: Double?
+    let meanRatio: Double?
+    let stdDev: Double?
+
+    /// Sample counts across all rides.
+    let totalMountedSamples: Int
+    let totalPocketSamples: Int
+
+    /// Cells touched by at least one sample (any mode).
+    let totalCellsTouched: Int
+    /// Cells with at least 1 sample in each mode (no minimum-count filter).
+    let cellsWithBothModes: Int
+    /// Cells meeting `minSamplesPerMode` in both AND a non-degenerate pocket avg —
+    /// the cells that actually contributed a ratio to the median.
+    let qualifyingCells: Int
+
+    /// Top contributors by total sample count, capped at 50 for payload size.
+    let topCells: [CellEntry]
+
+    /// Per-recent-ride detector results — last N rides newest-first.
+    let recentDetections: [RideDetectionSnapshot]
+
+    /// Algorithm constants in effect at compute time, for reproducibility.
+    let thresholds: Thresholds
+
+    struct CellEntry: Codable, Equatable {
+        let ix: Int
+        let iy: Int
+        /// Cell center.  Useful for plotting on a map; revealing of routes when
+        /// shared, but the user explicitly initiates the export.
+        let latitude: Double
+        let longitude: Double
+        let mountedCount: Int
+        let mountedAverage: Double
+        let pocketCount: Int
+        let pocketAverage: Double
+        /// `nil` when the cell didn't qualify (insufficient samples / near-zero pocket).
+        let ratio: Double?
+        /// Did this cell's ratio contribute to the calibration's median?
+        let qualifies: Bool
+    }
+
+    struct RideDetectionSnapshot: Codable, Equatable {
+        let rideId: UUID
+        let rideTitle: String
+        let startedAt: Date
+        let pocketMode: Bool?
+        let schemaVersion: Int
+        let detectorVerdict: MountStyleDetector.Verdict?
+        let detectorRatio: Double?
+        let cadenceRMS: Double?
+        let bumpRMS: Double?
+        let samplesAnalyzed: Int?
+    }
+
+    struct Thresholds: Codable, Equatable {
+        let minSamplesPerMode: Int
+        let minOverlappingCells: Int
+        let minPocketAvg: Double
+        let minGain: Double
+        let maxGain: Double
+    }
+}
+
 /// Opportunistic per-rider calibration for the systematic damping difference between
 /// pocket-mode and mounted recordings.  Clothing + body mass attenuate the
 /// high-frequency vibration content that BumpyRide measures, so a 1.0 g handlebar
@@ -136,6 +220,135 @@ final class CalibrationStore {
             calibration = next
             persist()
         }
+    }
+
+    // MARK: - Diagnostics
+
+    /// Run the calibration algorithm with full bookkeeping and return a snapshot
+    /// suitable for inspection / export.  Doesn't mutate `calibration` — that's
+    /// only updated by `recompute(from:)` on save / delete.  Roughly O(total points)
+    /// like `recompute` itself, with a bit of extra overhead for the per-cell
+    /// breakdown.  Sub-millisecond on typical ride collections.
+    func computeDiagnostics(from rides: [Ride], recentRidesLimit: Int = 30) -> CalibrationDiagnostics {
+        var mounted: [UInt64: (sum: Double, count: Int)] = [:]
+        var pocket: [UInt64: (sum: Double, count: Int)] = [:]
+        var totalMountedSamples = 0
+        var totalPocketSamples = 0
+
+        for ride in rides {
+            let isPocket = ride.pocketMode == true
+            for point in ride.points {
+                let (ix, iy) = BumpGrid.gridIndex(lat: point.latitude, lon: point.longitude)
+                let key = BumpGrid.key(ix: ix, iy: iy)
+                if isPocket {
+                    let existing = pocket[key] ?? (0, 0)
+                    pocket[key] = (existing.sum + point.bumpiness, existing.count + 1)
+                    totalPocketSamples += 1
+                } else {
+                    let existing = mounted[key] ?? (0, 0)
+                    mounted[key] = (existing.sum + point.bumpiness, existing.count + 1)
+                    totalMountedSamples += 1
+                }
+            }
+        }
+
+        let allKeys = Set(mounted.keys).union(pocket.keys)
+        let cellsWithBothModes = allKeys.filter { mounted[$0] != nil && pocket[$0] != nil }.count
+
+        var allEntries: [CalibrationDiagnostics.CellEntry] = []
+        var ratios: [Double] = []
+        for key in allKeys {
+            let m = mounted[key] ?? (0, 0)
+            let p = pocket[key] ?? (0, 0)
+            guard m.count > 0 || p.count > 0 else { continue }
+            let mAvg = m.count > 0 ? m.sum / Double(m.count) : 0
+            let pAvg = p.count > 0 ? p.sum / Double(p.count) : 0
+            let ratio: Double?
+            if m.count >= Self.minSamplesPerMode,
+               p.count >= Self.minSamplesPerMode,
+               pAvg >= Self.minPocketAvg {
+                ratio = mAvg / pAvg
+                ratios.append(mAvg / pAvg)
+            } else {
+                ratio = nil
+            }
+            let (ix, iy) = BumpGrid.unpack(key)
+            let (cellLat, cellLon) = BumpGrid.cellOrigin(ix: ix, iy: iy)
+            allEntries.append(CalibrationDiagnostics.CellEntry(
+                ix: ix,
+                iy: iy,
+                latitude: cellLat + BumpGrid.cellLatDeg / 2,
+                longitude: cellLon + BumpGrid.cellLonDeg / 2,
+                mountedCount: m.count,
+                mountedAverage: mAvg,
+                pocketCount: p.count,
+                pocketAverage: pAvg,
+                ratio: ratio,
+                qualifies: ratio != nil
+            ))
+        }
+
+        // Top N cells by total sample count, descending — these are the most
+        // statistically reliable comparison points.
+        let topCells = allEntries
+            .sorted { ($0.mountedCount + $0.pocketCount) > ($1.mountedCount + $1.pocketCount) }
+            .prefix(50)
+            .map { $0 }
+
+        // Distribution stats across the *qualifying* cell ratios.
+        let sortedRatios = ratios.sorted()
+        let median = sortedRatios.isEmpty ? 1.0 : sortedRatios[sortedRatios.count / 2]
+        let minR = sortedRatios.first ?? 0
+        let maxR = sortedRatios.last ?? 0
+        let mean = sortedRatios.isEmpty ? 0 : sortedRatios.reduce(0, +) / Double(sortedRatios.count)
+        let variance = sortedRatios.isEmpty ? 0 :
+            sortedRatios.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(sortedRatios.count)
+        let stdDev = sqrt(variance)
+
+        // Per-ride detector snapshots for the N most-recent rides.  `rides` is
+        // expected newest-first from RideStore.  Skipping empty-points rides.
+        var recentDetections: [CalibrationDiagnostics.RideDetectionSnapshot] = []
+        for ride in rides.prefix(recentRidesLimit) {
+            let result = MountStyleDetector.analyze(ride)
+            recentDetections.append(CalibrationDiagnostics.RideDetectionSnapshot(
+                rideId: ride.id,
+                rideTitle: ride.title,
+                startedAt: ride.startedAt,
+                pocketMode: ride.pocketMode,
+                schemaVersion: ride.schemaVersion,
+                detectorVerdict: result?.verdict,
+                detectorRatio: result?.ratio,
+                cadenceRMS: result?.cadenceRMS,
+                bumpRMS: result?.bumpRMS,
+                samplesAnalyzed: result?.samplesAnalyzed
+            ))
+        }
+
+        return CalibrationDiagnostics(
+            computedAt: Date(),
+            currentGain: calibration.pocketGain,
+            currentConfidence: calibration.confidence,
+            lastPersistedAt: calibration.lastComputed,
+            unclampedMedian: ratios.count >= Self.minOverlappingCells ? median : nil,
+            minRatio: ratios.isEmpty ? nil : minR,
+            maxRatio: ratios.isEmpty ? nil : maxR,
+            meanRatio: ratios.isEmpty ? nil : mean,
+            stdDev: ratios.isEmpty ? nil : stdDev,
+            totalMountedSamples: totalMountedSamples,
+            totalPocketSamples: totalPocketSamples,
+            totalCellsTouched: allKeys.count,
+            cellsWithBothModes: cellsWithBothModes,
+            qualifyingCells: ratios.count,
+            topCells: topCells,
+            recentDetections: recentDetections,
+            thresholds: CalibrationDiagnostics.Thresholds(
+                minSamplesPerMode: Self.minSamplesPerMode,
+                minOverlappingCells: Self.minOverlappingCells,
+                minPocketAvg: Self.minPocketAvg,
+                minGain: Self.minGain,
+                maxGain: Self.maxGain
+            )
+        )
     }
 
     // MARK: - Server sync

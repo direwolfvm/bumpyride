@@ -113,3 +113,80 @@ iOS recomputes on every ride save / delete (it's cheap — O(total points)). Whe
 4. **Optional UX**: a web page at `/settings/calibration` that displays the current value with a "reset" button.
 
 When the server side ships this contract, iOS will gain `WebSyncClient.getCalibration(token:)` and `setCalibration(_:token:)` methods, plus an automatic push of any calibration change through `WebAccount`. That work is scaffolded but currently dormant — coordinate with the iOS-side agent when you're ready.
+
+## Future extension: diagnostic payload
+
+The iOS app has an in-app **Calibration Inspector** ([`BumpyRide/CalibrationInspectorView.swift`](../BumpyRide/CalibrationInspectorView.swift)) that surfaces the math behind the single `pocketGain` number — distribution of per-cell ratios, top contributing cells, recent rides' detector results, algorithm constants in effect. The whole snapshot is a `CalibrationDiagnostics` struct in [`CalibrationStore.swift`](../BumpyRide/CalibrationStore.swift).
+
+We'd like the web app to show a matching view at `/settings/calibration` (or similar) so a user can see the same diagnostic regardless of which surface they're on. **The iOS algorithm is the source of truth** — the server doesn't recompute, just stores and re-serves.
+
+### Proposed payload shape
+
+Extend `GET` / `PUT /api/me/calibration` to carry an optional `diagnostics` block alongside the existing scalar fields:
+
+```json
+{
+  "pocketGain": 1.42,
+  "confidence": 17,
+  "lastComputedAt": "2026-05-14T11:24:00Z",
+  "diagnostics": {
+    "computedAt": "2026-05-14T11:24:00Z",
+    "unclampedMedian": 1.452,
+    "minRatio": 0.78,
+    "maxRatio": 2.31,
+    "meanRatio": 1.51,
+    "stdDev": 0.42,
+    "totalMountedSamples": 12450,
+    "totalPocketSamples": 8200,
+    "totalCellsTouched": 612,
+    "cellsWithBothModes": 84,
+    "qualifyingCells": 17,
+    "topCells": [
+      {
+        "ix": -1094812, "iy": 710004,
+        "latitude": 38.88012, "longitude": -77.04032,
+        "mountedCount": 120, "mountedAverage": 0.42,
+        "pocketCount": 45, "pocketAverage": 0.31,
+        "ratio": 1.35, "qualifies": true
+      }
+    ],
+    "recentDetections": [
+      {
+        "rideId": "55E9B0BB-...",
+        "rideTitle": "Commute home",
+        "startedAt": "2026-05-13T22:00:00Z",
+        "pocketMode": true,
+        "schemaVersion": 2,
+        "detectorVerdict": "likelyPocket",
+        "detectorRatio": 0.92,
+        "cadenceRMS": 0.18, "bumpRMS": 0.19,
+        "samplesAnalyzed": 4250
+      }
+    ],
+    "thresholds": {
+      "minSamplesPerMode": 3,
+      "minOverlappingCells": 3,
+      "minPocketAvg": 0.02,
+      "minGain": 0.5, "maxGain": 5.0
+    }
+  }
+}
+```
+
+### Storage suggestion
+
+A single `users.calibration_diagnostics JSONB` column.  Don't try to normalize the nested structure into relational rows — iOS owns the shape and may evolve it, and the server treats the blob opaquely.
+
+### Behavior
+
+- **PUT** accepts a payload with or without `diagnostics`. When present, the server stores it verbatim.  When absent (older iOS versions), don't touch what was previously stored.
+- **GET** returns `diagnostics` if any was previously stored; `null` otherwise.
+- The server doesn't validate or interpret the diagnostics block. iOS may change shapes within minor versions — treat the blob as opaque key/value documents.
+
+### Payload size
+
+For an active user, the diagnostic blob is typically 30–100 KB.  Top cells are capped at 50; recent rides at 30. Server should reject payloads above 256 KB to defend against a malicious / buggy iOS client.
+
+### Open items
+
+Same iOS-side coordination model as the rest of `/api/me/calibration` — iOS will start sending `diagnostics` on the same hooks (launch, ride save, reachability return). Until the server accepts the field it will be silently dropped from PUTs and the iOS Inspector remains an offline-only feature. The two halves are deployable independently.

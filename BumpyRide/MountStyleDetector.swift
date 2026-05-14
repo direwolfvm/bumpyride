@@ -19,7 +19,7 @@ import Foundation
 /// incorrectly read as mounted — callers should gate on `schemaVersion >= 2` or
 /// `pocketMode != true` before using the verdict.
 struct MountStyleDetector {
-    enum Verdict: Equatable {
+    enum Verdict: String, Codable, Equatable {
         case likelyMounted
         case likelyPocket
         case ambiguous

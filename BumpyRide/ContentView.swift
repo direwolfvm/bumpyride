@@ -82,7 +82,8 @@ struct ContentView: View {
                 webAccount: webAccount,
                 syncCoordinator: syncCoordinator,
                 syncQueue: syncQueue,
-                calibration: calibration
+                calibration: calibration,
+                store: store
             )
             .tabItem { Label("Settings", systemImage: "gear") }
             .tag(AppState.Tab.settings)

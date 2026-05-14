@@ -10,6 +10,7 @@ struct SettingsView: View {
     @Bindable var syncCoordinator: SyncCoordinator
     @Bindable var syncQueue: SyncQueue
     @Bindable var calibration: CalibrationStore
+    @Bindable var store: RideStore
 
     var body: some View {
         NavigationStack {
@@ -52,6 +53,11 @@ struct SettingsView: View {
 
                 Section {
                     calibrationStatusRow
+                    NavigationLink {
+                        CalibrationInspectorView(calibration: calibration, store: store)
+                    } label: {
+                        Label("Calibration Inspector", systemImage: "chart.bar.doc.horizontal")
+                    }
                 } header: {
                     Text("Sensing")
                 } footer: {
