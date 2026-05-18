@@ -108,10 +108,11 @@ final class WebAccount {
 
     // MARK: - Public bump map sharing
 
-    /// Read the user's public-bump-map opt-in from `/api/me/sharing`.  Surfaces a
-    /// 401 by calling `invalidate()` (same semantics as a 401 from `/api/sync/ride`)
-    /// and then rethrowing so the caller knows the fetch failed.
-    func fetchSharing() async throws -> Bool {
+    /// Read the user's full public-bump-map sharing state (both `shareToPublicMap`
+    /// and `publicMapEager`).  Surfaces a 401 by calling `invalidate()` (same
+    /// semantics as a 401 from `/api/sync/ride`) and then rethrowing so the
+    /// caller knows the fetch failed.
+    func fetchSharing() async throws -> WebSyncClient.SharingSettings {
         guard let stored = storage.load() else {
             throw WebSyncClient.ClientError.unauthorized
         }
@@ -123,15 +124,26 @@ final class WebAccount {
         }
     }
 
-    /// Write the user's public-bump-map opt-in.  Server atomically backfills (or
-    /// subtracts) the user's rides into the public aggregate.  Surfaces 401 the same
-    /// way `fetchSharing` does.
-    func setSharing(_ newValue: Bool) async throws {
+    /// Patch one or both sharing fields.  Returns the server's authoritative
+    /// post-PATCH state, which the caller MUST adopt directly — the server
+    /// enforces a force-off rule (turning `shareToPublicMap` off clears
+    /// `publicMapEager`) and clamps eager to false if sharing is currently
+    /// off.  Echoing what we sent would drift the UI out of sync.
+    ///
+    /// Surfaces 401 the same way `fetchSharing` does.
+    func setSharing(
+        shareToPublicMap: Bool? = nil,
+        publicMapEager: Bool? = nil
+    ) async throws -> WebSyncClient.SharingSettings {
         guard let stored = storage.load() else {
             throw WebSyncClient.ClientError.unauthorized
         }
         do {
-            try await client.setSharing(shareToPublicMap: newValue, token: stored.token)
+            return try await client.setSharing(
+                shareToPublicMap: shareToPublicMap,
+                publicMapEager: publicMapEager,
+                token: stored.token
+            )
         } catch WebSyncClient.ClientError.unauthorized {
             invalidate()
             throw WebSyncClient.ClientError.unauthorized

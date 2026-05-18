@@ -74,10 +74,20 @@ actor WebSyncClient {
         }
     }
 
-    /// The shape of `/api/me/sharing` responses.  Both GET and PATCH return at least
-    /// `shareToPublicMap`; PATCH additionally returns `changed`, which we don't read.
-    private struct SharingResponse: Decodable {
+    /// Server-side state of `/api/me/sharing`.  GET always returns both fields;
+    /// PATCH bodies may include either, both, or neither (server keeps unsent
+    /// fields unchanged) — but the PATCH response always returns the full
+    /// post-mutation state, plus a `changed` boolean we don't model because
+    /// we adopt the returned values regardless.
+    ///
+    /// The contract has a force-off rule the server enforces: setting
+    /// `shareToPublicMap = false` clears `publicMapEager` to `false`; sending
+    /// `publicMapEager = true` while sharing is off is clamped to `false`.
+    /// Callers MUST trust the returned struct rather than echoing what they
+    /// sent, otherwise the UI will drift out of sync with reality.
+    struct SharingSettings: Codable, Equatable, Sendable {
         let shareToPublicMap: Bool
+        let publicMapEager: Bool
     }
 
     /// Wire-format type for `/api/me/calibration`.  Mirrors the spec at
@@ -90,8 +100,9 @@ actor WebSyncClient {
         let lastComputedAt: Date?
     }
 
-    /// Read the user's public-bump-map opt-in setting.
-    func getSharing(token: String) async throws -> Bool {
+    /// Read the user's full public-bump-map sharing state.  Returns both
+    /// `shareToPublicMap` and `publicMapEager` — see `SharingSettings`.
+    func getSharing(token: String) async throws -> SharingSettings {
         var request = URLRequest(url: baseURL.appendingPathComponent("api/me/sharing"))
         request.httpMethod = "GET"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -110,7 +121,7 @@ actor WebSyncClient {
         switch http.statusCode {
         case 200..<300:
             do {
-                return try JSONDecoder().decode(SharingResponse.self, from: data).shareToPublicMap
+                return try JSONDecoder().decode(SharingSettings.self, from: data)
             } catch {
                 throw ClientError.decoding
             }
@@ -121,12 +132,24 @@ actor WebSyncClient {
         }
     }
 
-    /// Flip the public-bump-map opt-in.  The server atomically backfills (or subtracts)
-    /// the user's existing rides into the public aggregate, which for large libraries
-    /// can take ~2 s — hence the longer-than-default timeout.  Idempotent: sending the
-    /// same value the server already has returns 200 with `changed: false`, which we
-    /// treat as success.
-    func setSharing(shareToPublicMap: Bool, token: String) async throws {
+    /// Update one or both sharing fields.  Each field is optional in the body —
+    /// the server keeps omitted fields at their current value.  When
+    /// `shareToPublicMap` flips on or off, the server atomically backfills (or
+    /// subtracts) the user's existing rides into the public aggregate, which
+    /// for large libraries can take ~2 s — hence the longer-than-default
+    /// timeout.  Idempotent: sending the same value the server already has
+    /// returns 200 with `changed: false`, which we treat as success.
+    ///
+    /// Returns the server's authoritative post-PATCH state.  Callers should
+    /// adopt this directly rather than echoing what they sent: the server
+    /// enforces a force-off rule (turning `shareToPublicMap` off clears
+    /// `publicMapEager`) and clamps `publicMapEager = true` to `false` if
+    /// sharing is currently off.
+    func setSharing(
+        shareToPublicMap: Bool? = nil,
+        publicMapEager: Bool? = nil,
+        token: String
+    ) async throws -> SharingSettings {
         var request = URLRequest(url: baseURL.appendingPathComponent("api/me/sharing"))
         request.httpMethod = "PATCH"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -134,16 +157,23 @@ actor WebSyncClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 10  // ~2 s expected; 10 s slack for retry & DNS
 
-        let body = ["shareToPublicMap": shareToPublicMap]
+        // Build the body with only the fields the caller supplied.  Sending an
+        // empty body is technically valid (server treats it as a read-only no-op
+        // that still returns current state) but we don't bother modeling it —
+        // the public API requires at least one non-nil field for any useful call.
+        var body: [String: Bool] = [:]
+        if let v = shareToPublicMap { body["shareToPublicMap"] = v }
+        if let v = publicMapEager { body["publicMapEager"] = v }
         do {
             request.httpBody = try JSONEncoder().encode(body)
         } catch {
             throw ClientError.validationFailed
         }
 
+        let data: Data
         let response: URLResponse
         do {
-            (_, response) = try await session.data(for: request)
+            (data, response) = try await session.data(for: request)
         } catch {
             throw ClientError.transport
         }
@@ -151,7 +181,15 @@ actor WebSyncClient {
 
         switch http.statusCode {
         case 200..<300:
-            return
+            // PATCH responses also include `"changed": Bool`; SharingSettings
+            // doesn't model it (the field is uninteresting once we have the
+            // post-state) and JSONDecoder ignores unknown keys by default,
+            // so the decode is lossy-but-correct.
+            do {
+                return try JSONDecoder().decode(SharingSettings.self, from: data)
+            } catch {
+                throw ClientError.decoding
+            }
         case 400:
             throw ClientError.validationFailed
         case 401:

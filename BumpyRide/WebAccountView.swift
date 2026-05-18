@@ -12,13 +12,20 @@ struct WebAccountView: View {
 
     @State private var tokenInput: String = ""
 
-    /// Local cache of `shareToPublicMap` from `/api/me/sharing`.  The server is
-    /// canonical; this is just the on-screen reflection.  Refreshed on screen
-    /// appear and whenever the connected account changes (e.g. pair / re-pair),
-    /// so toggling via the web is picked up next time the user opens this view.
+    /// Local cache of `/api/me/sharing` state.  The server is canonical; these are
+    /// just the on-screen reflection.  Refreshed on screen appear and whenever
+    /// the connected account changes (e.g. pair / re-pair), so toggling via the
+    /// web is picked up next time the user opens this view.
+    ///
+    /// After every PATCH we adopt the server's response wholesale rather than
+    /// echoing what we sent: the server enforces force-off (sharing off → eager
+    /// off) and clamps eager to false when sharing is off.  Trusting local
+    /// state would drift the UI out of sync.
     @State private var publicMapSharing: Bool = false
+    @State private var publicMapEager: Bool = false
     @State private var publicMapSharingLoaded: Bool = false
     @State private var publicMapSharingUpdating: Bool = false
+    @State private var publicMapEagerUpdating: Bool = false
     @State private var publicMapSharingError: String?
 
     private let tokensURL = URL(string: "https://bumpyride.me/settings/tokens")!
@@ -156,21 +163,47 @@ struct WebAccountView: View {
 
     private var publicBumpMapSection: some View {
         Section {
+            // Primary opt-in.  Disabled while loading or while either PATCH is
+            // in flight — the eager toggle below is also affected by an
+            // in-flight sharing change, so they share the same gate.
             Toggle(isOn: publicMapSharingBinding) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Share my rides on the public bump map")
-                    Text("Adds your bumpiness samples to the public heat map at bumpyride.me/map. Routes, timestamps, and per-user attribution are not published — only the per-cell average. Cells with fewer than 3 samples stay hidden, so a solo segment never appears.")
+                    Text("Adds your bumpiness samples to the public heat map at bumpyride.me/map. Routes, timestamps, and per-user attribution are not published — only the per-cell average. Cells with fewer than 3 different riders stay hidden, so a solo segment never appears.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .disabled(!publicMapSharingLoaded || publicMapSharingUpdating)
+            .disabled(!publicMapSharingLoaded || publicMapSharingUpdating || publicMapEagerUpdating)
+
+            // Eager-render sub-toggle.  Hidden — not just disabled — when
+            // sharing is off, mirroring the web's UI and matching the server's
+            // force-off rule (eager is meaningless without sharing).
+            if publicMapSharing {
+                Toggle(isOn: publicMapEagerBinding) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Show my data without the 3-rider threshold")
+                        Text("Off (default): your cells stay hidden until at least 3 different riders have contributed to the same area, so individual routes can't be inferred. On: your cells appear on the public map right away — a careful observer could trace your routes.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .disabled(!publicMapSharingLoaded || publicMapSharingUpdating || publicMapEagerUpdating)
+            }
 
             if publicMapSharingUpdating {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text(publicMapSharing ? "Adding your rides to the public map…" : "Removing your rides from the public map…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if publicMapEagerUpdating {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(publicMapEager ? "Updating: your cells will appear immediately…" : "Updating: your cells will wait for the 3-rider threshold…")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -184,20 +217,43 @@ struct WebAccountView: View {
         } header: {
             Text("Public bump map")
         } footer: {
-            Text("Toggling on backfills your existing rides into the public aggregate; toggling off subtracts them. You can change this at any time.")
+            Text("Toggling sharing on backfills your existing rides into the public aggregate; toggling off subtracts them. You can change either setting at any time.")
         }
     }
 
-    /// A binding that does the optimistic flip synchronously (so the toggle's visual
-    /// state moves immediately on tap, no snap-back flicker) and kicks off the PATCH
-    /// asynchronously.  Reverts on failure via `applyPublicMapSharing`.
+    /// Binding for the primary opt-in.  Optimistically flips local state on
+    /// tap (so the toggle moves immediately, no snap-back flicker) and kicks
+    /// off the PATCH.  Server response is adopted as truth on success;
+    /// failure paths revert.
     private var publicMapSharingBinding: Binding<Bool> {
         Binding(
             get: { publicMapSharing },
             set: { newValue in
                 publicMapSharing = newValue
+                // Mirror the server's force-off rule in the local UI so the
+                // eager toggle visually disappears in lockstep with sharing
+                // turning off.  Server will also clear eager and we'll adopt
+                // its response, but doing it locally first avoids a flicker.
+                if !newValue {
+                    publicMapEager = false
+                }
                 publicMapSharingError = nil
                 Task { await applyPublicMapSharing(newValue) }
+            }
+        )
+    }
+
+    /// Binding for the eager sub-toggle.  Same optimistic pattern as the
+    /// primary.  Only ever invoked when sharing is on (the toggle is hidden
+    /// otherwise), so we don't have to defensively handle the "sharing off,
+    /// eager on" case — that's a server-side clamp we'd just adopt anyway.
+    private var publicMapEagerBinding: Binding<Bool> {
+        Binding(
+            get: { publicMapEager },
+            set: { newValue in
+                publicMapEager = newValue
+                publicMapSharingError = nil
+                Task { await applyPublicMapEager(newValue) }
             }
         )
     }
@@ -208,8 +264,8 @@ struct WebAccountView: View {
             return
         }
         do {
-            let value = try await account.fetchSharing()
-            publicMapSharing = value
+            let settings = try await account.fetchSharing()
+            adopt(settings)
             publicMapSharingLoaded = true
             publicMapSharingError = nil
         } catch WebSyncClient.ClientError.unauthorized {
@@ -217,33 +273,78 @@ struct WebAccountView: View {
             // with the not-connected section. Nothing else to do here.
             publicMapSharingLoaded = false
         } catch {
-            // Quiet failure — the toggle stays disabled and the next screen-appear
-            // will retry.  Don't show a banner for a background refresh.
+            // Quiet failure — the toggles stay disabled and the next
+            // screen-appear will retry.  Don't show a banner for a background
+            // refresh.
             publicMapSharingLoaded = false
         }
     }
 
+    /// Push a primary opt-in change to the server.  Server's response is the
+    /// authoritative post-state for *both* fields (force-off clears eager), so
+    /// we adopt the whole returned struct rather than just remembering what we
+    /// sent.
     private func applyPublicMapSharing(_ newValue: Bool) async {
         publicMapSharingUpdating = true
         defer { publicMapSharingUpdating = false }
         do {
-            try await account.setSharing(newValue)
+            let settings = try await account.setSharing(shareToPublicMap: newValue)
+            adopt(settings)
         } catch WebSyncClient.ClientError.unauthorized {
             // Account already invalidated; view will transition away from the
             // connected section.  No revert needed (section will disappear).
         } catch WebSyncClient.ClientError.transport {
-            publicMapSharing = !newValue
-            publicMapSharingError = "Couldn't reach bumpyride.me. Check your network and try again."
+            revertSharing(to: !newValue, message: "Couldn't reach bumpyride.me. Check your network and try again.")
         } catch WebSyncClient.ClientError.validationFailed {
-            publicMapSharing = !newValue
-            publicMapSharingError = "The server didn't accept that change. Try again later."
+            revertSharing(to: !newValue, message: "The server didn't accept that change. Try again later.")
         } catch WebSyncClient.ClientError.http(let status) {
-            publicMapSharing = !newValue
-            publicMapSharingError = "Server returned an unexpected status (\(status)). Try again."
+            revertSharing(to: !newValue, message: "Server returned an unexpected status (\(status)). Try again.")
         } catch {
-            publicMapSharing = !newValue
-            publicMapSharingError = "Couldn't update setting. Try again."
+            revertSharing(to: !newValue, message: "Couldn't update setting. Try again.")
         }
+    }
+
+    /// Push an eager-toggle change to the server.  Same adoption-of-response
+    /// pattern as `applyPublicMapSharing`.  On failure we revert eager only —
+    /// sharing's local state wasn't speculatively touched.
+    private func applyPublicMapEager(_ newValue: Bool) async {
+        publicMapEagerUpdating = true
+        defer { publicMapEagerUpdating = false }
+        do {
+            let settings = try await account.setSharing(publicMapEager: newValue)
+            adopt(settings)
+        } catch WebSyncClient.ClientError.unauthorized {
+            // Same as above.
+        } catch WebSyncClient.ClientError.transport {
+            revertEager(to: !newValue, message: "Couldn't reach bumpyride.me. Check your network and try again.")
+        } catch WebSyncClient.ClientError.validationFailed {
+            revertEager(to: !newValue, message: "The server didn't accept that change. Try again later.")
+        } catch WebSyncClient.ClientError.http(let status) {
+            revertEager(to: !newValue, message: "Server returned an unexpected status (\(status)). Try again.")
+        } catch {
+            revertEager(to: !newValue, message: "Couldn't update setting. Try again.")
+        }
+    }
+
+    private func adopt(_ settings: WebSyncClient.SharingSettings) {
+        publicMapSharing = settings.shareToPublicMap
+        publicMapEager = settings.publicMapEager
+    }
+
+    private func revertSharing(to previous: Bool, message: String) {
+        publicMapSharing = previous
+        // If we were turning sharing off, we'd preemptively cleared eager in
+        // the binding's setter.  On revert, we don't know the true eager
+        // state without a re-fetch — but in practice the most common transport
+        // failure is offline, in which case the server didn't process our
+        // PATCH at all, so eager is still whatever it was.  Leave it alone;
+        // next refreshPublicMapSharing will reconcile.
+        publicMapSharingError = message
+    }
+
+    private func revertEager(to previous: Bool, message: String) {
+        publicMapEager = previous
+        publicMapSharingError = message
     }
 
     // MARK: - Sync (shown when connected)
