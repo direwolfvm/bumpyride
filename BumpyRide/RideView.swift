@@ -383,6 +383,19 @@ struct RideView: View {
         return locationOK && recorder.motion.isAvailable
     }
 
+    /// Live-recording control surface.  Three layouts, one per recorder state:
+    ///
+    /// - `.idle` / `.finished`: a single big green **Start Ride** button.
+    /// - `.recording`: a single orange **Pause Ride** button.  Tapping it doesn't
+    ///   end the ride — it just halts sampling so the user can lock in a break
+    ///   without losing the points so far.
+    /// - `.paused`: two buttons side-by-side, **Resume** (green) and **Stop Ride**
+    ///   (red, opens the save sheet).
+    ///
+    /// The "Stop is reached only from a pause" pattern is borrowed from the
+    /// Apple Fitness / Strava convention — it makes accidentally ending a ride
+    /// a two-tap action and matches the request the user made when promoting
+    /// this to v1.1.
     private var controlButtons: some View {
         HStack(spacing: 12) {
             switch recorder.state {
@@ -397,6 +410,23 @@ struct RideView: View {
                 .disabled(!canStartRecording)
 
             case .recording:
+                Button { recorder.pause() } label: {
+                    Label("Pause Ride", systemImage: "pause.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+                .controlSize(.large)
+
+            case .paused:
+                Button { recorder.resume() } label: {
+                    Label("Resume", systemImage: "play.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+                .controlSize(.large)
+
                 Button(role: .destructive) {
                     if let ride = recorder.stop() {
                         presentSaveSheet(for: ride)
@@ -404,7 +434,7 @@ struct RideView: View {
                         recorder.reset()
                     }
                 } label: {
-                    Label("Stop", systemImage: "stop.fill")
+                    Label("Stop Ride", systemImage: "stop.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)

@@ -12,7 +12,10 @@ import Observation
 /// bumpiness through the 3 Hz HPF before the ride is persisted.
 @Observable
 final class RideRecorder {
-    enum State { case idle, recording, finished }
+    /// Lifecycle states.  Note `paused` is reachable only from `recording` and only
+    /// via the explicit `pause()` API — there is no auto-pause on app backgrounding
+    /// (the location entitlement covers that) or on motion stillness.
+    enum State { case idle, recording, paused, finished }
 
     let location = LocationManager()
     let motion = MotionManager()
@@ -42,7 +45,11 @@ final class RideRecorder {
     }
 
     func start() {
-        guard state != .recording else { return }
+        // Reject from .recording (already going) and .paused (caller meant
+        // resume(), not a new ride — silently starting over would discard their
+        // in-progress points).  .idle and .finished are the legitimate entry
+        // points for a fresh ride.
+        guard state == .idle || state == .finished else { return }
         points = []
         let now = Date()
         startedAt = now
@@ -57,8 +64,34 @@ final class RideRecorder {
         location.startUpdating()
     }
 
+    /// Temporarily halt sampling without ending the ride.  Stops the GPS + motion
+    /// streams (so battery isn't drained while the user is at a stoplight or taking
+    /// a break) but leaves `points`, the journal, and `startedAt` intact so
+    /// `resume()` picks up exactly where we left off.  Idempotent — repeated
+    /// `pause()` calls from `.paused` are no-ops.
+    func pause() {
+        guard state == .recording else { return }
+        location.stopUpdating()
+        motion.stop()
+        state = .paused
+    }
+
+    /// Resume sampling after a `pause()`.  Calling `motion.start()` resets the
+    /// MotionManager's ring buffer + filter state, so the seismograph will look
+    /// "empty" for ~1 s after resume while the window refills — that's a feature,
+    /// not a bug (the pause discontinuity shouldn't be smeared through the filter).
+    func resume() {
+        guard state == .paused else { return }
+        motion.start()
+        location.startUpdating()
+        state = .recording
+    }
+
     func stop() -> Ride? {
-        guard state == .recording else { return nil }
+        // Accept stop from either active or paused — users who tap Stop after a
+        // pause expect the same save-sheet flow they get from a recording-state
+        // stop.  No need to "re-start before stopping."
+        guard state == .recording || state == .paused else { return nil }
         location.stopUpdating()
         motion.stop()
         endedAt = Date()
