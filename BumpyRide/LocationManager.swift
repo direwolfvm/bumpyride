@@ -9,13 +9,18 @@ import OSLog
 /// while the screen is locked or the app is backgrounded — which also keeps the
 /// process alive long enough for `MotionManager` to keep producing samples.
 ///
-/// **Instrumentation note**: every CoreLocation delegate callback emits an OSLog
-/// line under subsystem `com.herbertindustries.BumpyRide`, category `location`.
+/// **Instrumentation note**: only *event-driven* CoreLocation callbacks emit
+/// OSLog lines under subsystem `com.herbertindustries.BumpyRide` /
+/// category `location` (start, stop, auth change, error, pause, resume).  A
+/// per-fix log was tried briefly and got the subsystem quarantined by iOS —
+/// at cycling speed + 3 m distanceFilter that's ~2–3 callbacks/sec sustained,
+/// which trips the OS log rate limit and causes *all* of our logs to be
+/// dropped.  Don't add anything to the hot location callback path; if you
+/// need per-fix visibility for debugging, attach Xcode and add a temporary
+/// breakpoint or print() instead.
+///
 /// View live in Console.app (device must be plugged in or sharing via wifi):
 ///   `subsystem:com.herbertindustries.BumpyRide category:location`
-/// Added 2026-05 to diagnose pocket-mode GPS drop reports — see the
-/// `locationManagerDidPause` / `didFailWithError` log lines first when
-/// investigating a "GPS went quiet mid-ride" complaint.
 @Observable
 final class LocationManager: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
@@ -65,16 +70,13 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        // NO LOGGING IN THIS METHOD.  This is the hot path — at 3 m
+        // distanceFilter and cycling speed it fires ~2–3 times/sec for the
+        // length of a ride, which got the subsystem quarantined.  See the
+        // file-level comment for the policy.
         let received = locations
         Task { @MainActor in
             guard let loc = received.last else { return }
-            // Per-fix log: accuracy + age + speed.  These three numbers tell us
-            // everything we need to diagnose pocket-mode dropouts — a sudden
-            // jump in horizontalAccuracy is the smoking gun for "phone went
-            // into a pocket and GPS degraded."  Age >> 0 means iOS is feeding
-            // us cached fixes (also a degradation signal).
-            let age = -loc.timestamp.timeIntervalSinceNow
-            Self.log.debug("didUpdateLocations: hAcc=\(loc.horizontalAccuracy, format: .fixed(precision: 1), privacy: .public)m vAcc=\(loc.verticalAccuracy, format: .fixed(precision: 1), privacy: .public)m speed=\(loc.speed, format: .fixed(precision: 2), privacy: .public)m/s age=\(age, format: .fixed(precision: 2), privacy: .public)s")
             self.lastLocation = loc
             self.onLocationUpdate?(loc)
         }

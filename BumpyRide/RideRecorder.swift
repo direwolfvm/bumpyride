@@ -1,7 +1,6 @@
 import Foundation
 import CoreLocation
 import Observation
-import OSLog
 
 /// The recording coordinator: owns a `LocationManager` and `MotionManager`, ingests
 /// each location update by stamping it with the current bumpiness and accelerometer
@@ -21,8 +20,6 @@ final class RideRecorder {
     let location = LocationManager()
     let motion = MotionManager()
     let journal = RideJournal()
-
-    private static let log = Logger(subsystem: "com.herbertindustries.BumpyRide", category: "recorder")
 
     /// Max horizontal accuracy (in meters) we'll accept for a fix.  Bumped from
     /// 50 m → 100 m to recover from a real bug: in pocket-mode rides, the GPS
@@ -145,17 +142,13 @@ final class RideRecorder {
 
     private func handleLocation(_ loc: CLLocation) {
         guard state == .recording else { return }
-        // `horizontalAccuracy < 0` is CoreLocation's "no valid fix" sentinel —
-        // drop unconditionally.  Accuracy >= threshold is dropped with a log
-        // so we can see *why* RidePoints stop growing during a long ride.
-        guard loc.horizontalAccuracy >= 0 else {
-            Self.log.debug("dropping fix: invalid (hAcc=\(loc.horizontalAccuracy, format: .fixed(precision: 1), privacy: .public))")
-            return
-        }
-        guard loc.horizontalAccuracy < Self.maxHorizontalAccuracyMeters else {
-            Self.log.notice("dropping fix: hAcc=\(loc.horizontalAccuracy, format: .fixed(precision: 1), privacy: .public)m exceeds \(Self.maxHorizontalAccuracyMeters, privacy: .public)m threshold")
-            return
-        }
+        // `horizontalAccuracy < 0` is CoreLocation's "no valid fix" sentinel.
+        // Both drop conditions are silent (no OSLog) — this method is on the
+        // hot path (fires per location callback, ~2–3 Hz at cycling speed)
+        // and an earlier per-drop log got the subsystem quarantined.  If you
+        // need to see drop counts for debugging, attach Xcode.
+        guard loc.horizontalAccuracy >= 0 else { return }
+        guard loc.horizontalAccuracy < Self.maxHorizontalAccuracyMeters else { return }
         let bumpiness = motion.currentBumpiness
         let window = motion.snapshotWindow()
         let point = RidePoint(
