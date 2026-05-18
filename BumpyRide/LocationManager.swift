@@ -11,13 +11,20 @@ import OSLog
 ///
 /// **Instrumentation note**: only *event-driven* CoreLocation callbacks emit
 /// OSLog lines under subsystem `com.herbertindustries.BumpyRide` /
-/// category `location` (start, stop, auth change, error, pause, resume).  A
-/// per-fix log was tried briefly and got the subsystem quarantined by iOS —
-/// at cycling speed + 3 m distanceFilter that's ~2–3 callbacks/sec sustained,
-/// which trips the OS log rate limit and causes *all* of our logs to be
-/// dropped.  Don't add anything to the hot location callback path; if you
-/// need per-fix visibility for debugging, attach Xcode and add a temporary
-/// breakpoint or print() instead.
+/// category `location` (start, stop, auth change, error, pause, resume).
+/// Two related rules learned the hard way:
+///
+/// 1. **Never log on the hot per-fix path.**  At cycling speed + 3 m
+///    distanceFilter that's ~2–3 callbacks/sec sustained for a whole ride,
+///    which trips iOS's OSLog rate limiter and gets the subsystem quarantined.
+///    For per-fix visibility during debugging, attach Xcode + breakpoint.
+///
+/// 2. **Never auto-call `startUpdatingLocation()` from
+///    `didPauseLocationUpdates`.**  iOS pauses for reasons we can't change;
+///    restarting just produces a feedback loop that pegs the CL API rate
+///    limit, and iOS's own "rate exceeded" log lines emit under our
+///    subsystem and quarantine us.  See the method's doc comment for the
+///    full incident write-up.
 ///
 /// View live in Console.app (device must be plugged in or sharing via wifi):
 ///   `subsystem:com.herbertindustries.BumpyRide category:location`
@@ -105,19 +112,31 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     /// `pausesLocationUpdatesAutomatically = false` hint.  The hint isn't a
     /// guarantee — the `.fitness` activity classifier can decide the user has
     /// stopped (a common false positive when phone-in-pocket motion looks like
-    /// walking rather than cycling) and pause anyway.  When that happens we
-    /// immediately re-arm updates; we'd rather burn a little extra battery
-    /// than lose mid-ride GPS coverage.
+    /// walking rather than cycling) and pause anyway.
+    ///
+    /// **We do NOT call `startUpdatingLocation()` from here.**  An earlier
+    /// version did, on the theory that we'd rather burn a little battery
+    /// than lose coverage.  In practice it produced a hard feedback loop:
+    /// iOS would pause → we'd restart → conditions hadn't changed → iOS
+    /// would pause again → repeat 24,001 times in a single ride, hitting
+    /// CoreLocation's API rate limit and quarantining our entire OSLog
+    /// subsystem (since iOS logged "Supported CoreLocation API call rate
+    /// exceeded" under our subsystem name every iteration).  iOS wins these
+    /// fights every time; restart-on-pause is harmful, not helpful.
+    ///
+    /// Logged once per actual pause so we can still observe it in Console.
+    /// If we want a real recovery path in the future, it needs to wait for
+    /// some external signal that the underlying condition has changed —
+    /// not poll iOS.
     nonisolated func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
         Task { @MainActor in
-            Self.log.notice("didPauseLocationUpdates — auto-paused by iOS; restarting immediately")
-            manager.startUpdatingLocation()
+            Self.log.notice("didPauseLocationUpdates — iOS auto-paused; NOT restarting (see method comment)")
         }
     }
 
-    /// Logged for symmetry with `didPauseLocationUpdates`.  iOS calls this if
-    /// it decides on its own that motion has resumed.  No action needed — we
-    /// already re-armed `startUpdatingLocation()` on pause.
+    /// Logged for symmetry with `didPauseLocationUpdates`.  iOS calls this
+    /// when it decides on its own that motion has resumed — happens
+    /// naturally when whatever made it pause stops being true.
     nonisolated func locationManagerDidResumeLocationUpdates(_ manager: CLLocationManager) {
         Task { @MainActor in
             Self.log.notice("didResumeLocationUpdates")

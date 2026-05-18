@@ -283,7 +283,12 @@ actor WebSyncClient {
     /// on the caller's actor.  This avoids hopping `Ride`'s MainActor-isolated
     /// `Encodable` conformance into this non-MainActor actor.
     func uploadRide(jsonBody: Data, token: String) async throws {
-        log.info("POST /api/sync/ride — \(jsonBody.count, privacy: .public) byte body")
+        // .debug (not .info) — during a backlog catch-up this fires for every
+        // queued ride in rapid succession, and we recently learned that
+        // per-action .info volume contributes to OSLog subsystem quarantine.
+        // .debug stays in-memory only; sufficient for live Console debugging
+        // but doesn't reach disk in production.
+        log.debug("POST /api/sync/ride — \(jsonBody.count, privacy: .public) byte body")
         var request = URLRequest(url: baseURL.appendingPathComponent("api/sync/ride"))
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

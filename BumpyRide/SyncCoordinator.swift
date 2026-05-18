@@ -189,7 +189,10 @@ final class SyncCoordinator {
                 try await client.uploadRide(jsonBody: body, token: stored.token)
                 queue.remove(next.id)
                 attempt = 0  // reset backoff on success
-                log.info("Uploaded ride \(next.id, privacy: .public); remaining \(self.queue.count, privacy: .public)")
+                // .debug per upload — see WebSyncClient.uploadRide comment.
+                // The "Drain complete" .info at the end still gives one
+                // summary line per drain pass, which is the useful signal.
+                log.debug("Uploaded ride \(next.id, privacy: .public); remaining \(self.queue.count, privacy: .public)")
             } catch WebSyncClient.ClientError.unauthorized {
                 log.error("401 from /api/sync/ride — invalidating account")
                 webAccount?.invalidate()
