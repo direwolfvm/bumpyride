@@ -26,6 +26,14 @@ struct ContentView: View {
     /// no-op pushes on triggers like reachability returning while nothing has changed.
     @State private var lastPushedCalibration: WebSyncClient.ServerCalibration?
 
+    /// One-shot flag flipped to `true` after the user dismisses the first-launch
+    /// `IntroView`.  Persisted in `UserDefaults` so the sheet appears at most once
+    /// per install.  Stored as `@AppStorage` (not `AppSettings`) because it's a
+    /// pure UI lifecycle flag, not a user-tunable preference — there's no
+    /// "Show intro again" surface anywhere.
+    @AppStorage("hasSeenIntro") private var hasSeenIntro: Bool = false
+    @State private var showingIntro = false
+
     init() {
         let store = RideStore()
         let webAccount = WebAccount()
@@ -88,7 +96,24 @@ struct ContentView: View {
             .tabItem { Label("Settings", systemImage: "gear") }
             .tag(AppState.Tab.settings)
         }
+        .sheet(isPresented: $showingIntro) {
+            // Dismissing the sheet through Get Started flips both flags
+            // together — hasSeenIntro persists across launches so we never show
+            // the intro again, and showingIntro tears down this sheet.  We do
+            // not set hasSeenIntro on .onDismiss because the sheet is
+            // interactive-dismiss-disabled; the only way out is the button.
+            IntroView {
+                hasSeenIntro = true
+                showingIntro = false
+            }
+        }
         .task {
+            // First-launch intro: present once per install.  Checked before any
+            // other launch work since this is the user's first impression and
+            // anything else surfacing on top of it would look chaotic.
+            if !hasSeenIntro {
+                showingIntro = true
+            }
             // Check for a recoverable ride journal first — this is the recovery
             // path for users whose last session ended abruptly (OS kill, crash,
             // force-quit).  Has to happen before anything else might touch the
