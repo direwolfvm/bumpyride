@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+
+# Xcode — user-specific UI state.  Tracks which schemes are visible, breakpoints,
+# window layout, etc.  Should never be committed because every dev would clobber
+# every other dev's settings on every push.
+xcuserdata/
+*.xcuserdatad/
+
+# Xcode build outputs.  Recreated on every build; committing them bloats the repo
+# and breaks reproducibility (DerivedData is keyed on the machine's UUID).
+build/
+DerivedData/
+
+# Swift Package Manager local state.  Package.resolved IS committed for apps so
+# every build resolves to the same dep versions; only the local caches are noise.
+.swiftpm/
+.build/
+
+# CocoaPods / Carthage / fastlane build artifacts.  Harmless to keep these here
+# even though the project doesn't use them today — saves a future "why did Pods/
+# get committed" headache.
+Pods/
+Carthage/Build/
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+
+# Common editor backup files
+*.swp
+*.orig
+*.bak
