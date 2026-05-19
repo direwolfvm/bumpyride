@@ -46,6 +46,37 @@ struct RidePoint: Codable, Identifiable, Hashable {
     }
 }
 
+/// A user-reported close call — a near-miss with a vehicle, pedestrian, or
+/// road hazard the rider tagged by tapping the "Log close call" button
+/// during recording.
+///
+/// **User-initiated**, in contrast to `BrakeEvent` which is auto-detected
+/// post-hoc.  Captured live during the ride at the moment of the tap;
+/// timestamp + location are the only fields.  Severity, category, and notes
+/// are deliberately out of scope for v1.0 of this feature — the design
+/// goal is one-handed, no-look tap-to-log while riding.  Editor surfaces
+/// in the saved-ride view let the user delete accidental taps.
+///
+/// Wire format additive — old clients ignore unknown fields, and `Ride`'s
+/// `closeCallEvents` is itself optional, so legacy rides decode unchanged.
+struct CloseCall: Codable, Identifiable, Hashable, Sendable {
+    var id: UUID = UUID()
+    var timestamp: Date
+    var latitude: Double
+    var longitude: Double
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case timestamp
+        case latitude
+        case longitude
+    }
+}
+
 /// A discrete hard-braking event detected post-hoc on a saved ride.  Sparse
 /// (typically 0–10 per ride) — emitted by `BrakeEventDetector` from the saved
 /// `points` array, not captured live during recording.
@@ -110,18 +141,30 @@ struct Ride: Codable, Identifiable, Hashable {
     /// raw window before taking RMS.  Lets us decide mode after the fact and retag
     /// either direction without information loss.
     ///
-    /// `3` — Adds `RidePoint.horizontalAccel` (g-units, optional) per sample, and
-    /// adds `brakeEvents` (optional) on the Ride.  Brake events are detected
-    /// post-hoc by `BrakeEventDetector` at save time and stored as a sparse list.
-    /// Legacy v1/v2 rides decode with `horizontalAccel == nil` and
-    /// `brakeEvents == nil`; the latter triggers auto-reprocessing on launch
-    /// (GPS-only fallback for rides without horizontalAccel).
+    /// `3` — Adds three optional fields, all introduced together for the
+    /// v1.3 release:
+    ///  - `RidePoint.horizontalAccel` (g-units): per-sample horizontal-plane
+    ///    accel magnitude, used by `BrakeEventDetector` for peak refinement.
+    ///  - `brakeEvents`: post-hoc-detected hard-braking events.
+    ///  - `closeCallEvents`: user-reported close calls captured live during
+    ///    the ride.
+    /// All three are independently optional.  Legacy v1/v2 rides decode
+    /// with all three set to `nil`; the brake reprocessor populates the
+    /// first two on launch.  Close calls aren't backfillable (the data
+    /// doesn't exist for rides recorded before the feature shipped), so
+    /// `closeCallEvents == nil` on a legacy ride stays `nil` indefinitely —
+    /// treat it as semantically equivalent to `[]` for rendering.
     var schemaVersion: Int
     /// Hard-braking events detected on this ride.  `nil` means detection hasn't
     /// run yet (legacy rides queued for auto-reprocessing); `[]` means it ran
     /// and found nothing.  This distinction matters — see `BrakeEventDetector`
     /// and the launch-time reprocessor.
     var brakeEvents: [BrakeEvent]?
+    /// User-reported close calls captured live during recording.  `nil` for
+    /// rides predating the feature; `[]` for rides recorded with the feature
+    /// available but no calls logged.  Both render as "no close calls" — no
+    /// background reprocessor backfills these since the data is user-initiated.
+    var closeCallEvents: [CloseCall]?
 
     init(
         id: UUID = UUID(),
@@ -131,7 +174,8 @@ struct Ride: Codable, Identifiable, Hashable {
         points: [RidePoint],
         pocketMode: Bool? = nil,
         schemaVersion: Int = 3,
-        brakeEvents: [BrakeEvent]? = nil
+        brakeEvents: [BrakeEvent]? = nil,
+        closeCallEvents: [CloseCall]? = nil
     ) {
         self.id = id
         self.title = title
@@ -141,6 +185,7 @@ struct Ride: Codable, Identifiable, Hashable {
         self.pocketMode = pocketMode
         self.schemaVersion = schemaVersion
         self.brakeEvents = brakeEvents
+        self.closeCallEvents = closeCallEvents
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -152,6 +197,7 @@ struct Ride: Codable, Identifiable, Hashable {
         case pocketMode
         case schemaVersion
         case brakeEvents
+        case closeCallEvents
     }
 
     init(from decoder: Decoder) throws {
@@ -168,6 +214,9 @@ struct Ride: Codable, Identifiable, Hashable {
         // brakeEvents missing → nil → reprocessor will run detection on launch.
         // brakeEvents == [] → detection has already run and found nothing.
         self.brakeEvents = try c.decodeIfPresent([BrakeEvent].self, forKey: .brakeEvents)
+        // closeCallEvents missing → nil → ride predates the feature; treat as
+        // empty for rendering.  No reprocessor backfills this.
+        self.closeCallEvents = try c.decodeIfPresent([CloseCall].self, forKey: .closeCallEvents)
     }
 
     var duration: TimeInterval { endedAt.timeIntervalSince(startedAt) }

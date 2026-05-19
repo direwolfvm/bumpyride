@@ -26,10 +26,11 @@ Consumers should be prepared to accept **`1`, `2`, and `3`** concurrently — ol
 
 ### What's new in v3
 
-Additive only — both new fields are optional and existing decoders that ignore unknown keys read v3 records without any code change.
+Additive only — all new fields are optional and existing decoders that ignore unknown keys read v3 records without any code change.
 
 - `RidePoint.horizontalAccel` (optional number, g-units): magnitude of user acceleration projected onto the plane perpendicular to gravity at sample time. Captures braking, accelerating, and cornering independently of phone orientation. Used by the iOS `BrakeEventDetector` as a refinement signal layered on top of GPS speed derivative.
 - `Ride.brakeEvents` (optional array of `BrakeEvent`): sparse list of hard-braking events detected post-hoc on the saved points. `null` means detection hasn't run yet (legacy rides queued for auto-reprocessing on next launch); `[]` means it ran and found nothing.
+- `Ride.closeCallEvents` (optional array of `CloseCall`): sparse list of user-reported close calls captured by the rider tapping the "Log close call" button during recording. `null` means the ride predates the feature (no backfill is possible — the data wasn't capturable); `[]` means the feature was available but no calls were logged. Both render as "no close calls."
 
 ### What's different between v1 and v2
 
@@ -61,8 +62,9 @@ The top-level object.
 | `points` | array of `RidePoint` | yes | Ordered chronologically. May be empty for a discarded recording, but typically ≥1 element. |
 | `pocketMode` | boolean | no² | `true` = phone was on the rider's body; `false` = phone was on a fixed bike mount; `null`/missing = mode not determined (legacy or undecided). Set at save time by `MountStyleDetector`, user-overridable. See the "Versioning" section for what this affects in `accelWindow` and `bumpiness`. |
 | `brakeEvents` | array of `BrakeEvent` | no³ | Sparse list of hard-braking events detected post-hoc on this ride. Added in v3. `null`/missing = detection hasn't run yet (legacy rides queued for auto-reprocessing); `[]` = ran and found nothing. |
+| `closeCallEvents` | array of `CloseCall` | no⁵ | Sparse list of user-reported close calls captured by tapping the "Log close call" button during recording. Added in v3. `null`/missing = ride predates the feature (no backfill possible); `[]` = feature available but nothing logged. |
 
-¹ Default: `1` for records lacking the field. ² Default: `null` (unknown). ³ Default: `null` (not detected).
+¹ Default: `1` for records lacking the field. ² Default: `null` (unknown). ³ Default: `null` (not detected). ⁵ Default: `null` (predates feature).
 
 ### Derived values (NOT in the wire format)
 
@@ -103,6 +105,19 @@ Sparse — emitted by the iOS `BrakeEventDetector` post-hoc at ride save time. A
 | `longitude` | number | yes | Location at the peak. WGS-84. |
 | `peakDecelerationMPS2` | number | yes | Peak rate of speed reduction, m/s² (positive = slowing). Typical threshold: detector flags events sustained above ≈2.5 m/s² (0.25g). |
 | `durationSeconds` | number | yes | How long the rate stayed above the detector's threshold. |
+
+## `CloseCall` object
+
+Sparse — captured live when the rider taps the "Log close call" button during recording. A typical ride has 0–5 events. Added in `schemaVersion 3`.
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `id` | UUID string | yes | Stable per-event id. |
+| `timestamp` | ISO-8601 date | yes | Time of the tap (from `Date()`, ride-local). |
+| `latitude` | number | yes | Location at the moment of the tap. WGS-84. |
+| `longitude` | number | yes | Location at the moment of the tap. WGS-84. |
+
+No severity, category, or notes fields in v1.0 of the feature. The design goal is one-handed, no-look tap-to-log while riding; richer metadata would be added in a follow-up release with a different interaction model.
 
 ### `accelWindow` encoding
 
