@@ -3,9 +3,18 @@ import MapKit
 
 /// SwiftUI wrapper around `MKMapView` so we can attach the custom tile overlay.
 /// SwiftUI's `Map` doesn't accept custom `MKTileOverlay`s, so we drop to UIKit here.
+///
+/// Renders one of two overlays depending on `mode`:
+/// - `.bumps` → `BumpMapTileOverlay` against `bumpMap`
+/// - `.brakes` → `BrakeMapTileOverlay` against `brakeMap`
+///
+/// Mode switches preserve camera state (zoom/pan).  Both stores rebuild
+/// upstream on data/filter changes; this view just picks which to render.
 struct BumpMapView: UIViewRepresentable {
     @Bindable var bumpMap: BumpMapStore
+    @Bindable var brakeMap: BrakeMapStore
     var settings: AppSettings
+    var mode: MapViewMode
     /// Single-fix location source used when the user has no ride data yet.  Lets
     /// us center on "where you are" rather than a hardcoded city.  See
     /// `BumpMapLocationHint` for the rationale on a separate CLLocationManager.
@@ -31,8 +40,19 @@ struct BumpMapView: UIViewRepresentable {
     }
 
     func updateUIView(_ map: MKMapView, context: Context) {
-        if context.coordinator.lastDataVersion != bumpMap.dataVersion {
-            context.coordinator.lastDataVersion = bumpMap.dataVersion
+        // Three triggers for rebuilding the overlay:
+        // 1. Mode changed (Bumps ↔ Brakes) — different overlay class
+        //    entirely, so we have to swap.
+        // 2. Currently in .bumps mode and bumpMap data changed.
+        // 3. Currently in .brakes mode and brakeMap data changed.
+        //
+        // Rebuild rebuild rebuild — but each is gated on a version
+        // comparison so we don't churn tiles on every SwiftUI redraw.
+        let coord = context.coordinator
+        let needsRebuild = coord.currentMode != mode
+            || (mode == .bumps && coord.lastBumpDataVersion != bumpMap.dataVersion)
+            || (mode == .brakes && coord.lastBrakeDataVersion != brakeMap.dataVersion)
+        if needsRebuild {
             rebuildOverlay(on: map, context: context)
         }
         // Camera auto-framing has two one-shot triggers, in priority order:
@@ -72,8 +92,17 @@ struct BumpMapView: UIViewRepresentable {
         if let old = context.coordinator.overlay {
             map.removeOverlay(old)
         }
-        let overlay = BumpMapTileOverlay(grid: bumpMap.grid, settings: settings)
+        let overlay: MKTileOverlay
+        switch mode {
+        case .bumps:
+            overlay = BumpMapTileOverlay(grid: bumpMap.grid, settings: settings)
+            context.coordinator.lastBumpDataVersion = bumpMap.dataVersion
+        case .brakes:
+            overlay = BrakeMapTileOverlay(grid: brakeMap.grid)
+            context.coordinator.lastBrakeDataVersion = brakeMap.dataVersion
+        }
         context.coordinator.overlay = overlay
+        context.coordinator.currentMode = mode
         map.addOverlay(overlay, level: .aboveLabels)
     }
 
@@ -102,8 +131,18 @@ struct BumpMapView: UIViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, MKMapViewDelegate {
         weak var mapView: MKMapView?
-        var overlay: BumpMapTileOverlay?
-        var lastDataVersion: Int = -1
+        /// Currently-installed overlay — either a `BumpMapTileOverlay` or a
+        /// `BrakeMapTileOverlay`.  Held as the protocol-erased base class so
+        /// the dispatcher and the remove() path don't have to switch on type.
+        var overlay: MKTileOverlay?
+        /// Which mode the currently-installed overlay represents.  `nil`
+        /// before the first `rebuildOverlay` call.
+        var currentMode: MapViewMode?
+        /// Last bumpMap.dataVersion we rendered.  Compared against the
+        /// store's current version to decide whether a rebuild is needed
+        /// while in `.bumps` mode.  Symmetric with `lastBrakeDataVersion`.
+        var lastBumpDataVersion: Int = -1
+        var lastBrakeDataVersion: Int = -1
         var didFitToData: Bool = false
         /// One-shot flag that fires when we auto-pan to the user's location hint
         /// because there's no ride data yet.  Separate from `didFitToData` so

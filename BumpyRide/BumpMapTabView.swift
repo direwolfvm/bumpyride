@@ -13,6 +13,7 @@ import CoreLocation
 struct BumpMapTabView: View {
     @Bindable var store: RideStore
     @Bindable var bumpMap: BumpMapStore
+    @Bindable var brakeMap: BrakeMapStore
     @Bindable var settings: AppSettings
     @Bindable var calibration: CalibrationStore
 
@@ -31,41 +32,60 @@ struct BumpMapTabView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                BumpMapView(bumpMap: bumpMap, settings: settings, locationHint: locationHint)
-                    .ignoresSafeArea(edges: .bottom)
+                BumpMapView(
+                    bumpMap: bumpMap,
+                    brakeMap: brakeMap,
+                    settings: settings,
+                    mode: settings.mapViewMode,
+                    locationHint: locationHint
+                )
+                .ignoresSafeArea(edges: .bottom)
 
                 // Chrome (filter + stats) is shown only when there's data to
                 // operate on.  Hiding it in the empty state keeps the focus on
                 // the welcome message and avoids "Rides: 0 / Cells: 0" noise.
                 if hasAnyRides {
-                    VStack {
+                    VStack(spacing: 8) {
                         filterChip
-                            .padding(.horizontal)
-                            .padding(.top, 8)
+                        viewModeChip
                         Spacer()
                         footer
-                            .padding(.horizontal)
                             .padding(.bottom, 12)
                     }
+                    .padding(.horizontal)
+                    .padding(.top, 8)
                 } else {
                     emptyState
                 }
             }
-            .navigationTitle("Bump Map")
+            .navigationTitle(settings.mapViewMode == .brakes ? "Brake Map" : "Bump Map")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
-                bumpMap.rebuildIfNeeded(from: filteredRides, calibration: calibration.calibration)
+                rebuildBothMaps()
             }
             .onChange(of: store.rides) { _, _ in
-                bumpMap.rebuildIfNeeded(from: filteredRides, calibration: calibration.calibration)
+                rebuildBothMaps()
             }
             .onChange(of: settings.bumpMapFilter) { _, _ in
-                bumpMap.rebuildIfNeeded(from: filteredRides, calibration: calibration.calibration)
+                rebuildBothMaps()
             }
             .onChange(of: calibration.calibration) { _, _ in
+                // Calibration only affects the bump map's per-cell averages —
+                // brake counts are unaffected.  Just rebuild bumps.
                 bumpMap.rebuildIfNeeded(from: filteredRides, calibration: calibration.calibration)
             }
         }
+    }
+
+    /// Rebuild both aggregation stores against the current filtered ride set.
+    /// Called on appear and on any filter / ride-list change.  Both stores
+    /// short-circuit if their signature hasn't changed, so this is cheap to
+    /// call eagerly.  Brake map is always rebuilt against the same filtered
+    /// rides as the bump map so the All/Mounted/Pocket chip filters them in
+    /// lockstep.
+    private func rebuildBothMaps() {
+        bumpMap.rebuildIfNeeded(from: filteredRides, calibration: calibration.calibration)
+        brakeMap.rebuildIfNeeded(from: filteredRides)
     }
 
     /// Rides filtered by the user's current mode preference.  See `BumpMapModeFilter`.
@@ -96,11 +116,45 @@ struct BumpMapTabView: View {
         )
     }
 
+    /// Picker for `MapViewMode` (Bumps vs Brakes).  Lives below the
+    /// All/Mounted/Pocket filter so a user can read top-to-bottom: "show
+    /// rides where… as a heatmap of…"  Same visual treatment as the filter
+    /// chip for consistency.
+    private var viewModeChip: some View {
+        Picker("View", selection: $settings.mapViewMode) {
+            ForEach(MapViewMode.allCases, id: \.self) { mode in
+                Text(mode.displayName).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(6)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.black.opacity(0.08))
+        )
+    }
+
+    /// Stats strip at the bottom of the map area.  Two layouts depending on
+    /// the active view mode:
+    ///
+    /// - **Bumps**: Rides / Cells / Resolution — the "how much data have I
+    ///   accumulated" stats most relevant to a heat map.
+    /// - **Brakes**: Rides / Events / Resolution — events replaces cells
+    ///   because brake-map cells = brake-events (one event per cell, at
+    ///   most one cell per event).  The user cares about the absolute
+    ///   incident count, not the cell count.
     private var footer: some View {
         HStack(spacing: 14) {
             info("Rides", "\(filteredRides.count)")
             Divider().frame(height: 24)
-            info("Cells", formatted(bumpMap.grid.count))
+            switch settings.mapViewMode {
+            case .bumps:
+                info("Cells", formatted(bumpMap.grid.count))
+            case .brakes:
+                info("Events", formatted(brakeMap.grid.totalEvents))
+            }
             Divider().frame(height: 24)
             info("Resolution", "\(Int(BumpGrid.cellSizeFeet)) ft")
         }

@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var settings = AppSettings()
     @State private var appState = AppState()
     @State private var bumpMap = BumpMapStore()
+    @State private var brakeMap = BrakeMapStore()
 
     @State private var store: RideStore
     @State private var webAccount: WebAccount
@@ -95,6 +96,7 @@ struct ContentView: View {
             BumpMapTabView(
                 store: store,
                 bumpMap: bumpMap,
+                brakeMap: brakeMap,
                 settings: settings,
                 calibration: calibration
             )

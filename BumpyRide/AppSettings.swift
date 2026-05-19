@@ -25,6 +25,22 @@ enum BumpMapModeFilter: String, CaseIterable, Hashable {
     }
 }
 
+/// Which dataset the Bump Map tab is currently visualizing.  Persisted so a
+/// user who's chosen brake mode keeps seeing it when they relaunch.
+enum MapViewMode: String, CaseIterable, Hashable {
+    /// The original bump heatmap — per-cell average bumpiness.
+    case bumps
+    /// Sparse brake-event dots — per-cell event count.
+    case brakes
+
+    var displayName: String {
+        switch self {
+        case .bumps: return "Bumps"
+        case .brakes: return "Brakes"
+        }
+    }
+}
+
 /// User-tunable settings persisted in `UserDefaults`: the bumpiness color thresholds
 /// (yellow / orange / red / purple breakpoints in g) and the Bump Map mode filter.
 /// Provides `color(for:)` / `uiColor(for:)` helpers used everywhere bumpiness is shown.
@@ -39,6 +55,7 @@ final class AppSettings {
     private static let keyRed = "bumpThresholdRed"
     private static let keyPurple = "bumpThresholdPurple"
     private static let keyBumpMapFilter = "bumpMapModeFilter"
+    private static let keyMapViewMode = "mapViewMode"
 
     var yellowG: Double = 0.5 {
         didSet { UserDefaults.standard.set(yellowG, forKey: Self.keyYellow) }
@@ -61,6 +78,14 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(bumpMapFilter.rawValue, forKey: Self.keyBumpMapFilter) }
     }
 
+    /// Which dataset the Bump Map tab is rendering — bumpiness heatmap or
+    /// brake-event dots.  Defaults to `.bumps` since that's the original
+    /// view and most users will start there.  Persisted so a user who
+    /// prefers brake mode keeps seeing it across launches.
+    var mapViewMode: MapViewMode = .bumps {
+        didSet { UserDefaults.standard.set(mapViewMode.rawValue, forKey: Self.keyMapViewMode) }
+    }
+
     init() {
         let d = UserDefaults.standard
         if let v = d.object(forKey: Self.keyYellow) as? Double { yellowG = v }
@@ -71,6 +96,10 @@ final class AppSettings {
            let f = BumpMapModeFilter(rawValue: raw) {
             bumpMapFilter = f
         }
+        if let raw = d.string(forKey: Self.keyMapViewMode),
+           let m = MapViewMode(rawValue: raw) {
+            mapViewMode = m
+        }
     }
 
     func resetToDefaults() {
@@ -79,6 +108,7 @@ final class AppSettings {
         redG = 1.5
         purpleG = 2.0
         bumpMapFilter = .mountedOrUntagged
+        mapViewMode = .bumps
     }
 
     private struct Stop {
