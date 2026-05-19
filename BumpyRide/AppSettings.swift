@@ -26,17 +26,23 @@ enum BumpMapModeFilter: String, CaseIterable, Hashable {
 }
 
 /// Which dataset the Bump Map tab is currently visualizing.  Persisted so a
-/// user who's chosen brake mode keeps seeing it when they relaunch.
+/// user who's chosen a specific mode keeps seeing it when they relaunch.
 enum MapViewMode: String, CaseIterable, Hashable {
     /// The original bump heatmap — per-cell average bumpiness.
     case bumps
     /// Sparse brake-event dots — per-cell event count.
     case brakes
+    /// User-reported close-call diamonds — per-cell tap count.
+    case closeCalls
 
     var displayName: String {
         switch self {
         case .bumps: return "Bumps"
         case .brakes: return "Brakes"
+        // Short label — "Close Calls" overflows the segmented control on
+        // narrower iPhone screens.  "Calls" alone is ambiguous, "Close"
+        // is misleading (sounds like proximity), so "Close Calls" abridged.
+        case .closeCalls: return "Calls"
         }
     }
 }

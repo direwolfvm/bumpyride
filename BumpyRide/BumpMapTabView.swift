@@ -14,6 +14,7 @@ struct BumpMapTabView: View {
     @Bindable var store: RideStore
     @Bindable var bumpMap: BumpMapStore
     @Bindable var brakeMap: BrakeMapStore
+    @Bindable var closeCallMap: CloseCallMapStore
     @Bindable var settings: AppSettings
     @Bindable var calibration: CalibrationStore
 
@@ -35,6 +36,7 @@ struct BumpMapTabView: View {
                 BumpMapView(
                     bumpMap: bumpMap,
                     brakeMap: brakeMap,
+                    closeCallMap: closeCallMap,
                     settings: settings,
                     mode: settings.mapViewMode,
                     locationHint: locationHint
@@ -58,7 +60,7 @@ struct BumpMapTabView: View {
                     emptyState
                 }
             }
-            .navigationTitle(settings.mapViewMode == .brakes ? "Brake Map" : "Bump Map")
+            .navigationTitle(navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
                 rebuildBothMaps()
@@ -77,15 +79,27 @@ struct BumpMapTabView: View {
         }
     }
 
-    /// Rebuild both aggregation stores against the current filtered ride set.
-    /// Called on appear and on any filter / ride-list change.  Both stores
-    /// short-circuit if their signature hasn't changed, so this is cheap to
-    /// call eagerly.  Brake map is always rebuilt against the same filtered
-    /// rides as the bump map so the All/Mounted/Pocket chip filters them in
-    /// lockstep.
+    /// Rebuild all three aggregation stores against the current filtered
+    /// ride set.  Called on appear and on any filter / ride-list change.
+    /// All stores short-circuit if their signature hasn't changed, so this
+    /// is cheap to call eagerly.  Same filtered rides for all three so the
+    /// All/Mounted/Pocket chip filters them in lockstep — a user looking
+    /// only at mounted rides sees their bumps, brakes, AND close calls
+    /// filtered the same way.
     private func rebuildBothMaps() {
         bumpMap.rebuildIfNeeded(from: filteredRides, calibration: calibration.calibration)
         brakeMap.rebuildIfNeeded(from: filteredRides)
+        closeCallMap.rebuildIfNeeded(from: filteredRides)
+    }
+
+    /// Navigation title adapts to the current view mode so the chrome
+    /// reflects what the user is looking at.
+    private var navigationTitle: String {
+        switch settings.mapViewMode {
+        case .bumps: return "Bump Map"
+        case .brakes: return "Brake Map"
+        case .closeCalls: return "Close Calls"
+        }
     }
 
     /// Rides filtered by the user's current mode preference.  See `BumpMapModeFilter`.
@@ -136,15 +150,15 @@ struct BumpMapTabView: View {
         )
     }
 
-    /// Stats strip at the bottom of the map area.  Two layouts depending on
-    /// the active view mode:
+    /// Stats strip at the bottom of the map area.  Three layouts depending
+    /// on the active view mode:
     ///
     /// - **Bumps**: Rides / Cells / Resolution — the "how much data have I
     ///   accumulated" stats most relevant to a heat map.
-    /// - **Brakes**: Rides / Events / Resolution — events replaces cells
-    ///   because brake-map cells = brake-events (one event per cell, at
-    ///   most one cell per event).  The user cares about the absolute
-    ///   incident count, not the cell count.
+    /// - **Brakes**: Rides / Events / Resolution — event count is the
+    ///   informative number, not cell count.
+    /// - **Close Calls**: Rides / Calls / Resolution — same shape as
+    ///   brakes; "Calls" is the natural short label.
     private var footer: some View {
         HStack(spacing: 14) {
             info("Rides", "\(filteredRides.count)")
@@ -154,6 +168,8 @@ struct BumpMapTabView: View {
                 info("Cells", formatted(bumpMap.grid.count))
             case .brakes:
                 info("Events", formatted(brakeMap.grid.totalEvents))
+            case .closeCalls:
+                info("Calls", formatted(closeCallMap.grid.totalEvents))
             }
             Divider().frame(height: 24)
             info("Resolution", "\(Int(BumpGrid.cellSizeFeet)) ft")

@@ -25,6 +25,10 @@ struct RouteMapView: View {
     /// Brake-event pins to render on top of the route.  Empty by default so
     /// callers that don't care about brakes don't have to pass anything.
     var brakeEvents: [BrakeEvent] = []
+    /// Close-call pins to render on top of the route.  Different visual
+    /// treatment from brake pins (violet diamond vs red circle) so a user
+    /// who's looking at both at once can tell them apart.  Empty by default.
+    var closeCalls: [CloseCall] = []
     /// `true` (default): color each segment by bumpiness of its endpoints.
     /// `false`: render the whole route in a neutral gray.
     var colorRoute: Bool = true
@@ -46,6 +50,14 @@ struct RouteMapView: View {
             ForEach(brakeEvents) { event in
                 Annotation("", coordinate: event.coordinate) {
                     brakeMarker
+                }
+            }
+
+            // Close-call pins.  Distinct geometry + color from brake pins
+            // so the two are unambiguously different when shown together.
+            ForEach(closeCalls) { call in
+                Annotation("", coordinate: call.coordinate) {
+                    closeCallMarker
                 }
             }
 
@@ -84,6 +96,23 @@ struct RouteMapView: View {
             Circle()
                 .fill(Color(red: 0.92, green: 0.20, blue: 0.20))
                 .frame(width: 16, height: 16)
+            Image(systemName: "exclamationmark")
+                .font(.system(size: 10, weight: .heavy))
+                .foregroundStyle(.white)
+        }
+    }
+
+    /// Visual: white-bordered violet diamond.  Geometry matches the close-
+    /// call map's diamond tiles for consistency.  Different shape AND color
+    /// from the brake marker so a route view showing both reads clearly.
+    private var closeCallMarker: some View {
+        ZStack {
+            Image(systemName: "diamond.fill")
+                .font(.system(size: 22))
+                .foregroundStyle(.white)
+            Image(systemName: "diamond.fill")
+                .font(.system(size: 18))
+                .foregroundStyle(Color(red: 0.55, green: 0.25, blue: 0.85))
             Image(systemName: "exclamationmark")
                 .font(.system(size: 10, weight: .heavy))
                 .foregroundStyle(.white)

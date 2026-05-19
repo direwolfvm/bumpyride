@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var appState = AppState()
     @State private var bumpMap = BumpMapStore()
     @State private var brakeMap = BrakeMapStore()
+    @State private var closeCallMap = CloseCallMapStore()
 
     @State private var store: RideStore
     @State private var webAccount: WebAccount
@@ -97,6 +98,7 @@ struct ContentView: View {
                 store: store,
                 bumpMap: bumpMap,
                 brakeMap: brakeMap,
+                closeCallMap: closeCallMap,
                 settings: settings,
                 calibration: calibration
             )

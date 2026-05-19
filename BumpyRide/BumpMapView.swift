@@ -4,15 +4,18 @@ import MapKit
 /// SwiftUI wrapper around `MKMapView` so we can attach the custom tile overlay.
 /// SwiftUI's `Map` doesn't accept custom `MKTileOverlay`s, so we drop to UIKit here.
 ///
-/// Renders one of two overlays depending on `mode`:
+/// Renders one of three overlays depending on `mode`:
 /// - `.bumps` → `BumpMapTileOverlay` against `bumpMap`
 /// - `.brakes` → `BrakeMapTileOverlay` against `brakeMap`
+/// - `.closeCalls` → `CloseCallMapTileOverlay` against `closeCallMap`
 ///
-/// Mode switches preserve camera state (zoom/pan).  Both stores rebuild
-/// upstream on data/filter changes; this view just picks which to render.
+/// Mode switches preserve camera state (zoom/pan).  All three stores
+/// rebuild upstream on data/filter changes; this view just picks which to
+/// render.
 struct BumpMapView: UIViewRepresentable {
     @Bindable var bumpMap: BumpMapStore
     @Bindable var brakeMap: BrakeMapStore
+    @Bindable var closeCallMap: CloseCallMapStore
     var settings: AppSettings
     var mode: MapViewMode
     /// Single-fix location source used when the user has no ride data yet.  Lets
@@ -40,18 +43,19 @@ struct BumpMapView: UIViewRepresentable {
     }
 
     func updateUIView(_ map: MKMapView, context: Context) {
-        // Three triggers for rebuilding the overlay:
-        // 1. Mode changed (Bumps ↔ Brakes) — different overlay class
-        //    entirely, so we have to swap.
-        // 2. Currently in .bumps mode and bumpMap data changed.
-        // 3. Currently in .brakes mode and brakeMap data changed.
+        // Four triggers for rebuilding the overlay:
+        // 1. Mode changed (Bumps ↔ Brakes ↔ CloseCalls) — different
+        //    overlay class entirely, so we have to swap.
+        // 2-4. Currently in one mode and the matching store's data
+        //      version changed.
         //
-        // Rebuild rebuild rebuild — but each is gated on a version
-        // comparison so we don't churn tiles on every SwiftUI redraw.
+        // Each comparison is gated separately so we don't churn tiles
+        // on every SwiftUI redraw.
         let coord = context.coordinator
         let needsRebuild = coord.currentMode != mode
             || (mode == .bumps && coord.lastBumpDataVersion != bumpMap.dataVersion)
             || (mode == .brakes && coord.lastBrakeDataVersion != brakeMap.dataVersion)
+            || (mode == .closeCalls && coord.lastCloseCallDataVersion != closeCallMap.dataVersion)
         if needsRebuild {
             rebuildOverlay(on: map, context: context)
         }
@@ -100,6 +104,9 @@ struct BumpMapView: UIViewRepresentable {
         case .brakes:
             overlay = BrakeMapTileOverlay(grid: brakeMap.grid)
             context.coordinator.lastBrakeDataVersion = brakeMap.dataVersion
+        case .closeCalls:
+            overlay = CloseCallMapTileOverlay(grid: closeCallMap.grid)
+            context.coordinator.lastCloseCallDataVersion = closeCallMap.dataVersion
         }
         context.coordinator.overlay = overlay
         context.coordinator.currentMode = mode
@@ -140,9 +147,10 @@ struct BumpMapView: UIViewRepresentable {
         var currentMode: MapViewMode?
         /// Last bumpMap.dataVersion we rendered.  Compared against the
         /// store's current version to decide whether a rebuild is needed
-        /// while in `.bumps` mode.  Symmetric with `lastBrakeDataVersion`.
+        /// while in `.bumps` mode.  Symmetric with siblings.
         var lastBumpDataVersion: Int = -1
         var lastBrakeDataVersion: Int = -1
+        var lastCloseCallDataVersion: Int = -1
         var didFitToData: Bool = false
         /// One-shot flag that fires when we auto-pan to the user's location hint
         /// because there's no ride data yet.  Separate from `didFitToData` so

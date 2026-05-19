@@ -302,13 +302,17 @@ struct RideView: View {
             // Live recording stats — always in bumps mode regardless of the
             // user's saved-ride view-mode preference.  Brake detection runs
             // post-hoc at save time, so there are no live brake events to
-            // surface here, per the v1.3 design.
+            // surface here.  Close-call event count is also intentionally
+            // omitted from the live stats per the v1.3 design — the user
+            // is logging them via the button below; surfacing a running
+            // count would tempt mid-ride attention.
             statsBar(
                 pointsCount: recorder.points.count,
                 distance: currentLiveDistance,
                 maxBump: currentLiveMaxBumpiness,
-                events: [],
-                isBrakes: false
+                brakeEvents: [],
+                closeCalls: [],
+                mode: .bumps
             )
             .padding(.horizontal)
 
@@ -574,43 +578,34 @@ struct RideView: View {
     // MARK: Viewer content
 
     private func viewerContent(for ride: Ride) -> some View {
-        let isBrakes = settings.mapViewMode == .brakes
-        let events = ride.brakeEvents ?? []
+        let mode = settings.mapViewMode
+        let brakeEvents = ride.brakeEvents ?? []
+        let closeCalls = ride.closeCallEvents ?? []
         return VStack(spacing: 12) {
-            // Bumpiness / Brakes toggle.  Reuses the same AppSettings flag as
-            // the Bump Map tab — toggling on one surface follows through to
-            // the other.  Hidden when the ride has no brake events
-            // *and* no brake data is expected (legacy ride with nil
-            // brakeEvents stays in the toggle so the user can still flip
-            // and see the route-only view).
+            // Bumpiness / Brakes / Calls toggle.  Reuses the same
+            // AppSettings flag as the Bump Map tab — toggling on one
+            // surface follows through to the other.
             playbackModeChip
                 .padding(.horizontal)
 
-            // Chart area: bumpiness chart in bumps mode, brake-event list in
-            // brakes mode.  Both occupy the same vertical real estate (~160 pt)
-            // so swapping doesn't reflow the rest of the layout.
-            if isBrakes {
-                brakeEventList(for: ride, events: events)
-                    .frame(height: 160)
-                    .padding(.horizontal)
-            } else {
-                SessionBumpinessChart(
-                    points: ride.points,
-                    scrubIndex: clampedScrub(for: ride),
-                    zoom: zoom,
-                    settings: settings
-                )
+            // Chart area swaps content based on mode.  Same vertical
+            // real estate (~160 pt) regardless so the layout below
+            // doesn't reflow on toggle.
+            chartArea(for: ride, mode: mode, brakeEvents: brakeEvents, closeCalls: closeCalls)
                 .frame(height: 160)
                 .padding(.horizontal)
-            }
 
             RouteMapView(
                 points: ride.points,
                 followUser: false,
                 highlightIndex: clampedScrub(for: ride),
                 settings: settings,
-                brakeEvents: isBrakes ? events : [],
-                colorRoute: !isBrakes
+                brakeEvents: mode == .brakes ? brakeEvents : [],
+                closeCalls: mode == .closeCalls ? closeCalls : [],
+                // Colored polyline in bumps mode only.  In brakes /
+                // close-calls modes, the polyline is neutral context so
+                // the pins / diamonds carry the visual weight.
+                colorRoute: mode == .bumps
             )
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .padding(.horizontal)
@@ -622,8 +617,9 @@ struct RideView: View {
                 pointsCount: ride.points.count,
                 distance: ride.distanceMeters,
                 maxBump: ride.maxBumpiness,
-                events: events,
-                isBrakes: isBrakes
+                brakeEvents: brakeEvents,
+                closeCalls: closeCalls,
+                mode: mode
             )
             .padding(.horizontal)
 
@@ -638,6 +634,26 @@ struct RideView: View {
             .controlSize(.large)
             .padding(.horizontal)
             .padding(.bottom, 8)
+        }
+    }
+
+    /// Dispatch the chart-area content for the current view mode.
+    /// Extracted so `viewerContent` stays readable and the per-mode
+    /// branches don't repeat the `.frame` / `.padding` chrome.
+    @ViewBuilder
+    private func chartArea(for ride: Ride, mode: MapViewMode, brakeEvents: [BrakeEvent], closeCalls: [CloseCall]) -> some View {
+        switch mode {
+        case .bumps:
+            SessionBumpinessChart(
+                points: ride.points,
+                scrubIndex: clampedScrub(for: ride),
+                zoom: zoom,
+                settings: settings
+            )
+        case .brakes:
+            brakeEventList(for: ride, events: brakeEvents)
+        case .closeCalls:
+            closeCallEventList(for: ride, calls: closeCalls)
         }
     }
 
@@ -775,6 +791,86 @@ struct RideView: View {
         return Color(red: 0.55, green: 0.20, blue: 0.80)                      // purple
     }
 
+    /// Scrollable list of user-reported close calls in this ride.  Same
+    /// interaction as the brake-event list — tapping a row jumps the
+    /// scrubber to the nearest ride point in time.  Empty-state messages
+    /// distinguish the two zero-call cases:
+    /// - `closeCallEvents == nil`: ride predates the feature.  Nothing to
+    ///   log because the button didn't exist when it was recorded.
+    /// - `closeCallEvents == []`: feature was available, no calls logged.
+    @ViewBuilder
+    private func closeCallEventList(for ride: Ride, calls: [CloseCall]) -> some View {
+        if ride.closeCallEvents == nil {
+            emptyBrakesPanel(
+                icon: "calendar.badge.exclamationmark",
+                title: "Predates this feature",
+                subtitle: "Close-call reporting was added after this ride was recorded — the button didn't exist yet."
+            )
+        } else if calls.isEmpty {
+            emptyBrakesPanel(
+                icon: "hand.thumbsup",
+                title: "No close calls",
+                subtitle: "You didn't log any close calls on this ride."
+            )
+        } else {
+            ScrollView {
+                VStack(spacing: 6) {
+                    ForEach(Array(calls.enumerated()), id: \.element.id) { idx, call in
+                        closeCallEventRow(index: idx + 1, call: call, ride: ride)
+                    }
+                }
+                .padding(.vertical, 8)
+            }
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    /// One row in the close-call list.  Simpler than the brake row (no
+    /// peak / duration since close calls only carry time + location), but
+    /// same tap-to-scrub interaction.
+    private func closeCallEventRow(index: Int, call: CloseCall, ride: Ride) -> some View {
+        Button {
+            scrubIndex = nearestPointIndex(to: call.timestamp, in: ride.points)
+        } label: {
+            HStack(spacing: 12) {
+                Text("\(index)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, alignment: .trailing)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(elapsedLabel(for: call, in: ride))
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.primary)
+                    Text("close call")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                // Violet diamond matching the close-call map's color so
+                // the visual identity stays consistent across surfaces.
+                Image(systemName: "diamond.fill")
+                    .font(.callout)
+                    .foregroundStyle(Color(red: 0.55, green: 0.25, blue: 0.85))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Color(.tertiarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+    }
+
+    /// "mm:ss into the ride" timestamp for a close-call row.
+    private func elapsedLabel(for call: CloseCall, in ride: Ride) -> String {
+        let elapsed = max(0, call.timestamp.timeIntervalSince(ride.startedAt))
+        return Formatters.duration(elapsed)
+    }
+
     /// Find the index of the ride point whose timestamp is closest to
     /// `target`.  Linear scan — fine for typical ride sizes.  Returns 0 for
     /// an empty array (defensive; callers should already guard).
@@ -850,28 +946,46 @@ struct RideView: View {
 
     // MARK: Stats
 
-    /// Three-column ride summary at the bottom of the playback view.  Two
-    /// layouts:
+    /// Three-column ride summary at the bottom of the playback view.
+    /// Three layouts, one per mode:
     ///
-    /// - Bumps mode: Points / Distance / Max bumpiness.  Original behavior.
-    /// - Brakes mode: Events / Distance / Max decel — substitutes
-    ///   per-bumpiness stats for per-brake equivalents so the bar matches
-    ///   what the user is looking at.
-    private func statsBar(pointsCount: Int, distance: Double, maxBump: Double, events: [BrakeEvent], isBrakes: Bool) -> some View {
+    /// - **Bumps**: Points / Distance / Max bumpiness.  Original.
+    /// - **Brakes**: Events / Distance / Max decel — per-brake stats.
+    /// - **Close Calls**: Calls / Distance / — — center column stays
+    ///   useful (route length) but there's no third aggregate worth
+    ///   showing (close calls have no magnitude), so we omit it
+    ///   gracefully with an em-dash rather than inventing a metric.
+    private func statsBar(
+        pointsCount: Int,
+        distance: Double,
+        maxBump: Double,
+        brakeEvents: [BrakeEvent],
+        closeCalls: [CloseCall],
+        mode: MapViewMode
+    ) -> some View {
         HStack(spacing: 16) {
-            if isBrakes {
-                stat(label: "Events", value: "\(events.count)")
-            } else {
+            switch mode {
+            case .bumps:
                 stat(label: "Points", value: "\(pointsCount)")
+            case .brakes:
+                stat(label: "Events", value: "\(brakeEvents.count)")
+            case .closeCalls:
+                stat(label: "Calls", value: "\(closeCalls.count)")
             }
             Divider().frame(height: 24)
             stat(label: "Distance", value: Formatters.distance(distance))
             Divider().frame(height: 24)
-            if isBrakes {
-                let maxDecelG = (events.map(\.peakDecelerationMPS2).max() ?? 0) / 9.80665
-                stat(label: "Max", value: events.isEmpty ? "—" : String(format: "%.2fg", maxDecelG))
-            } else {
+            switch mode {
+            case .bumps:
                 stat(label: "Max", value: String(format: "%.2fg", maxBump))
+            case .brakes:
+                let maxDecelG = (brakeEvents.map(\.peakDecelerationMPS2).max() ?? 0) / 9.80665
+                stat(label: "Max", value: brakeEvents.isEmpty ? "—" : String(format: "%.2fg", maxDecelG))
+            case .closeCalls:
+                // No intensity associated with a close call.  Show an
+                // em-dash placeholder rather than forcing a meaningless
+                // metric into the slot.
+                stat(label: "—", value: "—")
             }
         }
         .padding(.vertical, 8)
