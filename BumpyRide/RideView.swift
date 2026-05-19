@@ -47,6 +47,17 @@ struct RideView: View {
     /// `ContentView.task` finds a non-empty journal on launch.
     @State private var showingRecoveryAlert: Bool = false
 
+    /// The most recently-logged close call awaiting its undo window.  Drives
+    /// the brief "Close call logged" banner that appears under the Log
+    /// button.  Set on tap, cleared by Undo or auto-dismissed after the
+    /// task in `scheduleCloseCallBannerDismiss`.
+    @State private var pendingCloseCall: CloseCall?
+    /// Monotonic counter incremented on every Log tap.  Used to invalidate
+    /// stale auto-dismiss tasks — if a user taps Log twice within 5 seconds,
+    /// the first tap's dismiss task sees a mismatched counter and bails,
+    /// leaving the second tap's banner visible for its full window.
+    @State private var closeCallTapGeneration: Int = 0
+
     private func setIdleTimer(disabled: Bool) {
         UIApplication.shared.isIdleTimerDisabled = disabled
     }
@@ -306,9 +317,111 @@ struct RideView: View {
                     .padding(.horizontal)
             }
 
+            // Close-call logging — visible only during recording or pause.
+            // Sits above the primary controls so the user can find it
+            // by feel without looking away from the road.  Banner +
+            // button stack together so the layout doesn't jump as the
+            // banner shows/hides.
+            if recorder.state == .recording || recorder.state == .paused {
+                VStack(spacing: 8) {
+                    logCloseCallButton
+                    if let pending = pendingCloseCall {
+                        closeCallUndoBanner(for: pending)
+                    }
+                }
+                .padding(.horizontal)
+                // Smooth slide-in/out for the banner.
+                .animation(.easeInOut(duration: 0.2), value: pendingCloseCall?.id)
+            }
+
             controlButtons
                 .padding(.horizontal)
                 .padding(.bottom, 8)
+        }
+    }
+
+    /// Full-width "Log close call" button.  Orange tint differentiates it
+    /// from the green Start/Resume and red Stop so a thumb stab during a
+    /// stressful moment can't easily hit the wrong action.  Disabled
+    /// while we don't yet have a GPS fix — the button stays visible so
+    /// the user knows where to find it once a fix arrives, rather than
+    /// appearing-and-disappearing.
+    private var logCloseCallButton: some View {
+        Button {
+            handleCloseCallTap()
+        } label: {
+            Label("Log Close Call", systemImage: "exclamationmark.triangle.fill")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(.orange)
+        .controlSize(.large)
+        .disabled(!recorder.canLogCloseCall)
+    }
+
+    /// Brief confirmation + undo affordance shown for 5 s after a tap.
+    /// One row: checkmark + "Close call logged" + "Undo" button.  Designed
+    /// to be glanceable — a rider should not need to read it carefully.
+    private func closeCallUndoBanner(for call: CloseCall) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.orange)
+            Text("Close call logged")
+                .font(.callout.weight(.medium))
+            Spacer()
+            Button("Undo") {
+                undoPendingCloseCall(call)
+            }
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(.orange)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.orange.opacity(0.4), lineWidth: 1)
+        )
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    /// Tap handler: capture the call, run haptic, show the banner, queue
+    /// auto-dismiss for 5 s out.  Multiple taps in quick succession show
+    /// the *latest* call's banner — the generation counter invalidates
+    /// stale dismiss tasks so the most recent banner gets its full window.
+    private func handleCloseCallTap() {
+        guard let call = recorder.logCloseCall() else { return }
+        // Light tactile feedback — distinct enough to register through
+        // gloves without being startling on a quiet road.
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        pendingCloseCall = call
+        closeCallTapGeneration += 1
+        scheduleCloseCallBannerDismiss(generation: closeCallTapGeneration)
+    }
+
+    /// User tapped Undo within the 5 s window.  Remove the call from the
+    /// recorder, hide the banner immediately.  Idempotent in case the
+    /// banner is still on-screen but the user double-taps Undo.
+    private func undoPendingCloseCall(_ call: CloseCall) {
+        recorder.undoCloseCall(id: call.id)
+        // Light feedback so the cancel registers as confirmed.
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        pendingCloseCall = nil
+    }
+
+    /// Fire-and-forget task that clears `pendingCloseCall` after 5 s
+    /// *unless* a newer Log tap has already taken over (generation
+    /// mismatch).  Doesn't cancel the recorder's stored call — the user
+    /// affirmed it by letting the banner expire.
+    private func scheduleCloseCallBannerDismiss(generation: Int) {
+        Task {
+            try? await Task.sleep(for: .seconds(5))
+            // If another tap happened between now and the sleep, leave
+            // its banner alone — only the latest tap's dismiss task
+            // should fire.
+            guard generation == closeCallTapGeneration else { return }
+            pendingCloseCall = nil
         }
     }
 
