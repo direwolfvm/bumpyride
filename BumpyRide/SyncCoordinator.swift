@@ -96,20 +96,29 @@ final class SyncCoordinator {
 
     // MARK: - Public API
 
+    /// User just saved a ride — mark it for upload as user-initiated work
+    /// (counts toward the tab badge).
     func enqueue(_ rideId: UUID) {
-        queue.insert(rideId)
+        queue.insert(rideId, isBackfill: false)
     }
 
     func remove(_ rideId: UUID) {
         queue.remove(rideId)
     }
 
-    /// Mark every ride ID as unsynced.  Called when the user first pairs a web
-    /// account so their existing local rides back up.  Already-queued rides are
-    /// a no-op (`SyncQueue.insert` dedups), and the server-side upsert is
-    /// idempotent on `Ride.id`, so this is also safe to call on every re-pair.
+    /// Mark every ride ID as unsynced *as backfill*.  Called when the user
+    /// first pairs a web account so their existing local rides back up, and
+    /// on launch when we were already paired.  Backfill rides upload the
+    /// same way user-initiated ones do, but they're excluded from the tab
+    /// badge — a freshly paired user with 50 historical rides shouldn't see
+    /// the tab look like an unread-messages explosion.
+    ///
+    /// Already-queued rides are no-ops; if a ride is currently in the
+    /// user-initiated bucket, backfill seeding leaves it there.  Server-side
+    /// upsert is idempotent on `Ride.id`, so this is safe to call on every
+    /// re-pair.
     func backfillAll(rideIds: some Sequence<UUID>) {
-        for id in rideIds { queue.insert(id) }
+        for id in rideIds { queue.insert(id, isBackfill: true) }
     }
 
     /// Try to drain the queue if conditions are right.  Idempotent — safe to call

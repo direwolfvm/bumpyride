@@ -84,7 +84,12 @@ struct ContentView: View {
                 webAccount: webAccount
             )
             .tabItem { Label("Saved", systemImage: "list.bullet.rectangle") }
-            .badge(syncQueue.count)
+            // Badge shows only user-initiated unsynced rides — not the backfill
+            // catch-up after pairing.  Otherwise a freshly-paired user with 50
+            // historical rides would see a "50" badge for the entire upload
+            // burst (potentially hours), which makes the tab feel broken.
+            // See SyncQueue for the two-bucket structure.
+            .badge(syncQueue.userInitiatedCount)
             .tag(AppState.Tab.saved)
 
             BumpMapTabView(
