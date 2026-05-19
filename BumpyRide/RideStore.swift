@@ -103,6 +103,36 @@ final class RideStore {
         onRideDeleted?(ride.id)
     }
 
+    /// Update only the `brakeEvents` field of an existing ride in place,
+    /// without firing `onRideSaved`.
+    ///
+    /// Used by the launch-time brake reprocessor (`BrakeReprocessor`) where
+    /// going through `save(_:)` would inflate the Saved-tab badge (every
+    /// backfilled ride would land in the sync queue as user-initiated) and
+    /// recompute calibration N times unnecessarily.  Reprocessor saves are
+    /// effectively backfill — the call site is responsible for enqueueing
+    /// touched IDs as backfill on the sync coordinator after the batch.
+    ///
+    /// Returns `true` on successful persist.  Does nothing and returns
+    /// `false` if the ride isn't in the store (e.g., user deleted it
+    /// between the reprocessor reading the ride and persisting the result).
+    @discardableResult
+    func updateBrakeEvents(_ events: [BrakeEvent], forRideId id: UUID) -> Bool {
+        guard let idx = rides.firstIndex(where: { $0.id == id }) else { return false }
+        var ride = rides[idx]
+        ride.brakeEvents = events
+        let url = directoryURL.appendingPathComponent("\(ride.id.uuidString).json")
+        do {
+            let data = try encoder.encode(ride)
+            try coordinatedWrite(data, to: url)
+            rides[idx] = ride
+            return true
+        } catch {
+            Self.log.error("Failed to update brakeEvents for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
     /// Atomic write wrapped in `NSFileCoordinator` so the iCloud sync engine
     /// (or another device touching the same file) sees a consistent snapshot.
     /// For local-only storage this adds negligible overhead and the

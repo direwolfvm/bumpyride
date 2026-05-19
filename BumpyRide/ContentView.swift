@@ -194,6 +194,18 @@ struct ContentView: View {
             // on their other phone).  Then push, in case the local recompute above
             // produced a meaningfully different value.
             await pullThenPushCalibration()
+            // Backfill brake-event detection for any ride that doesn't have it
+            // yet (legacy v1/v2 rides, or v3 rides synced down from another
+            // device before that device had brake detection).  Yields between
+            // rides so the UI stays responsive; quiet saves avoid inflating
+            // the Saved-tab badge.  We explicitly enqueue the touched IDs as
+            // backfill afterward so updated payloads reach the server without
+            // looking like fresh user activity.
+            let reprocessed = await BrakeReprocessor.reprocessLegacyRides(in: store)
+            if !reprocessed.isEmpty {
+                syncCoordinator.backfillAll(rideIds: reprocessed)
+                syncCoordinator.kick()
+            }
         }
         .onChange(of: webAccount.isConnected) { _, isConnected in
             // When a user pairs (or re-pairs after disconnect), seed the queue with
