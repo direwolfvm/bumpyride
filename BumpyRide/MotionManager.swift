@@ -38,6 +38,16 @@ final class MotionManager {
 
     private(set) var latestSamples: [Float] = []
     private(set) var currentBumpiness: Double = 0
+    /// Magnitude of the most recent user-acceleration vector projected onto
+    /// the horizontal plane (the plane perpendicular to gravity at that
+    /// instant), in g-units.  Captures braking, accelerating, and cornering
+    /// independently of phone orientation.
+    ///
+    /// `nil` between samples (before the first `ingest`) and after `reset()`.
+    /// `RideRecorder.handleLocation` snapshots this into each `RidePoint.horizontalAccel`
+    /// so the post-hoc `BrakeEventDetector` can refine GPS-derived event
+    /// peaks with a direct accel signal.
+    private(set) var currentHorizontalAccelG: Float?
 
     var windowCapacity: Int { Int(sampleRateHz * displaySeconds) }
     private var rmsSampleCount: Int { Int(sampleRateHz * rmsSeconds) }
@@ -58,10 +68,26 @@ final class MotionManager {
             let gMag = sqrt(g.x * g.x + g.y * g.y + g.z * g.z)
             guard gMag > 0 else { return }
             let ua = motion.userAcceleration
+
+            // Scalar projection of userAccel onto gravity direction.  Positive =
+            // accel pointing roughly "down" (with gravity), negative = "up".
+            // This is the value `bumpiness` is built on.
             let vertical = (ua.x * g.x + ua.y * g.y + ua.z * g.z) / gMag
+
+            // Horizontal-plane magnitude.  Subtract the gravity-aligned
+            // component from the full userAccel vector, then take the length.
+            // Gravity unit vector is g / gMag, so the parallel component is
+            // (vertical * g / gMag), and the orthogonal residual is what we
+            // want.  All in g-units since CMDeviceMotion.userAcceleration
+            // is reported in G's.
+            let hx = ua.x - vertical * g.x / gMag
+            let hy = ua.y - vertical * g.y / gMag
+            let hz = ua.z - vertical * g.z / gMag
+            let horizontal = Float(sqrt(hx * hx + hy * hy + hz * hz))
+
             let value = Float(vertical)
             Task { @MainActor in
-                self.ingest(value)
+                self.ingest(value, horizontalG: horizontal)
             }
         }
     }
@@ -78,14 +104,16 @@ final class MotionManager {
         ringFilled = false
         latestSamples = []
         currentBumpiness = 0
+        currentHorizontalAccelG = nil
     }
 
-    private func ingest(_ vertical: Float) {
+    private func ingest(_ vertical: Float, horizontalG: Float) {
         ringBuffer[ringIndex] = vertical
         ringIndex = (ringIndex + 1) % ringBuffer.count
         if ringIndex == 0 { ringFilled = true }
         latestSamples = orderedSamples()
         currentBumpiness = computeRMS(recentSamples(count: rmsSampleCount))
+        currentHorizontalAccelG = horizontalG
     }
 
     func snapshotWindow() -> [Float] { orderedSamples() }

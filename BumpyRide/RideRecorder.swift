@@ -151,13 +151,20 @@ final class RideRecorder {
         guard loc.horizontalAccuracy < Self.maxHorizontalAccuracyMeters else { return }
         let bumpiness = motion.currentBumpiness
         let window = motion.snapshotWindow()
+        // Snapshot the latest horizontal-plane accel magnitude for post-hoc
+        // brake-event refinement.  `nil` if the motion stream hasn't yet
+        // produced a sample (e.g., the very first GPS callback can fire
+        // before the device-motion handler).  Optional storage means legacy
+        // rides + transient gaps are both naturally represented.
+        let horizontalAccel = motion.currentHorizontalAccelG
         let point = RidePoint(
             timestamp: loc.timestamp,
             latitude: loc.coordinate.latitude,
             longitude: loc.coordinate.longitude,
             speed: max(0, loc.speed),
             bumpiness: bumpiness,
-            accelWindow: window
+            accelWindow: window,
+            horizontalAccel: horizontalAccel
         )
         points.append(point)
         // Persist immediately to the journal so a process kill in the next

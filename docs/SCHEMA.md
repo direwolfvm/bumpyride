@@ -20,9 +20,16 @@ The Swift source of truth lives in [`BumpyRide/Models.swift`](../BumpyRide/Model
 
 ## Versioning
 
-Each `Ride` carries a `schemaVersion` integer. The current emitted value is `2`. Records written before the field existed decode as `1` via the iOS `init(from:)` shim.
+Each `Ride` carries a `schemaVersion` integer. The current emitted value is `3`. Records written before the field existed decode as `1` via the iOS `init(from:)` shim.
 
-Consumers should be prepared to accept **both `1` and `2`** concurrently — old iOS installs that haven't updated yet continue to emit `1`, and edited / re-uploaded historical rides still carry their original version.
+Consumers should be prepared to accept **`1`, `2`, and `3`** concurrently — old iOS installs that haven't updated continue to emit their original version, and edited / re-uploaded historical rides keep theirs.
+
+### What's new in v3
+
+Additive only — both new fields are optional and existing decoders that ignore unknown keys read v3 records without any code change.
+
+- `RidePoint.horizontalAccel` (optional number, g-units): magnitude of user acceleration projected onto the plane perpendicular to gravity at sample time. Captures braking, accelerating, and cornering independently of phone orientation. Used by the iOS `BrakeEventDetector` as a refinement signal layered on top of GPS speed derivative.
+- `Ride.brakeEvents` (optional array of `BrakeEvent`): sparse list of hard-braking events detected post-hoc on the saved points. `null` means detection hasn't run yet (legacy rides queued for auto-reprocessing on next launch); `[]` means it ran and found nothing.
 
 ### What's different between v1 and v2
 
@@ -46,15 +53,16 @@ The top-level object.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| `schemaVersion` | integer | no¹ | Wire-format version. New rides emit `2`; legacy on-disk records are `1`. Missing → treat as `1`. |
+| `schemaVersion` | integer | no¹ | Wire-format version. New rides emit `3`; legacy on-disk records are `1` or `2`. Missing → treat as `1`. |
 | `id` | UUID string | yes | Stable identity. Persists across edits (trim/split changes the second half's id). |
 | `title` | string | yes | Human-readable. Default for new rides: `"Ride <date>"`. User-editable. |
 | `startedAt` | ISO-8601 date | yes | When recording began (or, after a trim, the timestamp of the first kept point). |
 | `endedAt` | ISO-8601 date | yes | When recording ended. `endedAt >= startedAt`. |
 | `points` | array of `RidePoint` | yes | Ordered chronologically. May be empty for a discarded recording, but typically ≥1 element. |
 | `pocketMode` | boolean | no² | `true` = phone was on the rider's body; `false` = phone was on a fixed bike mount; `null`/missing = mode not determined (legacy or undecided). Set at save time by `MountStyleDetector`, user-overridable. See the "Versioning" section for what this affects in `accelWindow` and `bumpiness`. |
+| `brakeEvents` | array of `BrakeEvent` | no³ | Sparse list of hard-braking events detected post-hoc on this ride. Added in v3. `null`/missing = detection hasn't run yet (legacy rides queued for auto-reprocessing); `[]` = ran and found nothing. |
 
-¹ Default: `1` for records lacking the field. ² Default: `null` (unknown).
+¹ Default: `1` for records lacking the field. ² Default: `null` (unknown). ³ Default: `null` (not detected).
 
 ### Derived values (NOT in the wire format)
 
@@ -79,6 +87,22 @@ One entry per emitted sample. The iOS app emits a sample each time CoreLocation 
 | `speed` | number | yes | Meters per second. Always `>= 0` (CoreLocation's `-1` "unknown" is clamped to `0` on emit). |
 | `bumpiness` | number | yes | RMS of vertical acceleration over the trailing 1.0 s window. Units: g (1 g ≈ 9.81 m/s²). Always `>= 0`. Typical observed range on a road bike: `0.05`–`2.5`. |
 | `accelWindow` | array of numbers | yes | Recent vertical-acceleration samples used to redraw the seismograph in playback. See "accelWindow encoding" below. |
+| `horizontalAccel` | number | no⁴ | Added in v3. Magnitude of user acceleration projected onto the horizontal plane (the plane perpendicular to gravity at sample time), in g-units. Captures braking, accelerating, and cornering independent of phone orientation. `null`/missing on v1/v2 records, and on v3 points sampled before the motion stream produced its first reading. |
+
+⁴ Default: `null` (not captured at sample time).
+
+## `BrakeEvent` object
+
+Sparse — emitted by the iOS `BrakeEventDetector` post-hoc at ride save time. A typical ride has 0–10 events. Added in `schemaVersion 3`.
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `id` | UUID string | yes | Stable per-event id. |
+| `timestamp` | ISO-8601 date | yes | Time of peak deceleration during the event. |
+| `latitude` | number | yes | Location at the peak. WGS-84. |
+| `longitude` | number | yes | Location at the peak. WGS-84. |
+| `peakDecelerationMPS2` | number | yes | Peak rate of speed reduction, m/s² (positive = slowing). Typical threshold: detector flags events sustained above ≈2.5 m/s² (0.25g). |
+| `durationSeconds` | number | yes | How long the rate stayed above the detector's threshold. |
 
 ### `accelWindow` encoding
 

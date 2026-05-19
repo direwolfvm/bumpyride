@@ -8,6 +8,13 @@ import CoreLocation
 /// The JSON wire-format keys are locked via the explicit `CodingKeys` enum so
 /// downstream consumers (server, exports) don't break if a Swift property is
 /// renamed during a refactor.  See `docs/SCHEMA.md` for the field-by-field spec.
+///
+/// **v3 addition**: `horizontalAccel` — magnitude of user acceleration
+/// projected onto the plane perpendicular to gravity, in g-units (multiples
+/// of 9.80665 m/s²).  Captures horizontal motion (braking, accelerating,
+/// cornering) independent of phone orientation, since the projection is done
+/// in the phone's body frame using CMDeviceMotion's gravity vector at the
+/// same instant.  Optional because v1 and v2 rides don't have it.
 struct RidePoint: Codable, Identifiable, Hashable {
     var id: UUID = UUID()
     var timestamp: Date
@@ -16,6 +23,12 @@ struct RidePoint: Codable, Identifiable, Hashable {
     var speed: Double
     var bumpiness: Double
     var accelWindow: [Float]
+    /// Magnitude of horizontal-plane user acceleration at sample time, in
+    /// g-units.  Used by `BrakeEventDetector` as a refinement signal layered
+    /// on top of GPS speed derivative.  `nil` for points from v1/v2 rides
+    /// recorded before this field existed — the detector falls back to GPS
+    /// only for those.
+    var horizontalAccel: Float?
 
     var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
@@ -29,6 +42,40 @@ struct RidePoint: Codable, Identifiable, Hashable {
         case speed
         case bumpiness
         case accelWindow
+        case horizontalAccel
+    }
+}
+
+/// A discrete hard-braking event detected post-hoc on a saved ride.  Sparse
+/// (typically 0–10 per ride) — emitted by `BrakeEventDetector` from the saved
+/// `points` array, not captured live during recording.
+///
+/// Located by the **timestamp + lat/lon at the moment of peak deceleration**.
+/// `peakDecelerationMPS2` is the maximum sustained rate of speed reduction
+/// during the event, in m/s² (positive = slowing).  `durationSeconds` is how
+/// long the rate stayed above the detector's threshold.
+///
+/// Wire format additive — old clients ignore unknown fields, and `Ride`'s
+/// `brakeEvents` is itself optional, so v1/v2 rides decode unchanged.
+struct BrakeEvent: Codable, Identifiable, Hashable, Sendable {
+    var id: UUID = UUID()
+    var timestamp: Date
+    var latitude: Double
+    var longitude: Double
+    var peakDecelerationMPS2: Double
+    var durationSeconds: Double
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case timestamp
+        case latitude
+        case longitude
+        case peakDecelerationMPS2
+        case durationSeconds
     }
 }
 
@@ -62,7 +109,19 @@ struct Ride: Codable, Identifiable, Hashable {
     /// at save time / on retag when `pocketMode == true`, applying the HPF to the
     /// raw window before taking RMS.  Lets us decide mode after the fact and retag
     /// either direction without information loss.
+    ///
+    /// `3` — Adds `RidePoint.horizontalAccel` (g-units, optional) per sample, and
+    /// adds `brakeEvents` (optional) on the Ride.  Brake events are detected
+    /// post-hoc by `BrakeEventDetector` at save time and stored as a sparse list.
+    /// Legacy v1/v2 rides decode with `horizontalAccel == nil` and
+    /// `brakeEvents == nil`; the latter triggers auto-reprocessing on launch
+    /// (GPS-only fallback for rides without horizontalAccel).
     var schemaVersion: Int
+    /// Hard-braking events detected on this ride.  `nil` means detection hasn't
+    /// run yet (legacy rides queued for auto-reprocessing); `[]` means it ran
+    /// and found nothing.  This distinction matters — see `BrakeEventDetector`
+    /// and the launch-time reprocessor.
+    var brakeEvents: [BrakeEvent]?
 
     init(
         id: UUID = UUID(),
@@ -71,7 +130,8 @@ struct Ride: Codable, Identifiable, Hashable {
         endedAt: Date,
         points: [RidePoint],
         pocketMode: Bool? = nil,
-        schemaVersion: Int = 2
+        schemaVersion: Int = 3,
+        brakeEvents: [BrakeEvent]? = nil
     ) {
         self.id = id
         self.title = title
@@ -80,6 +140,7 @@ struct Ride: Codable, Identifiable, Hashable {
         self.points = points
         self.pocketMode = pocketMode
         self.schemaVersion = schemaVersion
+        self.brakeEvents = brakeEvents
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -90,6 +151,7 @@ struct Ride: Codable, Identifiable, Hashable {
         case points
         case pocketMode
         case schemaVersion
+        case brakeEvents
     }
 
     init(from decoder: Decoder) throws {
@@ -103,6 +165,9 @@ struct Ride: Codable, Identifiable, Hashable {
         // Records written before schemaVersion existed are treated as v1 — the format
         // they were emitted in.
         self.schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        // brakeEvents missing → nil → reprocessor will run detection on launch.
+        // brakeEvents == [] → detection has already run and found nothing.
+        self.brakeEvents = try c.decodeIfPresent([BrakeEvent].self, forKey: .brakeEvents)
     }
 
     var duration: TimeInterval { endedAt.timeIntervalSince(startedAt) }
