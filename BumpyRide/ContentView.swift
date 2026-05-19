@@ -157,7 +157,11 @@ struct ContentView: View {
                     endedAt: endedAt,
                     points: recoverable.points,
                     pocketMode: nil,
-                    schemaVersion: recoverable.header.schemaVersion
+                    schemaVersion: recoverable.header.schemaVersion,
+                    // Surface any close calls captured before the crash so the
+                    // user doesn't lose them.  Empty for pre-v3 recoveries
+                    // (Recoverable falls back to []).
+                    closeCallEvents: recoverable.closeCalls.isEmpty ? nil : recoverable.closeCalls
                 )
                 appState.selectedTab = .ride
             }

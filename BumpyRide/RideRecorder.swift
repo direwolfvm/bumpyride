@@ -34,6 +34,10 @@ final class RideRecorder {
 
     private(set) var state: State = .idle
     private(set) var points: [RidePoint] = []
+    /// User-initiated close-call events captured during this recording.  Each
+    /// `logCloseCall()` appends one entry here and to the journal.  Empty
+    /// at start; included in the `Ride` returned from `stop()`.
+    private(set) var closeCalls: [CloseCall] = []
     private(set) var startedAt: Date?
     private(set) var endedAt: Date?
     /// Stable ride id assigned at `start()` time and used by both the journal and
@@ -62,6 +66,7 @@ final class RideRecorder {
         // points for a fresh ride.
         guard state == .idle || state == .finished else { return }
         points = []
+        closeCalls = []
         let now = Date()
         startedAt = now
         endedAt = nil
@@ -69,7 +74,10 @@ final class RideRecorder {
         pendingRideId = rideId
         // Open the crash-safe journal.  Failures are non-fatal — recording still
         // happens in memory, we just lose the ability to recover on force-quit.
-        try? journal.start(rideId: rideId, startedAt: now, schemaVersion: 2)
+        // Schema version 3 matches Models.swift's default — new fields
+        // (horizontalAccel, brakeEvents, closeCallEvents) are all additive
+        // and optional, so v3 readers handle in-flight v3 records seamlessly.
+        try? journal.start(rideId: rideId, startedAt: now, schemaVersion: 3)
         state = .recording
         motion.start()
         location.startUpdating()
@@ -121,7 +129,8 @@ final class RideRecorder {
             startedAt: start,
             endedAt: end,
             points: points,
-            pocketMode: nil
+            pocketMode: nil,
+            closeCallEvents: closeCalls
         )
     }
 
@@ -134,10 +143,59 @@ final class RideRecorder {
         // journal exists.
         journal.clear()
         points = []
+        closeCalls = []
         startedAt = nil
         endedAt = nil
         pendingRideId = nil
         state = .idle
+    }
+
+    // MARK: - Close calls
+
+    /// `true` when a close-call log button tap will succeed.  False during
+    /// `.idle` / `.finished` (no ride to attach the call to) and when we
+    /// don't yet have a GPS fix (can't place the call on the map).  Both
+    /// `.recording` and `.paused` are valid — a user can experience a close
+    /// call while paused at a light, and tagging it there is legitimate.
+    var canLogCloseCall: Bool {
+        guard state == .recording || state == .paused else { return false }
+        return location.lastLocation != nil
+    }
+
+    /// Capture a close call at the current GPS location and timestamp.
+    /// Appends to the in-memory list and the journal.  Returns the created
+    /// event so the UI can show a confirmation banner with an undo button
+    /// referencing this specific call.  Returns `nil` if `canLogCloseCall`
+    /// would be `false` (no recording, or no fix yet) — the caller should
+    /// gate the button on `canLogCloseCall` to avoid silent no-ops, but
+    /// returning nil rather than crashing here is the defensive choice.
+    @discardableResult
+    func logCloseCall() -> CloseCall? {
+        guard canLogCloseCall, let loc = location.lastLocation else { return nil }
+        let call = CloseCall(
+            timestamp: Date(),
+            latitude: loc.coordinate.latitude,
+            longitude: loc.coordinate.longitude
+        )
+        closeCalls.append(call)
+        journal.appendCloseCall(call)
+        return call
+    }
+
+    /// Undo a specific close call by id — typically called from a brief
+    /// post-tap banner with an Undo button.  Only the in-memory list is
+    /// mutated; the journal's append-only file is untouched.  See
+    /// `RideJournal`'s class doc for the trade-off (crash during the undo
+    /// window would resurrect the call on recovery).
+    ///
+    /// Returns `true` if a matching call was removed, `false` if no such id
+    /// is currently in the list (e.g., the banner stayed visible past
+    /// reset() somehow).
+    @discardableResult
+    func undoCloseCall(id: UUID) -> Bool {
+        guard let idx = closeCalls.firstIndex(where: { $0.id == id }) else { return false }
+        closeCalls.remove(at: idx)
+        return true
     }
 
     private func handleLocation(_ loc: CLLocation) {
