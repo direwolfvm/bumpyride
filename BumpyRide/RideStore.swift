@@ -3,8 +3,20 @@ import Observation
 import OSLog
 
 /// On-disk persistence for saved rides: one ISO-8601 JSON file per ride at
-/// `<Documents>/Rides/<UUID>.json`.  Loads everything into memory at init (rides are
-/// small; thousands fit comfortably) and keeps `rides` sorted newest-first for the UI.
+/// `<directoryURL>/<UUID>.json`.  The directory is supplied at init time by
+/// `CloudStorage`, which picks iCloud Documents when available and falls back
+/// to the local app sandbox's `Documents/Rides/` otherwise.  RideStore itself
+/// is storage-mode-agnostic — it sees a URL and writes to it.
+///
+/// Loads everything into memory at init (rides are small; thousands fit
+/// comfortably) and keeps `rides` sorted newest-first for the UI.
+///
+/// Writes to iCloud Documents are wrapped in `NSFileCoordinator` because the
+/// ubiquity container can be touched concurrently by the iCloud sync engine
+/// or another instance of the app on a different device.  Reads are
+/// intentionally *not* coordinated — load() is best-effort, runs at startup,
+/// and a torn read of a single ride just means that ride is skipped this
+/// launch and reloaded next time.
 @Observable
 final class RideStore {
     private(set) var rides: [Ride] = []
@@ -32,9 +44,11 @@ final class RideStore {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
-    init() {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        directoryURL = docs.appendingPathComponent("Rides", isDirectory: true)
+    init(directoryURL: URL) {
+        self.directoryURL = directoryURL
+        // CloudStorage already ensured the directory exists; doing it again is
+        // a cheap idempotent operation that protects against any caller that
+        // hands us a URL without preparing it.
         try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
 
         encoder = JSONEncoder()
@@ -62,7 +76,7 @@ final class RideStore {
         let url = directoryURL.appendingPathComponent("\(ride.id.uuidString).json")
         do {
             let data = try encoder.encode(ride)
-            try data.write(to: url, options: .atomic)
+            try coordinatedWrite(data, to: url)
             if let idx = rides.firstIndex(where: { $0.id == ride.id }) {
                 rides[idx] = ride
             } else {
@@ -84,9 +98,44 @@ final class RideStore {
 
     func delete(_ ride: Ride) {
         let url = directoryURL.appendingPathComponent("\(ride.id.uuidString).json")
-        try? FileManager.default.removeItem(at: url)
+        coordinatedRemove(at: url)
         rides.removeAll { $0.id == ride.id }
         onRideDeleted?(ride.id)
+    }
+
+    /// Atomic write wrapped in `NSFileCoordinator` so the iCloud sync engine
+    /// (or another device touching the same file) sees a consistent snapshot.
+    /// For local-only storage this adds negligible overhead and the
+    /// coordinator simply gates the inner block.
+    ///
+    /// The coordinator's API is a little awkward: it takes an in-out NSError
+    /// for *scheduling* errors and runs the closure synchronously.  Any IO
+    /// error thrown from inside the closure is captured separately and
+    /// re-thrown.
+    private func coordinatedWrite(_ data: Data, to url: URL) throws {
+        let coordinator = NSFileCoordinator()
+        var coordinationError: NSError?
+        var writeError: Error?
+        coordinator.coordinate(writingItemAt: url, options: [.forReplacing], error: &coordinationError) { writeURL in
+            do {
+                try data.write(to: writeURL, options: .atomic)
+            } catch {
+                writeError = error
+            }
+        }
+        if let coordinationError { throw coordinationError }
+        if let writeError { throw writeError }
+    }
+
+    /// Coordinated delete — same rationale as `coordinatedWrite`.  Failures
+    /// are swallowed because the prior behavior was `try?` and the worst case
+    /// (file leaks on disk) is recoverable.
+    private func coordinatedRemove(at url: URL) {
+        let coordinator = NSFileCoordinator()
+        var coordinationError: NSError?
+        coordinator.coordinate(writingItemAt: url, options: [.forDeleting], error: &coordinationError) { deleteURL in
+            try? FileManager.default.removeItem(at: deleteURL)
+        }
     }
 
     func rename(_ ride: Ride, to title: String) {

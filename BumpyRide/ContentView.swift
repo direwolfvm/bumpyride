@@ -21,6 +21,10 @@ struct ContentView: View {
     @State private var syncCoordinator: SyncCoordinator
     @State private var calibration: CalibrationStore
     @State private var reachability = NetworkReachability()
+    /// Resolves iCloud vs. local storage for rides.  Created before RideStore
+    /// because RideStore needs its `ridesDirectoryURL`.  Also owns the
+    /// one-shot migration from legacy local Documents into iCloud.
+    @State private var cloudStorage: CloudStorage
 
     /// Last calibration value we successfully PUT to the server.  Used to short-circuit
     /// no-op pushes on triggers like reachability returning while nothing has changed.
@@ -35,7 +39,13 @@ struct ContentView: View {
     @State private var showingIntro = false
 
     init() {
-        let store = RideStore()
+        // Cloud storage must be created BEFORE RideStore so RideStore can be
+        // initialized with the resolved directory URL.  Migration of existing
+        // local rides into iCloud happens after view appearance (in .task),
+        // not here, so init stays synchronous and we can still load the rides
+        // that are already in the chosen directory immediately.
+        let cloud = CloudStorage()
+        let store = RideStore(directoryURL: cloud.ridesDirectoryURL)
         let webAccount = WebAccount()
         let queue = SyncQueue()
         let coordinator = SyncCoordinator(
@@ -44,6 +54,7 @@ struct ContentView: View {
             webAccount: webAccount
         )
         let calibration = CalibrationStore()
+        _cloudStorage = State(initialValue: cloud)
         _store = State(initialValue: store)
         _webAccount = State(initialValue: webAccount)
         _syncQueue = State(initialValue: queue)
@@ -91,7 +102,8 @@ struct ContentView: View {
                 syncCoordinator: syncCoordinator,
                 syncQueue: syncQueue,
                 calibration: calibration,
-                store: store
+                store: store,
+                cloudStorage: cloudStorage
             )
             .tabItem { Label("Settings", systemImage: "gear") }
             .tag(AppState.Tab.settings)
@@ -114,6 +126,14 @@ struct ContentView: View {
             if !hasSeenIntro {
                 showingIntro = true
             }
+            // Migrate any rides still sitting in legacy local Documents into
+            // iCloud (no-op when iCloud is unavailable, or when there's
+            // nothing local to migrate).  Runs before the store's initial
+            // load is observed by the UI in practice — RideStore.init
+            // already loaded what was in the directory at startup, and we
+            // re-load below to pick up freshly-migrated files.
+            cloudStorage.migrateLocalRidesIfNeeded()
+            store.load()
             // Check for a recoverable ride journal first — this is the recovery
             // path for users whose last session ended abruptly (OS kill, crash,
             // force-quit).  Has to happen before anything else might touch the

@@ -28,6 +28,26 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 
+	<!-- iCloud Documents container metadata.  Without this dict, iCloud Drive
+	     shows the container under its raw bundle identifier
+	     (iCloud.com.herbertindustries.BumpyRide) which is ugly and confusing
+	     for users.  With it, the container appears as "BumpyRide" in Files
+	     app under iCloud Drive. NSUbiquitousContainerIsDocumentScopePublic =
+	     YES is required for the container to be visible in Files at all (vs.
+	     hidden, app-private storage). -->
+	<key>NSUbiquitousContainers</key>
+	<dict>
+		<key>iCloud.com.herbertindustries.BumpyRide</key>
+		<dict>
+			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
+			<true/>
+			<key>NSUbiquitousContainerSupportedFolderLevels</key>
+			<string>Any</string>
+			<key>NSUbiquitousContainerName</key>
+			<string>BumpyRide</string>
+		</dict>
+	</dict>
+
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>BumpyRide uses your location to map the route of your ride.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>

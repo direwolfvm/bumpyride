@@ -483,12 +483,17 @@ struct WebAccountView: View {
 }
 
 #Preview("Not connected") {
-    NavigationStack {
+    // Preview uses a throwaway tmp directory so the preview process doesn't
+    // touch real on-device storage and doesn't depend on iCloud being
+    // configured in the preview environment.
+    let tmpDir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("BumpyRidePreviewStore-\(UUID().uuidString)", isDirectory: true)
+    return NavigationStack {
         WebAccountView(
             account: WebAccount(),
             syncCoordinator: SyncCoordinator(
                 queue: SyncQueue(),
-                rideStore: RideStore(),
+                rideStore: RideStore(directoryURL: tmpDir),
                 webAccount: WebAccount()
             ),
             syncQueue: SyncQueue()

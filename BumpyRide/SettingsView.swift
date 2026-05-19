@@ -11,6 +11,7 @@ struct SettingsView: View {
     @Bindable var syncQueue: SyncQueue
     @Bindable var calibration: CalibrationStore
     @Bindable var store: RideStore
+    @Bindable var cloudStorage: CloudStorage
 
     var body: some View {
         NavigationStack {
@@ -62,6 +63,16 @@ struct SettingsView: View {
                     Text("Sensing")
                 } footer: {
                     Text("Pocket mode applies a 3 Hz high-pass to the vertical-acceleration channel so the rider's pedaling cadence (≈1–2 Hz) doesn't register as bumpiness. Toggle it per ride from the Ride tab; auto-detect catches mistagged rides at save time.\n\nCalibration is opportunistic: every time you save a ride, the app looks for cells you've ridden in both modes and derives a per-rider correction. The Bump Map applies it automatically once enough overlap accumulates.")
+                }
+
+                Section {
+                    backupStatusRow
+                } header: {
+                    Text("Backup")
+                } footer: {
+                    Text(cloudStorage.isCloudAvailable
+                        ? "Rides are stored in iCloud Drive under \"BumpyRide.\" They sync across your devices automatically and survive deleting the app — reinstalling re-attaches to the same data."
+                        : "Rides are stored only on this device. Sign in to iCloud and turn on iCloud Drive in Settings to enable automatic backup and cross-device sync.")
                 }
 
                 Section {
@@ -148,6 +159,33 @@ struct SettingsView: View {
             )
         }
         return "Not enough overlap yet — needs ≥ \(CalibrationStore.minOverlappingCells) cells ridden in both modes."
+    }
+
+    /// Read-only status row for ride backup.  Mirrors the style of
+    /// `webAccountRow` (icon + title + secondary detail).  No action — the
+    /// user enables iCloud at the OS level (Settings → Apple ID → iCloud),
+    /// which is also where they'd go to fix any access issue.  We could deep-
+    /// link there, but the path differs per iOS version and the system path
+    /// from Settings → BumpyRide is usually faster anyway.
+    private var backupStatusRow: some View {
+        HStack(spacing: 12) {
+            Image(systemName: cloudStorage.isCloudAvailable ? "icloud.fill" : "icloud.slash")
+                .font(.title3)
+                .foregroundStyle(cloudStorage.isCloudAvailable ? Color.blue : .secondary)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(cloudStorage.isCloudAvailable ? "iCloud Drive" : "Local only")
+                    .font(.body)
+                Text(cloudStorage.isCloudAvailable
+                     ? "\(store.rides.count) ride\(store.rides.count == 1 ? "" : "s") backed up"
+                     : "\(store.rides.count) ride\(store.rides.count == 1 ? "" : "s") on device")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
     }
 
     private var webAccountRow: some View {
