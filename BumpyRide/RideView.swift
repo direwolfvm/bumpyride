@@ -125,9 +125,17 @@ struct RideView: View {
     private var editSheet: some View {
         if let ride = appState.loadedRide {
             EditRideView(original: ride, settings: settings) { updated, newSecond in
-                store.save(updated)
-                if let second = newSecond { store.save(second) }
-                appState.loadedRide = updated
+                // Trim/split changes the points array, which invalidates any
+                // pre-existing brakeEvents (they may reference timestamps
+                // outside the new bounds).  Re-detect on both halves before
+                // saving so the brake map and Ride view stay consistent
+                // with the edited points.
+                let updatedWithBrakes = updated.withDetectedBrakeEvents()
+                store.save(updatedWithBrakes)
+                if let second = newSecond {
+                    store.save(second.withDetectedBrakeEvents())
+                }
+                appState.loadedRide = updatedWithBrakes
             }
         }
     }
@@ -665,6 +673,15 @@ struct RideView: View {
                             if pendingPocketMode {
                                 ride = ride.reprocessedWithPocketHPF()
                             }
+                            // Brake detection runs after pocket-mode reprocessing
+                            // because the algorithm itself doesn't depend on
+                            // bumpiness — order doesn't actually matter, but
+                            // semantically "all post-hoc analysis happens here,
+                            // in one place" reads cleaner.  Always called: an
+                            // empty result becomes brakeEvents = [], which is
+                            // the "detected, no events" signal the reprocessor
+                            // distinguishes from nil.
+                            ride = ride.withDetectedBrakeEvents()
                             store.save(ride)
                             appState.loadedRide = ride
                         }
