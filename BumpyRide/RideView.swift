@@ -828,7 +828,14 @@ struct RideView: View {
 
     /// One row in the close-call list.  Simpler than the brake row (no
     /// peak / duration since close calls only carry time + location), but
-    /// same tap-to-scrub interaction.
+    /// same tap-to-scrub interaction.  Long-press surfaces a Delete option
+    /// in a context menu — the way to remove an accidental tap that
+    /// slipped through the 5 s live undo window.
+    ///
+    /// Brake-event rows are intentionally NOT given a Delete option:
+    /// brakes are auto-detected, so any deletion would be re-applied next
+    /// time the detector runs.  Only user-initiated events make sense to
+    /// edit; the rest are derived from the underlying points.
     private func closeCallEventRow(index: Int, call: CloseCall, ride: Ride) -> some View {
         Button {
             scrubIndex = nearestPointIndex(to: call.timestamp, in: ride.points)
@@ -863,6 +870,29 @@ struct RideView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
+        .contextMenu {
+            Button(role: .destructive) {
+                deleteCloseCall(call)
+            } label: {
+                Label("Delete close call", systemImage: "trash")
+            }
+        }
+    }
+
+    /// Remove a single close call from the currently-loaded ride and
+    /// persist.  Re-saves through `store.save(_:)` so the standard fan-out
+    /// happens — the sync queue picks up the updated payload, and the
+    /// in-memory store + iCloud both reflect the deletion.  If the
+    /// closeCallEvents array becomes empty, we leave it as `[]` rather
+    /// than nilling it — the user did intentionally have close-call
+    /// reporting active on this ride, and `[]` is the truthful state.
+    private func deleteCloseCall(_ call: CloseCall) {
+        guard var ride = appState.loadedRide else { return }
+        guard var events = ride.closeCallEvents else { return }
+        events.removeAll { $0.id == call.id }
+        ride.closeCallEvents = events
+        store.save(ride)
+        appState.loadedRide = ride
     }
 
     /// "mm:ss into the ride" timestamp for a close-call row.
