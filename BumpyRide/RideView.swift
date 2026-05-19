@@ -12,7 +12,7 @@ struct RideView: View {
     @Bindable var recorder: RideRecorder
     @Bindable var appState: AppState
     var store: RideStore
-    var settings: AppSettings
+    @Bindable var settings: AppSettings
 
     @State private var showingSaveSheet: Bool = false
     @State private var pendingRide: Ride?
@@ -288,10 +288,16 @@ struct RideView: View {
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .padding(.horizontal)
 
+            // Live recording stats — always in bumps mode regardless of the
+            // user's saved-ride view-mode preference.  Brake detection runs
+            // post-hoc at save time, so there are no live brake events to
+            // surface here, per the v1.3 design.
             statsBar(
                 pointsCount: recorder.points.count,
                 distance: currentLiveDistance,
-                maxBump: currentLiveMaxBumpiness
+                maxBump: currentLiveMaxBumpiness,
+                events: [],
+                isBrakes: false
             )
             .padding(.horizontal)
 
@@ -455,21 +461,43 @@ struct RideView: View {
     // MARK: Viewer content
 
     private func viewerContent(for ride: Ride) -> some View {
-        VStack(spacing: 12) {
-            SessionBumpinessChart(
-                points: ride.points,
-                scrubIndex: clampedScrub(for: ride),
-                zoom: zoom,
-                settings: settings
-            )
-            .frame(height: 160)
-            .padding(.horizontal)
+        let isBrakes = settings.mapViewMode == .brakes
+        let events = ride.brakeEvents ?? []
+        return VStack(spacing: 12) {
+            // Bumpiness / Brakes toggle.  Reuses the same AppSettings flag as
+            // the Bump Map tab — toggling on one surface follows through to
+            // the other.  Hidden when the ride has no brake events
+            // *and* no brake data is expected (legacy ride with nil
+            // brakeEvents stays in the toggle so the user can still flip
+            // and see the route-only view).
+            playbackModeChip
+                .padding(.horizontal)
+
+            // Chart area: bumpiness chart in bumps mode, brake-event list in
+            // brakes mode.  Both occupy the same vertical real estate (~160 pt)
+            // so swapping doesn't reflow the rest of the layout.
+            if isBrakes {
+                brakeEventList(for: ride, events: events)
+                    .frame(height: 160)
+                    .padding(.horizontal)
+            } else {
+                SessionBumpinessChart(
+                    points: ride.points,
+                    scrubIndex: clampedScrub(for: ride),
+                    zoom: zoom,
+                    settings: settings
+                )
+                .frame(height: 160)
+                .padding(.horizontal)
+            }
 
             RouteMapView(
                 points: ride.points,
                 followUser: false,
                 highlightIndex: clampedScrub(for: ride),
-                settings: settings
+                settings: settings,
+                brakeEvents: isBrakes ? events : [],
+                colorRoute: !isBrakes
             )
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .padding(.horizontal)
@@ -480,7 +508,9 @@ struct RideView: View {
             statsBar(
                 pointsCount: ride.points.count,
                 distance: ride.distanceMeters,
-                maxBump: ride.maxBumpiness
+                maxBump: ride.maxBumpiness,
+                events: events,
+                isBrakes: isBrakes
             )
             .padding(.horizontal)
 
@@ -496,6 +526,157 @@ struct RideView: View {
             .padding(.horizontal)
             .padding(.bottom, 8)
         }
+    }
+
+    /// Bumpiness / Brakes picker, shown above the chart area.  Same style as
+    /// the Bump Map tab's view-mode chip for visual consistency.
+    private var playbackModeChip: some View {
+        Picker("View", selection: $settings.mapViewMode) {
+            ForEach(MapViewMode.allCases, id: \.self) { mode in
+                Text(mode.displayName).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+    }
+
+    /// Scrollable list of brake events in this ride.  Each row jumps the
+    /// scrubber to the matching point when tapped, which in turn moves the
+    /// route map's highlight pin to that location.  Empty-state messages
+    /// handle the two zero-events cases distinctly:
+    /// - `brakeEvents == nil`: detection hasn't run yet.  Most likely the
+    ///   user opened a legacy ride before the reprocessor finished.  Tell
+    ///   them it's pending.
+    /// - `brakeEvents == []`: detection ran and found nothing.  Celebrate it.
+    @ViewBuilder
+    private func brakeEventList(for ride: Ride, events: [BrakeEvent]) -> some View {
+        if ride.brakeEvents == nil {
+            emptyBrakesPanel(
+                icon: "hourglass",
+                title: "Detecting…",
+                subtitle: "Brake detection runs in the background on rides recorded before this feature existed. Check back in a moment."
+            )
+        } else if events.isEmpty {
+            emptyBrakesPanel(
+                icon: "hand.thumbsup",
+                title: "No hard brakes",
+                subtitle: "Nice and smooth — no decelerations above the threshold on this ride."
+            )
+        } else {
+            ScrollView {
+                VStack(spacing: 6) {
+                    ForEach(Array(events.enumerated()), id: \.element.id) { idx, event in
+                        brakeEventRow(index: idx + 1, event: event, ride: ride)
+                    }
+                }
+                .padding(.vertical, 8)
+            }
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private func emptyBrakesPanel(icon: String, title: String, subtitle: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.title2)
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.callout.weight(.semibold))
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 16)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// One row in the brake event list.  Tapping snaps the scrubber to the
+    /// nearest ride point in time to the event's timestamp.
+    private func brakeEventRow(index: Int, event: BrakeEvent, ride: Ride) -> some View {
+        Button {
+            scrubIndex = nearestPointIndex(to: event.timestamp, in: ride.points)
+        } label: {
+            HStack(spacing: 12) {
+                Text("\(index)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, alignment: .trailing)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(elapsedLabel(for: event, in: ride))
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.primary)
+                    Text(durationLabel(for: event))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(decelLabel(for: event))
+                    .font(.callout.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(decelColor(for: event))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Color(.tertiarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+    }
+
+    /// "mm:ss into the ride" timestamp display for an event.
+    private func elapsedLabel(for event: BrakeEvent, in ride: Ride) -> String {
+        let elapsed = max(0, event.timestamp.timeIntervalSince(ride.startedAt))
+        return Formatters.duration(elapsed)
+    }
+
+    /// "sustained 1.2 s" subtext.
+    private func durationLabel(for event: BrakeEvent) -> String {
+        String(format: "sustained %.1f s", event.durationSeconds)
+    }
+
+    /// Peak deceleration formatted as g-units.  Converting m/s² → g
+    /// (÷ 9.80665) keeps the readout consistent with the bumpiness display,
+    /// which is already in g across the app.
+    private func decelLabel(for event: BrakeEvent) -> String {
+        let g = event.peakDecelerationMPS2 / 9.80665
+        return String(format: "%.2f g", g)
+    }
+
+    /// Color the peak-decel readout on a count-style scale.  Mirrors the
+    /// brake-map tile colors: yellow → orange → red → purple as severity
+    /// rises.  Thresholds in m/s² are picked to be slightly looser than
+    /// the detector's 2.5 m/s² floor so a borderline event renders
+    /// distinguishably from a moderate one.
+    private func decelColor(for event: BrakeEvent) -> Color {
+        let d = event.peakDecelerationMPS2
+        if d < 3.0 { return Color(red: 0.85, green: 0.70, blue: 0.10) }      // yellow
+        if d < 4.0 { return Color(red: 0.95, green: 0.45, blue: 0.10) }      // orange
+        if d < 5.0 { return Color(red: 0.85, green: 0.15, blue: 0.15) }      // red
+        return Color(red: 0.55, green: 0.20, blue: 0.80)                      // purple
+    }
+
+    /// Find the index of the ride point whose timestamp is closest to
+    /// `target`.  Linear scan — fine for typical ride sizes.  Returns 0 for
+    /// an empty array (defensive; callers should already guard).
+    private func nearestPointIndex(to target: Date, in points: [RidePoint]) -> Int {
+        guard !points.isEmpty else { return 0 }
+        var bestIdx = 0
+        var bestDelta = abs(points[0].timestamp.timeIntervalSince(target))
+        for i in 1..<points.count {
+            let delta = abs(points[i].timestamp.timeIntervalSince(target))
+            if delta < bestDelta {
+                bestDelta = delta
+                bestIdx = i
+            }
+        }
+        return bestIdx
     }
 
     private func scrubberSection(for ride: Ride) -> some View {
@@ -556,13 +737,29 @@ struct RideView: View {
 
     // MARK: Stats
 
-    private func statsBar(pointsCount: Int, distance: Double, maxBump: Double) -> some View {
+    /// Three-column ride summary at the bottom of the playback view.  Two
+    /// layouts:
+    ///
+    /// - Bumps mode: Points / Distance / Max bumpiness.  Original behavior.
+    /// - Brakes mode: Events / Distance / Max decel — substitutes
+    ///   per-bumpiness stats for per-brake equivalents so the bar matches
+    ///   what the user is looking at.
+    private func statsBar(pointsCount: Int, distance: Double, maxBump: Double, events: [BrakeEvent], isBrakes: Bool) -> some View {
         HStack(spacing: 16) {
-            stat(label: "Points", value: "\(pointsCount)")
+            if isBrakes {
+                stat(label: "Events", value: "\(events.count)")
+            } else {
+                stat(label: "Points", value: "\(pointsCount)")
+            }
             Divider().frame(height: 24)
             stat(label: "Distance", value: Formatters.distance(distance))
             Divider().frame(height: 24)
-            stat(label: "Max", value: String(format: "%.2fg", maxBump))
+            if isBrakes {
+                let maxDecelG = (events.map(\.peakDecelerationMPS2).max() ?? 0) / 9.80665
+                stat(label: "Max", value: events.isEmpty ? "—" : String(format: "%.2fg", maxDecelG))
+            } else {
+                stat(label: "Max", value: String(format: "%.2fg", maxBump))
+            }
         }
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
