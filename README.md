@@ -190,6 +190,16 @@ Linearly interpolated between stops. Tune in **Settings** — sliders are constr
 
 Active development. Not yet released. No automated tests — a future improvement.
 
+## License
+
+Source-available under the [PolyForm Noncommercial 1.0.0](LICENSE) license.
+
+- ✅ Read, study, modify, and run the code for personal, educational, research, and other non-commercial purposes.
+- ✅ Contributions welcome — open an issue or PR. By contributing you agree to license your contribution under the same terms.
+- ❌ Commercial use (including publishing a competing app on any app store) requires a separate written license. Reach out and we'll talk.
+
+The license preserves the project's intellectual property while keeping the code visible and learnable. See [LICENSE](LICENSE) for the full plain-English text.
+
 ---
 
 🤖 Built with assistance from [Claude Code](https://claude.com/claude-code).
