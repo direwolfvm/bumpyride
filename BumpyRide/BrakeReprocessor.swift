@@ -32,14 +32,31 @@ enum BrakeReprocessor {
     /// so the caller can enqueue them as backfill on the sync coordinator
     /// (the server needs the updated payload, but it's not user-initiated
     /// work).
+    ///
+    /// Two modes:
+    /// - `forceReDetect = false` (default): only rides with `brakeEvents == nil`
+    ///   are touched.  This is the steady-state path — legacy rides
+    ///   recorded before the feature existed get backfilled once and
+    ///   stay that way.
+    /// - `forceReDetect = true`: every saved ride is re-analyzed,
+    ///   regardless of its current `brakeEvents` value.  Used by the
+    ///   one-shot migration that follows a `BrakeEventDetector.revision`
+    ///   bump (see `ContentView.task`) — the new detector tuning is
+    ///   meaningfully different, so previously-empty results need to be
+    ///   recomputed against the new algorithm.
     @MainActor
-    static func reprocessLegacyRides(in store: RideStore) async -> [UUID] {
+    static func reprocessLegacyRides(in store: RideStore, forceReDetect: Bool = false) async -> [UUID] {
         // Snapshot the candidate IDs.  We re-look-up each ride inside the
         // loop because the user might delete or edit a ride between this
         // snapshot and our turn to process it.
-        let candidateIds = store.rides
-            .filter { $0.brakeEvents == nil }
-            .map(\.id)
+        let candidateIds: [UUID]
+        if forceReDetect {
+            candidateIds = store.rides.map(\.id)
+        } else {
+            candidateIds = store.rides
+                .filter { $0.brakeEvents == nil }
+                .map(\.id)
+        }
 
         guard !candidateIds.isEmpty else { return [] }
 
@@ -47,11 +64,14 @@ enum BrakeReprocessor {
         var withEvents = 0
 
         for id in candidateIds {
-            // Re-look-up; ride may have been deleted or edited.  If edited
-            // since our snapshot, the edit path already ran detection
-            // (Phase 2 wiring) so brakeEvents != nil and we skip.
-            guard let ride = store.rides.first(where: { $0.id == id }),
-                  ride.brakeEvents == nil else { continue }
+            // Re-look-up; ride may have been deleted or edited.
+            guard let ride = store.rides.first(where: { $0.id == id }) else { continue }
+            // In force-re-detect mode we process unconditionally.  In the
+            // default mode we still respect the "nil means needs work"
+            // predicate so a ride that got processed by another concurrent
+            // path (the edit-save hook) doesn't get a redundant detection
+            // pass here.
+            if !forceReDetect && ride.brakeEvents != nil { continue }
 
             let detected = BrakeEventDetector.detect(in: ride)
 
@@ -68,7 +88,8 @@ enum BrakeReprocessor {
         }
 
         if !updated.isEmpty {
-            log.notice("Reprocessed \(updated.count, privacy: .public) legacy rides; \(withEvents, privacy: .public) had brake events")
+            let mode = forceReDetect ? "re-detected" : "reprocessed"
+            log.notice("\(mode, privacy: .public) \(updated.count, privacy: .public) rides; \(withEvents, privacy: .public) had brake events")
         }
         return updated
     }

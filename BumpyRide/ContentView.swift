@@ -40,6 +40,13 @@ struct ContentView: View {
     @AppStorage("hasSeenIntro") private var hasSeenIntro: Bool = false
     @State private var showingIntro = false
 
+    /// Last `BrakeEventDetector.revision` we applied across the whole
+    /// store.  Stored in `@AppStorage` so it survives launches.  When it's
+    /// behind the current revision, the `.task` block force-re-detects
+    /// every ride (not just nil-brakeEvents ones) so tuning changes show
+    /// up on existing data without requiring the user to re-record.
+    @AppStorage("lastAppliedBrakeDetectorRev") private var lastAppliedBrakeDetectorRev: Int = 0
+
     init() {
         // Cloud storage must be created BEFORE RideStore so RideStore can be
         // initialized with the resolved directory URL.  Migration of existing
@@ -202,14 +209,30 @@ struct ContentView: View {
             // on their other phone).  Then push, in case the local recompute above
             // produced a meaningfully different value.
             await pullThenPushCalibration()
-            // Backfill brake-event detection for any ride that doesn't have it
-            // yet (legacy v1/v2 rides, or v3 rides synced down from another
-            // device before that device had brake detection).  Yields between
-            // rides so the UI stays responsive; quiet saves avoid inflating
-            // the Saved-tab badge.  We explicitly enqueue the touched IDs as
-            // backfill afterward so updated payloads reach the server without
-            // looking like fresh user activity.
-            let reprocessed = await BrakeReprocessor.reprocessLegacyRides(in: store)
+            // Backfill brake-event detection.  Two cases land in the same code
+            // path:
+            //
+            // 1. Steady state — only rides with `brakeEvents == nil` need work
+            //    (legacy v1/v2 rides, or v3 rides synced down from another
+            //    device before that device had brake detection).
+            //
+            // 2. Detector-revision bump — when the constants or algorithm
+            //    change meaningfully (see BrakeEventDetector.revision), we
+            //    re-detect every ride one more time so the new tuning shows
+            //    up on existing data without forcing the user to re-record.
+            //    Triggered when the stored last-applied rev is behind the
+            //    detector's current rev.
+            //
+            // Both modes yield between rides so the UI stays responsive, and
+            // saves go through the quiet path so the Saved-tab badge doesn't
+            // inflate.  Touched IDs get enqueued as backfill afterward so the
+            // updated payloads reach the server without looking like fresh
+            // user activity.
+            let forceReDetect = lastAppliedBrakeDetectorRev < BrakeEventDetector.revision
+            let reprocessed = await BrakeReprocessor.reprocessLegacyRides(in: store, forceReDetect: forceReDetect)
+            if forceReDetect {
+                lastAppliedBrakeDetectorRev = BrakeEventDetector.revision
+            }
             if !reprocessed.isEmpty {
                 syncCoordinator.backfillAll(rideIds: reprocessed)
                 syncCoordinator.kick()
