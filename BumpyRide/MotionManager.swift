@@ -32,12 +32,30 @@ final class MotionManager {
     private let displaySeconds: Double = 5.0
     private let rmsSeconds: Double = 1.0
 
-    private var ringBuffer: [Float] = []
-    private var ringIndex: Int = 0
-    private var ringFilled: Bool = false
+    /// Ring buffer of raw vertical-accel samples.  Mutated on every motion
+    /// callback (50 Hz).  `@ObservationIgnored` so the per-sample writes
+    /// don't trigger SwiftUI invalidation cascades — the view binds to
+    /// `latestSamples` / `currentBumpiness` instead, which are published
+    /// at a throttled rate by `ingest`.
+    @ObservationIgnored private var ringBuffer: [Float] = []
+    @ObservationIgnored private var ringIndex: Int = 0
+    @ObservationIgnored private var ringFilled: Bool = false
+
+    /// Counts raw samples since start to drive the publishing throttle.
+    /// Untracked — has no business invalidating views.
+    @ObservationIgnored private var sampleSequence: Int = 0
+
+    /// Publish the seismograph waveform + bumpiness number every Nth raw
+    /// sample.  At 50 Hz raw and N = 3 the view sees updates at ~17 Hz —
+    /// fast enough to read as smooth scrolling, slow enough that long
+    /// rides don't pile up SwiftUI invalidation work on the main actor.
+    /// Earlier behavior was N = 1, which was contributing to the "freeze
+    /// and catch up" stutter on long rides.
+    private static let publishEveryNSamples: Int = 3
 
     private(set) var latestSamples: [Float] = []
     private(set) var currentBumpiness: Double = 0
+
     /// Magnitude of the most recent user-acceleration vector projected onto
     /// the horizontal plane (the plane perpendicular to gravity at that
     /// instant), in g-units.  Captures braking, accelerating, and cornering
@@ -47,7 +65,11 @@ final class MotionManager {
     /// `RideRecorder.handleLocation` snapshots this into each `RidePoint.horizontalAccel`
     /// so the post-hoc `BrakeEventDetector` can refine GPS-derived event
     /// peaks with a direct accel signal.
-    private(set) var currentHorizontalAccelG: Float?
+    ///
+    /// `@ObservationIgnored` because it's read on the GPS-callback cadence
+    /// (~2 Hz), not by any SwiftUI view directly — so the 50 Hz writes
+    /// should not invalidate the view tree.
+    @ObservationIgnored private(set) var currentHorizontalAccelG: Float?
 
     var windowCapacity: Int { Int(sampleRateHz * displaySeconds) }
     private var rmsSampleCount: Int { Int(sampleRateHz * rmsSeconds) }
@@ -102,18 +124,32 @@ final class MotionManager {
         ringBuffer = Array(repeating: 0, count: windowCapacity)
         ringIndex = 0
         ringFilled = false
+        sampleSequence = 0
         latestSamples = []
         currentBumpiness = 0
         currentHorizontalAccelG = nil
     }
 
+    /// Called on the main actor for every 50 Hz device-motion callback.
+    /// Hot path — keep cheap:
+    ///   - Ring buffer write + index bump on every call (untracked storage,
+    ///     no SwiftUI invalidation).
+    ///   - `currentHorizontalAccelG` is also untracked, refreshed on every
+    ///     call so the next GPS fix gets a current value.
+    ///   - The two **observed** properties — `latestSamples` and
+    ///     `currentBumpiness` — are only published every Nth raw sample,
+    ///     throttling SwiftUI re-renders to ~17 Hz.  Visually smooth, no
+    ///     per-sample render storm.
     private func ingest(_ vertical: Float, horizontalG: Float) {
         ringBuffer[ringIndex] = vertical
         ringIndex = (ringIndex + 1) % ringBuffer.count
         if ringIndex == 0 { ringFilled = true }
-        latestSamples = orderedSamples()
-        currentBumpiness = computeRMS(recentSamples(count: rmsSampleCount))
         currentHorizontalAccelG = horizontalG
+        sampleSequence &+= 1
+        if sampleSequence % Self.publishEveryNSamples == 0 {
+            latestSamples = orderedSamples()
+            currentBumpiness = computeRMS(recentSamples(count: rmsSampleCount))
+        }
     }
 
     func snapshotWindow() -> [Float] { orderedSamples() }
