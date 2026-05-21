@@ -220,7 +220,10 @@ struct RideView: View {
     private func commitDelete() {
         if let ride = appState.loadedRide {
             store.delete(ride)
-            appState.clearLoaded()
+            // Same "return to where you came from" semantic as the X
+            // button — after deleting, the user wants to see the
+            // updated list, which is the Saved tab.
+            appState.dismissLoaded()
         }
     }
 
@@ -237,7 +240,11 @@ struct RideView: View {
         if appState.loadedRide != nil {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
-                    appState.clearLoaded()
+                    // dismissLoaded restores the tab the user was on
+                    // when they opened the ride (typically Saved).
+                    // clearLoaded would leave them on the now-idle Ride
+                    // tab, which was the original bug.
+                    appState.dismissLoaded()
                 } label: {
                     Label("Clear", systemImage: "xmark")
                 }
