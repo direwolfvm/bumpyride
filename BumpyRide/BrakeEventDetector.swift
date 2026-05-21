@@ -7,42 +7,42 @@ import Foundation
 /// Safe to re-run on any saved ride (e.g., after a trim/split that changes
 /// the points array).
 ///
-/// **Algorithm — combined GPS + accel signal.**
+/// **Algorithm — GPS-decel as gate, accel as magnitude refinement.**
 ///
-/// Real-world hard braking on a bike is often *short*: a cyclist's panic
-/// stop or sudden slowdown for a car can peak at 4–6 m/s² for 0.2–0.6 s,
-/// then taper rapidly.  An earlier version of this detector used GPS-decel
-/// alone as the trigger, with a 0.8 s sustained-above-threshold filter
-/// and ±1 s smoothing.  That combination silently rejected every real
-/// brake event in field testing — the smoothing was burying short peaks
-/// and the duration filter then refused what was left.
+/// Pipeline:
 ///
-/// The current pipeline:
-///
-/// 1. **Smooth GPS speed** with a centered ±0.4 s moving average.  Kills
+/// 1. **Smooth GPS speed** with a centered ±0.5 s moving average.  Kills
 ///    single-fix jitter without obliterating short-duration peaks.
 ///
 /// 2. **Compute GPS-derived deceleration** via centered finite difference
 ///    on the smoothed signal.
 ///
-/// 3. **Build a combined signal** at each sample as
-///    `max(gpsDecel, horizontalAccel · 9.80665 · 0.8)`.  GPS-decel and
-///    accel-derived decel are co-equal triggers, not GPS-primary with
-///    accel as refinement.  The 0.8 factor discounts the accel value
-///    because horizontal acceleration includes braking + cornering +
-///    accelerating, not pure deceleration.  Legacy v1/v2 rides with
-///    `horizontalAccel == nil` degrade gracefully to GPS-only.
+/// 3. **Find runs** of indices where `gpsDecel > decelThresholdMPS2`
+///    sustained at least `minDurationSeconds`.  GPS-decel is the *only*
+///    gate — the rider's speed must actually drop for an event to count.
+///    Pure cornering or lateral surface bumps don't reduce forward speed,
+///    so they can't register as brakes regardless of what the
+///    accelerometer reads.
 ///
-/// 4. **Find runs** of indices where the combined signal exceeds
-///    `decelThresholdMPS2` for at least `minDurationSeconds`.  0.3 s is
-///    short enough to catch real panic stops without false-positives on
-///    single noisy samples.
+/// 4. **Refine the peak magnitude using `horizontalAccel`** when v3 data
+///    is available.  For each run, take the peak of the GPS-derived
+///    decel curve, then `max()` it against the run's peak horizontalAccel
+///    value scaled by `9.80665 · 0.8` (g→m/s² with a discount factor for
+///    non-braking horizontal components).  This gives a less-lagged
+///    estimate of the true peak when both signals agree the brake was
+///    hard.  Legacy v1/v2 rides without `horizontalAccel` skip this step
+///    and use the GPS peak directly.
 ///
-/// 5. **Emit each run** with peak magnitude + timestamp taken from where
-///    the combined signal is highest in the window.
-///
-/// 6. **Collapse adjacent events** within `minSeparationSeconds`,
+/// 5. **Collapse adjacent events** within `minSeparationSeconds`,
 ///    keeping whichever peaked higher.
+///
+/// **Why GPS-as-gate matters.**  An earlier rev 2 attempt promoted
+/// `horizontalAccel` to a co-equal trigger via a combined-signal `max()`.
+/// That over-detected dramatically: horizontal accel spikes during
+/// cornering at speed, on rough pavement, even during sprint starts —
+/// none of which are brake events.  The only signal that uniquely
+/// identifies a brake is "the forward speed dropped."  GPS-as-gate enforces
+/// exactly that.
 ///
 /// **Tuning history.**  Bump `revision` whenever the constants or
 /// algorithm change such that previously-processed rides should be
@@ -55,12 +55,17 @@ enum BrakeEventDetector {
     /// `ContentView.task`.
     ///
     /// History:
-    /// - rev 1 (1ed11ff…b130748): GPS-only trigger, 0.8 s minDuration,
-    ///   ±1 s smoothing.  Missed nearly all real brake events in the field.
-    /// - rev 2 (this file): combined GPS + accel trigger, 0.3 s minDuration,
-    ///   ±0.4 s smoothing.  Tuned against actual rides where peaks were
-    ///   < 1 s long.
-    static let revision: Int = 2
+    /// - rev 1 (1ed11ff): GPS-gate + accel-refine, 0.8 s minDuration,
+    ///   ±1 s smoothing, 3 s minSeparation.  Missed nearly all real
+    ///   brake events because the time-domain constants were tuned for
+    ///   prolonged braking (cars) not cyclist panic stops.
+    /// - rev 2 (33adbec): combined GPS+accel trigger, 0.3 s minDuration,
+    ///   ±0.4 s smoothing, 1.5 s minSeparation.  Over-detected
+    ///   dramatically — cornering and lateral bumps registered as brakes.
+    /// - rev 3 (this file): back to GPS-gate + accel-refine (rev 1's
+    ///   correct structure), with split-the-difference tuning:
+    ///   0.4 s minDuration, ±0.5 s smoothing, 2 s minSeparation.
+    static let revision: Int = 3
 
     /// Deceleration must exceed this to start counting toward a brake event.
     /// 2.5 m/s² ≈ 0.25 g.  Normal coasting on flat road is well under
@@ -68,34 +73,33 @@ enum BrakeEventDetector {
     /// brake at speed easily hits 4–6 m/s².
     static let decelThresholdMPS2: Double = 2.5
 
-    /// A run shorter than this is treated as transient noise.  0.3 s is
-    /// long enough to require ~1 confirming sample at typical 2–3 Hz GPS
-    /// + accel cadence, but short enough to catch real panic stops that
-    /// peak briefly and decay.  Previous default was 0.8 s; that turned
-    /// out to be longer than typical real-world hard-brake events.
-    static let minDurationSeconds: TimeInterval = 0.3
+    /// A run shorter than this is treated as transient noise.  0.4 s is
+    /// long enough to require multiple confirming samples at typical
+    /// 2–3 Hz GPS cadence, short enough to catch real panic stops that
+    /// peak briefly and decay.  Sits between rev 1's overly-strict 0.8 s
+    /// (missed everything) and rev 2's permissive 0.3 s (let noise
+    /// through).
+    static let minDurationSeconds: TimeInterval = 0.4
 
-    /// Half-window for the centered speed-smoothing pass.  Tight enough
-    /// (±0.4 s = 0.8 s total) that a 0.3 s peak isn't smoothed away,
-    /// wide enough to ignore single-fix GPS-derivative noise.  Previous
-    /// default was ±1.0 s; that was actively destroying the signal we
-    /// were trying to detect.
-    static let smoothingHalfWindowSeconds: TimeInterval = 0.4
+    /// Half-window for the centered speed-smoothing pass.  ±0.5 s = 1 s
+    /// total.  Wide enough to suppress single-fix jitter, tight enough
+    /// to preserve sub-second real peaks.  Rev 1's ±1.0 s buried short
+    /// peaks; rev 2's ±0.4 s let single-fix noise through unfiltered.
+    static let smoothingHalfWindowSeconds: TimeInterval = 0.5
 
-    /// Events closer than this in time are collapsed.  1.5 s catches
-    /// "brake → release → brake again" sequences without inflating the
-    /// event count, while leaving room for two genuinely-separate brakes
-    /// at the same intersection ~2 s apart.  Previous default was 3.0 s,
-    /// which collapsed too aggressively given the new sensitivity.
-    static let minSeparationSeconds: TimeInterval = 1.5
+    /// Events closer than this in time are collapsed.  2 s leaves room
+    /// for two genuinely-separate brakes at the same intersection without
+    /// inflating the count from "brake → release → brake again" patterns.
+    /// Sits between rev 1's overly-eager 3 s and rev 2's 1.5 s.
+    static let minSeparationSeconds: TimeInterval = 2.0
 
-    /// Gain applied to the horizontalAccel signal when building the
-    /// combined trigger.  9.80665 converts g → m/s², 0.8 discounts the
+    /// Gain applied to the horizontalAccel signal during peak refinement
+    /// (NOT as a trigger).  9.80665 converts g → m/s², 0.8 discounts the
     /// accel value because horizontal acceleration includes non-braking
-    /// components (cornering, accelerating, surface bumps).  Tuned so
-    /// that a 0.4 g horizontal-accel event registers as ≈ 3.1 m/s² in
-    /// the combined signal, above the threshold.
-    private static let accelTriggerGain: Double = 9.80665 * 0.8
+    /// components (cornering, accelerating, surface bumps).  Used only
+    /// to refine the peak magnitude of an event the GPS-decel signal
+    /// already identified.
+    private static let accelRefinementGain: Double = 9.80665 * 0.8
 
     /// Find every brake event in a ride.  Returns `[]` if the ride is too
     /// short to compute a derivative or has no points above threshold.
@@ -108,10 +112,9 @@ enum BrakeEventDetector {
         guard points.count >= 3 else { return [] }
 
         let smoothedSpeeds = smoothSpeeds(in: points)
-        let gpsDecel = decelerations(from: smoothedSpeeds, points: points)
-        let signal = combinedSignal(gpsDecel: gpsDecel, points: points)
-        let runs = findRuns(signal: signal, points: points)
-        let events = runs.compactMap { emit(run: $0, points: points, signal: signal) }
+        let decel = decelerations(from: smoothedSpeeds, points: points)
+        let runs = findRuns(decel: decel, points: points)
+        let events = runs.compactMap { emit(run: $0, points: points, decel: decel) }
         return collapseAdjacent(events)
     }
 
@@ -164,29 +167,14 @@ enum BrakeEventDetector {
         return decel
     }
 
-    /// Per-sample trigger signal — max of GPS-derived decel and
-    /// horizontalAccel-derived decel (with the discount gain).  This is
-    /// what drives both the run-finding and the per-event peak.  Legacy
-    /// rides without `horizontalAccel` default that contribution to 0,
-    /// so the signal degrades to GPS-decel — the old algorithm's
-    /// behavior, minus the destructive over-smoothing.
-    private static func combinedSignal(gpsDecel: [Double], points: [RidePoint]) -> [Double] {
-        var out: [Double] = []
-        out.reserveCapacity(points.count)
-        for (i, p) in points.enumerated() {
-            let accelDecel = Double(p.horizontalAccel ?? 0) * accelTriggerGain
-            out.append(max(gpsDecel[i], accelDecel))
-        }
-        return out
-    }
-
-    /// Contiguous index ranges where the signal is above threshold and
-    /// the run spans at least `minDurationSeconds`.
-    private static func findRuns(signal: [Double], points: [RidePoint]) -> [ClosedRange<Int>] {
+    /// Contiguous index ranges where GPS-decel is above threshold and
+    /// the run spans at least `minDurationSeconds`.  GPS-decel is the
+    /// only gate; horizontalAccel only participates later (peak refine).
+    private static func findRuns(decel: [Double], points: [RidePoint]) -> [ClosedRange<Int>] {
         var runs: [ClosedRange<Int>] = []
         var runStart: Int? = nil
-        for i in signal.indices {
-            if signal[i] > decelThresholdMPS2 {
+        for i in decel.indices {
+            if decel[i] > decelThresholdMPS2 {
                 if runStart == nil { runStart = i }
             } else if let s = runStart {
                 if isLongEnough(start: s, end: i - 1, points: points) {
@@ -196,7 +184,7 @@ enum BrakeEventDetector {
             }
         }
         if let s = runStart {
-            let last = signal.count - 1
+            let last = decel.count - 1
             if isLongEnough(start: s, end: last, points: points) {
                 runs.append(s...last)
             }
@@ -209,19 +197,31 @@ enum BrakeEventDetector {
         return points[end].timestamp.timeIntervalSince(points[start].timestamp) >= minDurationSeconds
     }
 
-    /// Build a single `BrakeEvent` from a candidate run.  Peak is the
-    /// max of the combined signal within the run; that's already the
-    /// max of GPS + accel-derived, so no separate refinement step.
-    private static func emit(run: ClosedRange<Int>, points: [RidePoint], signal: [Double]) -> BrakeEvent? {
+    /// Build a single `BrakeEvent` from a candidate run.  Peak magnitude
+    /// is `max(GPS-decel peak, peakHorizontalAccel · 9.80665 · 0.8)` so
+    /// the accel signal can boost the magnitude estimate when it's
+    /// present and high, but cannot create an event on its own
+    /// (run-finding already gated on GPS-decel).  Returns `nil` if the
+    /// run has no positive decel samples (defended against; shouldn't
+    /// happen given `findRuns`'s filter).
+    private static func emit(run: ClosedRange<Int>, points: [RidePoint], decel: [Double]) -> BrakeEvent? {
         var peakIdx = run.lowerBound
-        var peakVal = signal[run.lowerBound]
+        var gpsPeak = decel[run.lowerBound]
         for i in run {
-            if signal[i] > peakVal {
-                peakVal = signal[i]
+            if decel[i] > gpsPeak {
+                gpsPeak = decel[i]
                 peakIdx = i
             }
         }
-        guard peakVal > 0 else { return nil }
+        guard gpsPeak > 0 else { return nil }
+
+        // Peak refinement: when the run also contains a high
+        // horizontalAccel sample, use it (scaled + discounted) as a
+        // less-lagged estimate of the true peak.  GPS-decel here is
+        // smoothed and lagged; horizontalAccel is per-sample direct.
+        let accelPeakG = run.compactMap { points[$0].horizontalAccel }.map(Double.init).max()
+        let accelDecel = (accelPeakG ?? 0) * accelRefinementGain
+        let refinedPeak = max(gpsPeak, accelDecel)
 
         let peakPoint = points[peakIdx]
         let duration = points[run.upperBound].timestamp.timeIntervalSince(points[run.lowerBound].timestamp)
@@ -229,7 +229,7 @@ enum BrakeEventDetector {
             timestamp: peakPoint.timestamp,
             latitude: peakPoint.latitude,
             longitude: peakPoint.longitude,
-            peakDecelerationMPS2: peakVal,
+            peakDecelerationMPS2: refinedPeak,
             durationSeconds: duration
         )
     }
