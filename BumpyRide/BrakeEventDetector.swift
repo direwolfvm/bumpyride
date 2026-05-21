@@ -66,18 +66,25 @@ enum BrakeEventDetector {
     ///   correct structure), with split-the-difference tuning:
     ///   0.4 s minDuration, ±0.5 s smoothing, 2 s minSeparation.
     ///   Decel threshold stayed at 2.5 m/s² — still under-detected.
-    /// - rev 4 (this file): decel threshold 2.5 → 2.0 m/s² (≈ 0.2 g).
-    ///   Same algorithm and time-domain tuning as rev 3.
-    static let revision: Int = 4
+    /// - rev 4 (ab1d154): decel threshold 2.5 → 2.0 m/s² (≈ 0.2 g).
+    ///   Same algorithm and time-domain tuning as rev 3.  Still
+    ///   under-detected — likely the GPS speed signal is noisier or
+    ///   more lagged in pocket mode than the textbook deceleration
+    ///   curve, so the smoothed-and-differentiated peak undershoots
+    ///   what the rider actually experienced.
+    /// - rev 5 (this file): decel threshold 2.0 → 1.5 m/s² (≈ 0.15 g).
+    ///   Crosses into "moderate brake" territory.  Routine slowdowns
+    ///   at intersections may start appearing depending on rider
+    ///   habits; the count vs. false-positive trade is now firmly on
+    ///   the side of "show more, even if some are firm-not-hard."
+    static let revision: Int = 5
 
     /// Deceleration must exceed this to start counting toward a brake event.
-    /// 2.0 m/s² ≈ 0.2 g.  Normal coasting on flat road is well under
-    /// 1 m/s²; routine slowdowns at intersections sit around 1–2 m/s²;
-    /// a hard brake at speed easily hits 4–6 m/s².  The 2.0 floor is
-    /// at the upper edge of "normal slowdown," so it should still
-    /// reject coasting-into-a-light while catching firm brakes.  Bumped
-    /// down from 2.5 in rev 4 because rev 3 still under-detected.
-    static let decelThresholdMPS2: Double = 2.0
+    /// 1.5 m/s² ≈ 0.15 g.  Below the 2 m/s² typical-firm-stop threshold;
+    /// above coast-down on flat road (~0.5 m/s²) and gentle braking into
+    /// a roll (~1 m/s²).  Chosen empirically after rev 1's 2.5 m/s² and
+    /// rev 4's 2.0 m/s² both under-detected against real rides.
+    static let decelThresholdMPS2: Double = 1.5
 
     /// A run shorter than this is treated as transient noise.  0.4 s is
     /// long enough to require multiple confirming samples at typical
