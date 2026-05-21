@@ -103,6 +103,31 @@ final class RideStore {
         onRideDeleted?(ride.id)
     }
 
+    /// Remove every ride from disk and from the in-memory list.  Fires
+    /// `onRideDeleted` once per ride so the sync queue and the calibration
+    /// store both follow.  Used by the "Clear my data" and "Delete account"
+    /// flows in `WebAccountView`, where the user has explicitly asked for
+    /// a clean slate.
+    ///
+    /// Iterates over a *snapshot* of the IDs rather than `rides` directly
+    /// so the in-loop mutation of `rides` (via the onRideDeleted handler's
+    /// access chain through `store.rides`) can't index-shift mid-iteration.
+    ///
+    /// File removals go through the coordinated path for the same reason
+    /// `delete(_:)` does — the ubiquity container may have concurrent
+    /// readers (Files app, another device) that benefit from coordination.
+    func removeAll() {
+        let snapshot = rides.map(\.id)
+        for id in snapshot {
+            let url = directoryURL.appendingPathComponent("\(id.uuidString).json")
+            coordinatedRemove(at: url)
+        }
+        rides = []
+        for id in snapshot {
+            onRideDeleted?(id)
+        }
+    }
+
     /// Update only the `brakeEvents` field of an existing ride in place,
     /// without firing `onRideSaved`.
     ///

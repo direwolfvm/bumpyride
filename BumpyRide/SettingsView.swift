@@ -80,7 +80,8 @@ struct SettingsView: View {
                         WebAccountView(
                             account: webAccount,
                             syncCoordinator: syncCoordinator,
-                            syncQueue: syncQueue
+                            syncQueue: syncQueue,
+                            store: store
                         )
                     } label: {
                         webAccountRow

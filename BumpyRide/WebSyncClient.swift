@@ -199,6 +199,129 @@ actor WebSyncClient {
         }
     }
 
+    /// Wire-format response from `/api/me/clear-data` and
+    /// `/api/me/delete-account`.  Both endpoints return the same shape:
+    ///
+    /// - `ok` is always true on a 2xx (server raises a status code otherwise).
+    /// - `ridesOrphaned` is the count of rides re-parented to an anonymized
+    ///   user when `keepPublicContributions = true`.  Their per-cell
+    ///   contributions stay on the public maps; the link to the original
+    ///   account is severed.
+    /// - `ridesDeleted` is the count of rides fully deleted (cascade-delete
+    ///   plus public-map subtraction).  Happens when
+    ///   `keepPublicContributions = false` *or* the user wasn't sharing
+    ///   publicly to begin with.
+    ///
+    /// Exactly one of `ridesOrphaned` / `ridesDeleted` will be non-zero per
+    /// call — the four-way matrix on the server's side maps the user's
+    /// (sharing? × keep?) combination to one bucket or the other.  iOS
+    /// uses the numbers for confirmation copy ("Removed 47 rides").
+    struct DataDeletionResult: Codable, Equatable, Sendable {
+        let ok: Bool
+        let ridesOrphaned: Int
+        let ridesDeleted: Int
+    }
+
+    /// `POST /api/me/clear-data` — drop every ride from the server, keep the
+    /// account.  `keepPublicContributions = true` re-parents the rides to a
+    /// fresh anonymized user so their public-map cells survive; `false`
+    /// cascade-deletes the rides and subtracts their contributions from the
+    /// public aggregate (same path as flipping the sharing toggle off).
+    ///
+    /// Returns the deletion summary.  Like the sharing endpoint, slow path
+    /// can take a couple seconds for a large library, so we use the same
+    /// 10 s timeout.  Token stays valid after this call (only the user's
+    /// rides are touched).
+    func clearData(keepPublicContributions: Bool, token: String) async throws -> DataDeletionResult {
+        log.info("POST /api/me/clear-data keep=\(keepPublicContributions, privacy: .public)")
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/me/clear-data"))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 10
+
+        do {
+            request.httpBody = try JSONEncoder().encode(["keepPublicContributions": keepPublicContributions])
+        } catch {
+            throw ClientError.validationFailed
+        }
+
+        return try await postAndDecode(request)
+    }
+
+    /// `POST /api/me/delete-account` — drop every ride AND remove the user.
+    /// The server requires `confirmEmail` to match the account's email
+    /// (case-insensitive) as a stray-click guard.  Behavior of
+    /// `keepPublicContributions` is identical to `clearData` above; what
+    /// changes is that the user row itself is dropped (or replaced with
+    /// the anonymized stub holding the orphaned rides).
+    ///
+    /// **After a successful 2xx, the bearer token is invalidated server-
+    /// side** — the user row is gone (or anonymized) and the token
+    /// cascade-dropped with it.  Subsequent calls with the same token
+    /// return 401.  Callers should treat this as the trigger to wipe the
+    /// local Keychain entry and transition to a disconnected state.
+    func deleteAccount(
+        keepPublicContributions: Bool,
+        confirmEmail: String,
+        token: String
+    ) async throws -> DataDeletionResult {
+        log.info("POST /api/me/delete-account keep=\(keepPublicContributions, privacy: .public)")
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/me/delete-account"))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 10
+
+        struct Body: Encodable {
+            let keepPublicContributions: Bool
+            let confirmEmail: String
+        }
+        do {
+            request.httpBody = try JSONEncoder().encode(Body(
+                keepPublicContributions: keepPublicContributions,
+                confirmEmail: confirmEmail
+            ))
+        } catch {
+            throw ClientError.validationFailed
+        }
+
+        return try await postAndDecode(request)
+    }
+
+    /// Shared 2xx/400/401/error decode path for the two destructive
+    /// endpoints.  Both have identical response shape and error mapping,
+    /// so factoring this out keeps the calling methods readable.
+    private func postAndDecode(_ request: URLRequest) async throws -> DataDeletionResult {
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw ClientError.transport
+        }
+        guard let http = response as? HTTPURLResponse else { throw ClientError.transport }
+
+        switch http.statusCode {
+        case 200..<300:
+            do {
+                return try JSONDecoder().decode(DataDeletionResult.self, from: data)
+            } catch {
+                throw ClientError.decoding
+            }
+        case 400:
+            // Wrong confirmEmail, missing field, etc.  Caller surfaces this
+            // as a user-fixable error (probably "the email doesn't match").
+            throw ClientError.validationFailed
+        case 401:
+            throw ClientError.unauthorized
+        default:
+            throw ClientError.http(status: http.statusCode)
+        }
+    }
+
     /// Read the user's stored pocket-mode calibration from `GET /api/me/calibration`.
     /// Defaults (for users who've never PUT) come back as
     /// `{ pocketGain: 1.0, confidence: 0, lastComputedAt: null }`.

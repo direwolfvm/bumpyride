@@ -150,6 +150,66 @@ final class WebAccount {
         }
     }
 
+    // MARK: - Destructive operations
+
+    /// Drop every ride from the server, keeping the account.  See
+    /// `WebSyncClient.clearData` for the keep/drop matrix.  Token stays
+    /// valid after this call; account state is untouched.
+    ///
+    /// Caller is responsible for any iOS-side cleanup (sync queue drain,
+    /// local-ride deletion).  This method only handles the network side.
+    func clearWebData(keepPublicContributions: Bool) async throws -> WebSyncClient.DataDeletionResult {
+        guard let stored = storage.load() else {
+            throw WebSyncClient.ClientError.unauthorized
+        }
+        do {
+            return try await client.clearData(keepPublicContributions: keepPublicContributions, token: stored.token)
+        } catch WebSyncClient.ClientError.unauthorized {
+            invalidate()
+            throw WebSyncClient.ClientError.unauthorized
+        }
+    }
+
+    /// Drop every ride AND remove the user.  See `WebSyncClient.deleteAccount`
+    /// for the keep/drop matrix and the `confirmEmail` stray-click guard.
+    ///
+    /// **On a successful return, the token is invalidated server-side**
+    /// (the user row is gone and the token cascade-dropped).  This method
+    /// follows through with a local `invalidate()` so the in-memory state
+    /// transitions to `.error` and the Keychain entry is wiped.  Caller
+    /// should also clear local rides + sync queue, since the bumpyride.me
+    /// presence is gone.
+    func deleteWebAccount(
+        keepPublicContributions: Bool,
+        confirmEmail: String
+    ) async throws -> WebSyncClient.DataDeletionResult {
+        guard let stored = storage.load() else {
+            throw WebSyncClient.ClientError.unauthorized
+        }
+        do {
+            let result = try await client.deleteAccount(
+                keepPublicContributions: keepPublicContributions,
+                confirmEmail: confirmEmail,
+                token: stored.token
+            )
+            // Server side has dropped (or anonymized) the user row.  Our
+            // token is now dead.  Wipe Keychain + transition state so the
+            // UI reflects disconnection.  Reuse invalidate() but with a
+            // friendlier message than the "session was invalidated" copy
+            // it uses for unexpected 401s.
+            storage.delete()
+            state = .notConnected
+            return result
+        } catch WebSyncClient.ClientError.unauthorized {
+            // The token was already invalid before we even tried.  Clean up
+            // the same way invalidate() would, but treat it as not-connected
+            // rather than the error state used for surprising 401s.
+            storage.delete()
+            state = .notConnected
+            throw WebSyncClient.ClientError.unauthorized
+        }
+    }
+
     // MARK: - Pocket-mode calibration
 
     /// Read the server's stored pocket-mode calibration.  Same 401-then-invalidate

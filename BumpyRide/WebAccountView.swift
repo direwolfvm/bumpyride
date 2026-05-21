@@ -9,8 +9,18 @@ struct WebAccountView: View {
     @Bindable var account: WebAccount
     @Bindable var syncCoordinator: SyncCoordinator
     @Bindable var syncQueue: SyncQueue
+    /// RideStore is needed by the Danger Zone flows so the local-data wipe
+    /// can fan out (`removeAll()` fires onRideDeleted per ride, which in
+    /// turn clears the sync queue and triggers calibration recompute).
+    @Bindable var store: RideStore
 
     @State private var tokenInput: String = ""
+
+    /// Visibility flags for the two Danger Zone sheets.  Mutually exclusive
+    /// at runtime — opening one doesn't pre-empt the other, just stacks.
+    /// In practice users only ever tap one of them.
+    @State private var showingClearDataSheet: Bool = false
+    @State private var showingDeleteAccountSheet: Bool = false
 
     /// Local cache of `/api/me/sharing` state.  The server is canonical; these are
     /// just the on-screen reflection.  Refreshed on screen appear and whenever
@@ -38,6 +48,7 @@ struct WebAccountView: View {
                 connectedSection(email: email)
                 publicBumpMapSection
                 syncSection
+                dangerZoneSection(email: email)
             case .notConnected, .connecting, .error:
                 signInSection
                 manualTokenSection
@@ -49,6 +60,21 @@ struct WebAccountView: View {
         }
         .navigationTitle("Web Account")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showingClearDataSheet) {
+            ClearDataSheet(
+                isSharing: publicMapSharing,
+                onConfirm: { keep in await performClearData(keepPublicContributions: keep) }
+            )
+        }
+        .sheet(isPresented: $showingDeleteAccountSheet) {
+            DeleteAccountSheet(
+                accountEmail: account.connectedEmail ?? "",
+                isSharing: publicMapSharing,
+                onConfirm: { keep, confirmEmail in
+                    await performDeleteAccount(keepPublicContributions: keep, confirmEmail: confirmEmail)
+                }
+            )
+        }
         // `id:` re-runs the task whenever the connected email changes (nil ⇄ email
         // and email-to-email), covering both first-load and post-pair refresh
         // without a separate .onChange.
@@ -469,6 +495,79 @@ struct WebAccountView: View {
         }
     }
 
+    // MARK: - Danger zone (shown when connected)
+
+    /// Section at the very bottom of the connected view that hosts the two
+    /// destructive operations.  Mirrors the web's `/settings/account` Danger
+    /// Zone — two buttons, each opening a confirmation sheet.  Email shown
+    /// to the user in the section footer makes the "what account is this?"
+    /// question unambiguous before they tap anything red.
+    private func dangerZoneSection(email: String) -> some View {
+        Section {
+            Button(role: .destructive) {
+                showingClearDataSheet = true
+            } label: {
+                Label("Clear my data", systemImage: "trash")
+            }
+            Button(role: .destructive) {
+                showingDeleteAccountSheet = true
+            } label: {
+                Label("Delete account", systemImage: "person.crop.circle.badge.xmark")
+            }
+        } header: {
+            Text("Danger zone")
+        } footer: {
+            Text("Operating on **\(email)**. Both actions also delete every ride saved on this device, including any in iCloud Drive.")
+        }
+    }
+
+    /// Run the "Clear my data" flow.  Order:
+    /// 1. Server-side clear — drops rides from bumpyride.me (and optionally
+    ///    preserves their public-map contributions under an anonymized
+    ///    identity).  Takes a couple seconds for large libraries.
+    /// 2. On success, wipe local rides via `RideStore.removeAll()` so the
+    ///    Saved tab + maps reflect the new state.  The store fires
+    ///    `onRideDeleted` per ride, which in turn empties the sync queue
+    ///    and triggers calibration recompute.
+    /// 3. Sheet manages its own dismissal + result display via the closure
+    ///    return value; this function just throws errors back up.
+    private func performClearData(keepPublicContributions: Bool) async -> Result<WebSyncClient.DataDeletionResult, WebSyncClient.ClientError> {
+        do {
+            let result = try await account.clearWebData(keepPublicContributions: keepPublicContributions)
+            // Server confirmed — now wipe local.  Order matters: if we
+            // wiped local first and the network call then failed, the
+            // user would be in a confusing "local empty, server full"
+            // state.  Server-first means a network failure leaves both
+            // sides intact and recoverable.
+            store.removeAll()
+            return .success(result)
+        } catch let error as WebSyncClient.ClientError {
+            return .failure(error)
+        } catch {
+            return .failure(.transport)
+        }
+    }
+
+    /// Run the "Delete account" flow.  Same server-first ordering as
+    /// `performClearData`.  After the server confirms, `WebAccount` has
+    /// already transitioned to `.notConnected` and wiped the Keychain
+    /// entry, so the connected sections of this view will collapse on the
+    /// next render.
+    private func performDeleteAccount(keepPublicContributions: Bool, confirmEmail: String) async -> Result<WebSyncClient.DataDeletionResult, WebSyncClient.ClientError> {
+        do {
+            let result = try await account.deleteWebAccount(
+                keepPublicContributions: keepPublicContributions,
+                confirmEmail: confirmEmail
+            )
+            store.removeAll()
+            return .success(result)
+        } catch let error as WebSyncClient.ClientError {
+            return .failure(error)
+        } catch {
+            return .failure(.transport)
+        }
+    }
+
     // MARK: - About
 
     private var aboutSection: some View {
@@ -482,21 +581,364 @@ struct WebAccountView: View {
     }
 }
 
+// MARK: - Clear Data sheet
+
+/// Confirmation sheet for "Clear my data."  Three states: confirm, working,
+/// done/error.  Internal state machine keeps the parent view's surface
+/// clean — it just hands in a closure that performs the action and a
+/// closing dismiss action when the user is finished reading the result.
+private struct ClearDataSheet: View {
+    let isSharing: Bool
+    let onConfirm: (_ keepPublicContributions: Bool) async -> Result<WebSyncClient.DataDeletionResult, WebSyncClient.ClientError>
+
+    @Environment(\.dismiss) private var dismiss
+
+    /// Mirrors the web modal's radio choice.  Default `true` matches the
+    /// web's default — most users probably don't want to subtract
+    /// themselves from the public maps when their reason for clearing is
+    /// "I want to start over," not "I want to disavow my contributions."
+    @State private var keepPublicContributions: Bool = true
+    @State private var phase: Phase = .confirming
+
+    /// The sheet runs through three sequential UI states.  Kept as an
+    /// enum (rather than separate `@State` bools) so impossible
+    /// combinations like "working AND done" can't arise.
+    enum Phase: Equatable {
+        case confirming
+        case working
+        case done(WebSyncClient.DataDeletionResult)
+        case failed(String)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                switch phase {
+                case .confirming:
+                    confirmingPhase
+                case .working:
+                    workingPhase
+                case .done(let result):
+                    donePhase(result: result)
+                case .failed(let message):
+                    failedPhase(message: message)
+                }
+            }
+            .navigationTitle("Clear my data")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    if phase == .confirming || isFailed(phase) {
+                        Button("Cancel") { dismiss() }
+                    }
+                }
+            }
+            // Block swipe-to-dismiss while a request is in flight so the
+            // user can't accidentally back out mid-clear.  The other phases
+            // allow normal dismissal.
+            .interactiveDismissDisabled(phase == .working)
+        }
+    }
+
+    @ViewBuilder
+    private var confirmingPhase: some View {
+        Section {
+            Text("Removes every ride from your bumpyride.me account, plus every ride saved on this device. Your account stays — you can ride and sync again right away.")
+                .font(.callout)
+        }
+        if isSharing {
+            Section {
+                Picker("Public maps", selection: $keepPublicContributions) {
+                    Text("Keep my data, anonymized").tag(true)
+                    Text("Remove from public maps").tag(false)
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            } header: {
+                Text("Public maps")
+            } footer: {
+                Text(keepPublicContributions
+                    ? "Your bumpiness, brake, and close-call contributions stay on the public maps but are reassigned to an anonymous identity. No link back to your account."
+                    : "Your contributions are subtracted from the public maps before your rides are deleted.")
+            }
+        }
+        Section {
+            Button(role: .destructive) {
+                Task { await runConfirm() }
+            } label: {
+                Text("Clear my data")
+                    .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var workingPhase: some View {
+        Section {
+            HStack(spacing: 12) {
+                ProgressView().controlSize(.small)
+                Text("Clearing your data…")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func donePhase(result: WebSyncClient.DataDeletionResult) -> some View {
+        Section {
+            Label {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Done.")
+                        .font(.headline)
+                    if result.ridesOrphaned > 0 {
+                        Text("\(result.ridesOrphaned) ride\(result.ridesOrphaned == 1 ? "" : "s") preserved anonymously on the public maps.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else if result.ridesDeleted > 0 {
+                        Text("\(result.ridesDeleted) ride\(result.ridesDeleted == 1 ? "" : "s") removed.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Nothing to remove — you had no rides on the server.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } icon: {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
+        }
+        Section {
+            Button("Done") { dismiss() }
+        }
+    }
+
+    @ViewBuilder
+    private func failedPhase(message: String) -> some View {
+        Section {
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+        }
+        Section {
+            Button("Try again") {
+                phase = .confirming
+            }
+            Button("Cancel") { dismiss() }
+        }
+    }
+
+    private func runConfirm() async {
+        phase = .working
+        let result = await onConfirm(keepPublicContributions)
+        switch result {
+        case .success(let summary):
+            phase = .done(summary)
+        case .failure(let error):
+            phase = .failed(Self.message(for: error))
+        }
+    }
+
+    private func isFailed(_ phase: Phase) -> Bool {
+        if case .failed = phase { return true }
+        return false
+    }
+
+    static func message(for error: WebSyncClient.ClientError) -> String {
+        switch error {
+        case .transport: return "Couldn't reach bumpyride.me. Check your network and try again."
+        case .unauthorized: return "Your sign-in expired. Sign in again and retry."
+        case .validationFailed:
+            // For delete-account this is most commonly a confirmEmail
+            // mismatch.  Surface that specifically since it's the
+            // user-fixable failure mode they're most likely to hit.
+            return "The server didn't accept that request — check that your email matches and try again."
+        case .conflict: return "The server reported a conflict. Try again later."
+        case .decoding: return "Couldn't parse the server's response. Try again later."
+        case .http(let status): return "Server returned an unexpected status (\(status))."
+        }
+    }
+}
+
+// MARK: - Delete Account sheet
+
+/// Confirmation sheet for "Delete account."  Same three-phase structure as
+/// `ClearDataSheet`, with an extra email-retype field gating the Confirm
+/// button (matching the web's stray-click guard).
+private struct DeleteAccountSheet: View {
+    let accountEmail: String
+    let isSharing: Bool
+    let onConfirm: (_ keepPublicContributions: Bool, _ confirmEmail: String) async -> Result<WebSyncClient.DataDeletionResult, WebSyncClient.ClientError>
+
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var keepPublicContributions: Bool = true
+    @State private var confirmEmailInput: String = ""
+    @State private var phase: ClearDataSheet.Phase = .confirming
+
+    private var emailMatches: Bool {
+        confirmEmailInput.trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare(accountEmail) == .orderedSame
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                switch phase {
+                case .confirming:
+                    confirmingPhase
+                case .working:
+                    workingPhase
+                case .done(let result):
+                    donePhase(result: result)
+                case .failed(let message):
+                    failedPhase(message: message)
+                }
+            }
+            .navigationTitle("Delete account")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    if phase == .confirming || isFailed(phase) {
+                        Button("Cancel") { dismiss() }
+                    }
+                }
+            }
+            .interactiveDismissDisabled(phase == .working)
+        }
+    }
+
+    @ViewBuilder
+    private var confirmingPhase: some View {
+        Section {
+            Text("Permanently deletes your bumpyride.me account, every ride on the server, and every ride saved on this device. This cannot be undone.")
+                .font(.callout)
+        }
+        if isSharing {
+            Section {
+                Picker("Public maps", selection: $keepPublicContributions) {
+                    Text("Keep my data, anonymized").tag(true)
+                    Text("Remove from public maps").tag(false)
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            } header: {
+                Text("Public maps")
+            } footer: {
+                Text(keepPublicContributions
+                    ? "Your bumpiness, brake, and close-call contributions stay on the public maps but are reassigned to an anonymous identity. No link back to your (deleted) account."
+                    : "Your contributions are subtracted from the public maps before your account is deleted.")
+            }
+        }
+        Section {
+            TextField("Type your email to confirm", text: $confirmEmailInput)
+                .textInputAutocapitalization(.never)
+                .keyboardType(.emailAddress)
+                .autocorrectionDisabled()
+                .font(.callout.monospaced())
+        } header: {
+            Text("Confirm email")
+        } footer: {
+            Text("Type **\(accountEmail)** to enable the Delete button.")
+        }
+        Section {
+            Button(role: .destructive) {
+                Task { await runConfirm() }
+            } label: {
+                Text("Delete my account")
+                    .frame(maxWidth: .infinity)
+            }
+            .disabled(!emailMatches)
+        }
+    }
+
+    @ViewBuilder
+    private var workingPhase: some View {
+        Section {
+            HStack(spacing: 12) {
+                ProgressView().controlSize(.small)
+                Text("Deleting your account…")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func donePhase(result: WebSyncClient.DataDeletionResult) -> some View {
+        Section {
+            Label {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Account deleted.")
+                        .font(.headline)
+                    if result.ridesOrphaned > 0 {
+                        Text("\(result.ridesOrphaned) ride\(result.ridesOrphaned == 1 ? "" : "s") preserved anonymously on the public maps.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else if result.ridesDeleted > 0 {
+                        Text("\(result.ridesDeleted) ride\(result.ridesDeleted == 1 ? "" : "s") removed.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } icon: {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
+        }
+        Section {
+            Button("Done") { dismiss() }
+        }
+    }
+
+    @ViewBuilder
+    private func failedPhase(message: String) -> some View {
+        Section {
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+        }
+        Section {
+            Button("Try again") {
+                phase = .confirming
+            }
+            Button("Cancel") { dismiss() }
+        }
+    }
+
+    private func runConfirm() async {
+        phase = .working
+        let trimmed = confirmEmailInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let result = await onConfirm(keepPublicContributions, trimmed)
+        switch result {
+        case .success(let summary):
+            phase = .done(summary)
+        case .failure(let error):
+            phase = .failed(ClearDataSheet.message(for: error))
+        }
+    }
+
+    private func isFailed(_ phase: ClearDataSheet.Phase) -> Bool {
+        if case .failed = phase { return true }
+        return false
+    }
+}
+
 #Preview("Not connected") {
     // Preview uses a throwaway tmp directory so the preview process doesn't
     // touch real on-device storage and doesn't depend on iCloud being
     // configured in the preview environment.
     let tmpDir = FileManager.default.temporaryDirectory
         .appendingPathComponent("BumpyRidePreviewStore-\(UUID().uuidString)", isDirectory: true)
+    let previewStore = RideStore(directoryURL: tmpDir)
     return NavigationStack {
         WebAccountView(
             account: WebAccount(),
             syncCoordinator: SyncCoordinator(
                 queue: SyncQueue(),
-                rideStore: RideStore(directoryURL: tmpDir),
+                rideStore: previewStore,
                 webAccount: WebAccount()
             ),
-            syncQueue: SyncQueue()
+            syncQueue: SyncQueue(),
+            store: previewStore
         )
     }
 }
