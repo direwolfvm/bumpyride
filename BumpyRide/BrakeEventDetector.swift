@@ -62,16 +62,22 @@ enum BrakeEventDetector {
     /// - rev 2 (33adbec): combined GPS+accel trigger, 0.3 s minDuration,
     ///   ±0.4 s smoothing, 1.5 s minSeparation.  Over-detected
     ///   dramatically — cornering and lateral bumps registered as brakes.
-    /// - rev 3 (this file): back to GPS-gate + accel-refine (rev 1's
+    /// - rev 3 (fae5d84): back to GPS-gate + accel-refine (rev 1's
     ///   correct structure), with split-the-difference tuning:
     ///   0.4 s minDuration, ±0.5 s smoothing, 2 s minSeparation.
-    static let revision: Int = 3
+    ///   Decel threshold stayed at 2.5 m/s² — still under-detected.
+    /// - rev 4 (this file): decel threshold 2.5 → 2.0 m/s² (≈ 0.2 g).
+    ///   Same algorithm and time-domain tuning as rev 3.
+    static let revision: Int = 4
 
     /// Deceleration must exceed this to start counting toward a brake event.
-    /// 2.5 m/s² ≈ 0.25 g.  Normal coasting on flat road is well under
-    /// 1 m/s²; routine slowdowns at intersections are 1–2 m/s²; a hard
-    /// brake at speed easily hits 4–6 m/s².
-    static let decelThresholdMPS2: Double = 2.5
+    /// 2.0 m/s² ≈ 0.2 g.  Normal coasting on flat road is well under
+    /// 1 m/s²; routine slowdowns at intersections sit around 1–2 m/s²;
+    /// a hard brake at speed easily hits 4–6 m/s².  The 2.0 floor is
+    /// at the upper edge of "normal slowdown," so it should still
+    /// reject coasting-into-a-light while catching firm brakes.  Bumped
+    /// down from 2.5 in rev 4 because rev 3 still under-detected.
+    static let decelThresholdMPS2: Double = 2.0
 
     /// A run shorter than this is treated as transient noise.  0.4 s is
     /// long enough to require multiple confirming samples at typical
