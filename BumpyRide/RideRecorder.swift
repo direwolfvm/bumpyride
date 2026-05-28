@@ -32,6 +32,21 @@ final class RideRecorder {
     /// See LocationManager's logging notes for how to verify on Console.app.
     private static let maxHorizontalAccuracyMeters: CLLocationAccuracy = 100
 
+    /// Maximum age (in seconds) of a `CLLocation`'s `timestamp` relative to
+    /// now.  Older than this and we treat it as a stale/cached delivery —
+    /// not safe to pair with current motion-ring-buffer data, because the
+    /// location is from "then" and the bumpiness reading is from "now."
+    ///
+    /// Matters during recovery from a mid-ride dropout: iOS may deliver one
+    /// cached fix from before the gap when location resumes, with a
+    /// `timestamp` from minutes ago.  Saving a `RidePoint` that pairs that
+    /// stale lat/lon with the current bumpiness reading creates a corrupted
+    /// data point — looks like a bump happened in a place the rider was
+    /// minutes ago.  5 s is a generous threshold: fresh fixes from the GPS
+    /// chain typically have a sub-second age, and even a slow re-lock
+    /// shouldn't exceed a few seconds.
+    private static let maxLocationAgeSeconds: TimeInterval = 5.0
+
     private(set) var state: State = .idle
     private(set) var points: [RidePoint] = []
     /// User-initiated close-call events captured during this recording.  Each
@@ -201,12 +216,21 @@ final class RideRecorder {
     private func handleLocation(_ loc: CLLocation) {
         guard state == .recording else { return }
         // `horizontalAccuracy < 0` is CoreLocation's "no valid fix" sentinel.
-        // Both drop conditions are silent (no OSLog) — this method is on the
+        // All drop conditions are silent (no OSLog) — this method is on the
         // hot path (fires per location callback, ~2–3 Hz at cycling speed)
         // and an earlier per-drop log got the subsystem quarantined.  If you
         // need to see drop counts for debugging, attach Xcode.
         guard loc.horizontalAccuracy >= 0 else { return }
         guard loc.horizontalAccuracy < Self.maxHorizontalAccuracyMeters else { return }
+        // Freshness gate.  iOS sometimes delivers a cached `CLLocation`
+        // whose `timestamp` is from minutes ago — most commonly after a
+        // mid-ride location dropout, when delivery first resumes with one
+        // stale fix before fresh ones flow.  Pairing that stale lat/lon
+        // with the current motion-ring-buffer bumpiness reading produces
+        // a corrupted RidePoint: the bump shows up at a location the
+        // rider was at minutes earlier, not where they are now.  Filter
+        // these out — the next real fix will produce a clean point.
+        guard abs(loc.timestamp.timeIntervalSinceNow) < Self.maxLocationAgeSeconds else { return }
         let bumpiness = motion.currentBumpiness
         let window = motion.snapshotWindow()
         // Snapshot the latest horizontal-plane accel magnitude for post-hoc
