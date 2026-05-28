@@ -4,36 +4,39 @@ import Observation
 import OSLog
 
 /// Wraps `CLLocationManager` for ride recording.  Configured for cycling-grade GPS
-/// (`kCLLocationAccuracyBestForNavigation`, 3 m distance filter, `.otherNavigation`
-/// activity) and toggles `allowsBackgroundLocationUpdates` so location continues
-/// delivering while the screen is locked or the app is backgrounded — which also
-/// keeps the process alive long enough for `MotionManager` to keep producing samples.
+/// (`kCLLocationAccuracyBestForNavigation`, 3 m distance filter, `.fitness` activity)
+/// and toggles `allowsBackgroundLocationUpdates` so location continues delivering
+/// while the screen is locked or the app is backgrounded — which also keeps the
+/// process alive long enough for `MotionManager` to keep producing samples.
 ///
-/// **Why `.otherNavigation` and not `.fitness`?**  Per Apple's documentation, the
-/// `.fitness` activity type is *explicitly designed to be pausable* — iOS will
-/// auto-pause location delivery when its classifier decides the user has stopped.
-/// The navigation activity types (`.automotiveNavigation`, `.otherNavigation`)
-/// disable auto-pause entirely.  A bike app that needs continuous tracking is
-/// closer to "vehicle navigation" than "fitness coach" in this respect; the
-/// small battery cost (no smart pausing at long red lights) is worth it to
-/// avoid the multi-minute mid-ride dropouts we saw in field testing.
+/// **The mid-ride dropout story.**  Field testing surfaced occasional multi-minute
+/// gaps where the app process stayed alive (accelerometer data kept flowing) but
+/// location delivery stopped, sometimes for 20+ minutes.  We've iterated on the
+/// mitigation:
+///
+/// - First fix: auto-resume on `didPauseLocationUpdates`.  Looped 24,001 times
+///   in a single ride at unlimited rate, hit the CL API rate limit, quarantined
+///   our OSLog subsystem.  Reverted.
+/// - Second fix: switch `activityType` to `.otherNavigation` (which docs say
+///   prevents auto-pause).  Empirically *worse* — possibly because when iOS
+///   pauses us anyway under this activity type, it doesn't fire the pause
+///   callback (since it "shouldn't" be happening), so our handler never runs.
+///   Reverted to `.fitness`.
+/// - Current fix: `.fitness` (so pause callbacks reliably fire) + auto-resume
+///   with a 30 s minimum interval (well under the rate limit even worst-case)
+///   + an unbounded attempt count + a 30 s watchdog Timer that detects silent
+///   failures (case where iOS stops delivering without firing the pause
+///   callback) and triggers resume from the side.
+///
+/// The watchdog is the defense-in-depth that covers the case where our
+/// callback-driven resume can't run because no callback fires.
 ///
 /// **Instrumentation note**: only *event-driven* CoreLocation callbacks emit
 /// OSLog lines under subsystem `com.herbertindustries.BumpyRide` /
-/// category `location` (start, stop, auth change, error, pause, resume).
-/// Two rules learned the hard way:
-///
-/// 1. **Never log on the hot per-fix path.**  At cycling speed + 3 m
-///    distanceFilter that's ~2–3 callbacks/sec sustained for a whole ride,
-///    which trips iOS's OSLog rate limiter and gets the subsystem quarantined.
-///    For per-fix visibility during debugging, attach Xcode + breakpoint.
-///
-/// 2. **Auto-resume on `didPauseLocationUpdates` MUST be rate-limited.**  An
-///    early version restarted with no throttling; iOS pause → restart →
-///    immediate pause → restart looped 24,001 times in a single ride,
-///    hitting the CL API rate limit and quarantining our subsystem.  Current
-///    version uses a 30 s minimum interval + 5 attempts-per-ride cap.  See
-///    `attemptResumeFromPause` for the math.
+/// category `location` (start, stop, auth change, error, pause, resume).  The
+/// 30 s rate limit on resume attempts keeps OSLog volume well below
+/// quarantine thresholds even if the watchdog and the pause callback both
+/// keep firing.  Never log on the hot per-fix path.
 ///
 /// View live in Console.app (device must be plugged in or sharing via wifi):
 ///   `subsystem:com.herbertindustries.BumpyRide category:location`
@@ -47,35 +50,50 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     private(set) var lastLocation: CLLocation?
     var onLocationUpdate: ((CLLocation) -> Void)?
 
-    /// Auto-resume bookkeeping for `didPauseLocationUpdates`.  See
-    /// `attemptResumeFromPause` for usage.  Untracked since they don't
-    /// drive any UI.
-    @ObservationIgnored private var lastResumeAttemptAt: Date?
-    @ObservationIgnored private var resumeAttemptsThisRide: Int = 0
+    /// When we last *received* a `didUpdateLocations` callback.  Read by the
+    /// watchdog to decide whether delivery has gone silent.  Updated on the
+    /// main actor as part of every location delivery.
+    @ObservationIgnored private var lastLocationReceivedAt: Date?
 
-    /// Minimum seconds between successive `startUpdatingLocation()` calls
-    /// in response to a `didPauseLocationUpdates`.  Caps the CL-API rate
-    /// well below the limit even worst-case (5 attempts × 30 s = at most
-    /// one restart every 30 s, vs. the rate limit being measured in
-    /// thousands of calls).
+    /// When we last *attempted* a resume (via `attemptResume`).  Pairs with
+    /// `minResumeIntervalSeconds` to prevent a tight loop.
+    @ObservationIgnored private var lastResumeAttemptAt: Date?
+
+    /// Watchdog Timer that polls on the main RunLoop to detect silent
+    /// dropouts — periods where `didUpdateLocations` simply stops firing
+    /// without a corresponding `didPauseLocationUpdates`.  Without this,
+    /// the callback-driven resume path is unreachable for the scenarios
+    /// where iOS quietly stops delivering.
+    @ObservationIgnored private var watchdogTimer: Timer?
+
+    /// Minimum seconds between successive `startUpdatingLocation()` calls.
+    /// Either source of resume (pause callback or watchdog) routes through
+    /// `attemptResume`, which enforces this interval.  Caps the worst-case
+    /// CL-API call rate at 2/min regardless of how aggressively iOS keeps
+    /// pausing us.
     private static let minResumeIntervalSeconds: TimeInterval = 30
 
-    /// Max number of auto-resume attempts per `startUpdating()` cycle.
-    /// At 5 we'll try for ~2.5 min before giving up — long enough to
-    /// recover from a transient cause (cellular dropout, low-power
-    /// triggers), short enough that a fundamental issue (e.g., iOS
-    /// hard-decided to stop us) doesn't waste forever.
-    private static let maxResumeAttemptsPerRide: Int = 5
+    /// Watchdog poll cadence.  Every `watchdogIntervalSeconds`, we check
+    /// `Date().timeIntervalSince(lastLocationReceivedAt) >
+    /// watchdogStalenessThresholdSeconds`.  Cadence + threshold tuned to
+    /// detect a real dropout within ~1 minute without false-positive
+    /// triggering on normal between-fix gaps.
+    private static let watchdogIntervalSeconds: TimeInterval = 30
+
+    /// Staleness threshold for the watchdog.  At cycling speed + 3 m
+    /// distanceFilter we typically get a fix every 1–3 s; a 60 s gap is
+    /// well outside normal even on a slow ride.
+    private static let watchdogStalenessThresholdSeconds: TimeInterval = 60
 
     override init() {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         manager.distanceFilter = 3.0
-        // `.otherNavigation` rather than `.fitness` — see file-level comment.
-        // Tells iOS "don't auto-pause regardless of the activity classifier's
-        // opinion about whether the user has stopped."
-        manager.activityType = .otherNavigation
+        // `.fitness`, not `.otherNavigation`.  Both have failure modes;
+        // `.fitness` is documented as pausable but at least fires the
+        // pause callback reliably so our handler gets a chance to resume.
+        manager.activityType = .fitness
         manager.pausesLocationUpdatesAutomatically = false
         authorizationStatus = manager.authorizationStatus
     }
@@ -97,10 +115,10 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         manager.allowsBackgroundLocationUpdates = true
         manager.showsBackgroundLocationIndicator = true
         manager.startUpdatingLocation()
-        // Reset auto-resume bookkeeping at the start of each ride so the
-        // attempt budget is per-ride, not per-app-launch.
+        // Reset per-ride bookkeeping; start the watchdog.
         lastResumeAttemptAt = nil
-        resumeAttemptsThisRide = 0
+        lastLocationReceivedAt = Date()
+        startWatchdog()
         Self.log.info("startUpdating(): allowsBackground=true authStatus=\(self.manager.authorizationStatus.rawValue, privacy: .public)")
     }
 
@@ -109,6 +127,7 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         // Drop the background-mode opt-in when not recording so the app doesn't show the
         // indicator unnecessarily and iOS isn't asked to keep us alive.
         manager.allowsBackgroundLocationUpdates = false
+        stopWatchdog()
         Self.log.info("stopUpdating()")
     }
 
@@ -121,6 +140,7 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         Task { @MainActor in
             guard let loc = received.last else { return }
             self.lastLocation = loc
+            self.lastLocationReceivedAt = Date()
             self.onLocationUpdate?(loc)
         }
     }
@@ -134,62 +154,75 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: any Error) {
-        // Historically swallowed silently, which was the worst possible default
-        // for diagnosing GPS dropouts.  CoreLocation routinely emits transient
-        // `kCLErrorLocationUnknown` while it warms up — those are normal and
-        // self-recover.  But sustained errors (or `denied`) are the kind of
-        // thing we want to see in Console.app immediately.
         Task { @MainActor in
             Self.log.error("didFailWithError: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     /// Called when iOS auto-pauses updates despite our
-    /// `pausesLocationUpdatesAutomatically = false` hint AND the
-    /// `.otherNavigation` activity type that's supposed to disable
-    /// auto-pause entirely.  In field testing this still fires occasionally
-    /// — mid-ride dropouts of 5–10 minutes were observed before the
-    /// resume logic was added.
-    ///
-    /// **Rate-limited restart strategy** to avoid the feedback-loop disaster
-    /// of an earlier version (see file-level comment, point 2):
-    ///   - At most one restart attempt every `minResumeIntervalSeconds`
-    ///   - At most `maxResumeAttemptsPerRide` attempts per ride
-    /// Together that bounds API call volume well below CoreLocation's rate
-    /// limit even if iOS keeps re-pausing us.
+    /// `pausesLocationUpdatesAutomatically = false` hint.  We route through
+    /// the rate-limited `attemptResume` path — no per-ride attempt cap,
+    /// just a 30 s minimum interval.
     nonisolated func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
         Task { @MainActor in
             Self.log.notice("didPauseLocationUpdates — iOS auto-paused")
-            self.attemptResumeFromPause()
+            self.attemptResume(reason: "pauseCallback")
         }
     }
 
-    /// Restart updates if our rate-limit + circuit-breaker budget allows.
-    /// Skips quietly otherwise so we don't pile up restarts that iOS
-    /// would just pause again.
-    private func attemptResumeFromPause() {
-        if resumeAttemptsThisRide >= Self.maxResumeAttemptsPerRide {
-            Self.log.notice("Skip resume: budget exhausted (\(self.resumeAttemptsThisRide, privacy: .public) attempts this ride)")
-            return
-        }
-        if let last = lastResumeAttemptAt,
-           Date().timeIntervalSince(last) < Self.minResumeIntervalSeconds {
-            Self.log.notice("Skip resume: too soon since last attempt (\(Date().timeIntervalSince(last), privacy: .public)s)")
-            return
-        }
-        lastResumeAttemptAt = Date()
-        resumeAttemptsThisRide += 1
-        Self.log.notice("Attempting resume (#\(self.resumeAttemptsThisRide, privacy: .public)/\(Self.maxResumeAttemptsPerRide, privacy: .public))")
-        manager.startUpdatingLocation()
-    }
-
-    /// Logged for symmetry with `didPauseLocationUpdates`.  iOS calls this
-    /// when location delivery resumes naturally on its own.  No action
-    /// needed beyond the log line — `didUpdateLocations` will start
-    /// firing again of its own accord.
     nonisolated func locationManagerDidResumeLocationUpdates(_ manager: CLLocationManager) {
         Task { @MainActor in
             Self.log.notice("didResumeLocationUpdates")
+        }
+    }
+
+    // MARK: - Resume + watchdog
+
+    /// Single entry point for both resume sources (pause callback + watchdog).
+    /// Skips if we've attempted within the last `minResumeIntervalSeconds`.
+    /// No per-ride attempt cap: at 30 s minimum interval, the worst-case API
+    /// volume is 2 calls/minute even if every restart immediately fails,
+    /// which is well under any rate limit.
+    private func attemptResume(reason: String) {
+        if let last = lastResumeAttemptAt,
+           Date().timeIntervalSince(last) < Self.minResumeIntervalSeconds {
+            return  // Silent skip — too soon.  No log to avoid quarantine risk.
+        }
+        lastResumeAttemptAt = Date()
+        Self.log.notice("Attempting resume (reason=\(reason, privacy: .public))")
+        manager.startUpdatingLocation()
+    }
+
+    /// Start the watchdog Timer on the main RunLoop.  Fires every
+    /// `watchdogIntervalSeconds`; checks for staleness on each fire and
+    /// calls `attemptResume` if delivery has gone silent for longer than
+    /// `watchdogStalenessThresholdSeconds`.  Invalidated on `stopUpdating`.
+    private func startWatchdog() {
+        stopWatchdog()  // idempotent
+        let timer = Timer(timeInterval: Self.watchdogIntervalSeconds, repeats: true) { [weak self] _ in
+            // Bind self before crossing into the Task so Swift 6 strict
+            // concurrency is happy — capturing `self?` inside a Task body
+            // is a warning today and an error under Swift 6.
+            guard let self else { return }
+            Task { @MainActor in self.watchdogTick() }
+        }
+        // Schedule on the common runloop modes so it fires even during
+        // UI tracking modes (scroll, etc.).
+        RunLoop.main.add(timer, forMode: .common)
+        watchdogTimer = timer
+    }
+
+    private func stopWatchdog() {
+        watchdogTimer?.invalidate()
+        watchdogTimer = nil
+    }
+
+    private func watchdogTick() {
+        guard let last = lastLocationReceivedAt else { return }
+        let staleness = Date().timeIntervalSince(last)
+        if staleness > Self.watchdogStalenessThresholdSeconds {
+            Self.log.notice("Watchdog: \(staleness, privacy: .public)s since last fix; attempting resume")
+            attemptResume(reason: "watchdog")
         }
     }
 }
