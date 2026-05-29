@@ -88,7 +88,18 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     override init() {
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+        // `kCLLocationAccuracyBest`, NOT `kCLLocationAccuracyBestForNavigation`.
+        // Apple documents the latter as "intended for use when the device is
+        // plugged in" — meant for cars / dashboard navigation, not pocket
+        // cycling on battery.  When the device isn't plugged in, iOS can
+        // quietly demote or suspend us, which produced the multi-minute
+        // mid-ride dropouts we kept chasing.  `.Best` is the same accuracy
+        // tier most cycling apps use (Strava, etc.) and trades a small bit
+        // of theoretical precision for substantially better resilience in
+        // sustained-background scenarios.  User decision after rev 18:
+        // they'd rather have continuous tracking than picking up the rare
+        // sub-meter detail BestForNavigation might catch.
+        manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.distanceFilter = 3.0
         // `.fitness`, not `.otherNavigation`.  Both have failure modes;
         // `.fitness` is documented as pausable but at least fires the
