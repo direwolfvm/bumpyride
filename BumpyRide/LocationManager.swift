@@ -59,6 +59,12 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     /// `minResumeIntervalSeconds` to prevent a tight loop.
     @ObservationIgnored private var lastResumeAttemptAt: Date?
 
+    /// One-shot guard: have we already issued a `requestAlwaysAuthorization`
+    /// call?  iOS only honors the prompt once per app launch — subsequent
+    /// calls are silent no-ops.  We track it ourselves so we don't keep
+    /// re-asking each time `didChangeAuthorization` fires.
+    @ObservationIgnored private var hasRequestedAlways: Bool = false
+
     /// Watchdog Timer that polls on the main RunLoop to detect silent
     /// dropouts — periods where `didUpdateLocations` simply stops firing
     /// without a corresponding `didPauseLocationUpdates`.  Without this,
@@ -113,9 +119,36 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         manager.requestWhenInUseAuthorization()
     }
 
+    /// Two-step incremental authorization upgrade — the iOS-blessed way to
+    /// get `.authorizedAlways`.  You can't ask for Always directly; you have
+    /// to first hold `.authorizedWhenInUse` and then request the upgrade.
+    /// Apple shows a separate system prompt for the upgrade step.
+    ///
+    /// We need `.authorizedAlways` for one specific reason: Significant
+    /// Location Change service only delivers events to backgrounded apps if
+    /// they hold Always.  Without it, SLC effectively doesn't exist for our
+    /// background-suspension recovery scenario — which is what made the
+    /// otherwise-correct build 18 wiring useless in practice.
+    private func requestAlwaysIfNeeded() {
+        guard !hasRequestedAlways else { return }
+        guard manager.authorizationStatus == .authorizedWhenInUse else { return }
+        hasRequestedAlways = true
+        manager.requestAlwaysAuthorization()
+    }
+
     func startUpdating() {
-        if manager.authorizationStatus == .notDetermined {
+        // Three branches for the authorization state at start time:
+        //  - notDetermined: ask for When In Use; the upgrade to Always
+        //    fires from `didChangeAuthorization` once the user grants.
+        //  - authorizedWhenInUse: already have base authorization but not
+        //    the background-eligible Always tier; request the upgrade now.
+        //  - authorizedAlways: nothing to do.  (denied / restricted are
+        //    handled by the calling UI gating the Start button.)
+        let status = manager.authorizationStatus
+        if status == .notDetermined {
             manager.requestWhenInUseAuthorization()
+        } else if status == .authorizedWhenInUse {
+            requestAlwaysIfNeeded()
         }
         // Enable background delivery before starting updates.  Together with the
         // `UIBackgroundModes = location` Info.plist key, this lets a "When In Use"-
@@ -183,6 +216,13 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         Task { @MainActor in
             self.authorizationStatus = status
             Self.log.info("didChangeAuthorization → \(status.rawValue, privacy: .public)")
+            // Chain the Always upgrade onto the When-In-Use grant.  This is
+            // what makes the incremental authorization flow work — the
+            // request to upgrade has to be issued *after* the user has
+            // already granted the base level.
+            if status == .authorizedWhenInUse {
+                self.requestAlwaysIfNeeded()
+            }
         }
     }
 

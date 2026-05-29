@@ -51,7 +51,7 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>BumpyRide uses your location to map the route of your ride.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>BumpyRide records your route while you ride so bumpiness can be mapped to location.</string>
+	<string>BumpyRide needs background location access to record complete rides without dropouts when your phone is locked or in your pocket. Without it, iOS can stop tracking partway through a ride.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>BumpyRide uses motion sensors to measure bumpiness along your route.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
