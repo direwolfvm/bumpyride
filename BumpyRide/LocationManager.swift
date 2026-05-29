@@ -115,6 +115,16 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         manager.allowsBackgroundLocationUpdates = true
         manager.showsBackgroundLocationIndicator = true
         manager.startUpdatingLocation()
+        // Also register for Significant Location Change service.  SLC is the
+        // *only* CoreLocation service that iOS will wake a suspended (or
+        // even terminated) app for — fires when the device has moved by
+        // roughly 500 m.  Continuous updates can stop entirely if iOS
+        // decides to suspend us during a long ride (the watchdog Timer
+        // can't fire from a suspended process — it's run-loop-driven),
+        // and SLC is our only path back from that state.  When SLC
+        // delivers a callback, our `didUpdateLocations` handler restarts
+        // continuous tracking via `attemptResume`.
+        manager.startMonitoringSignificantLocationChanges()
         // Reset per-ride bookkeeping; start the watchdog.
         lastResumeAttemptAt = nil
         lastLocationReceivedAt = Date()
@@ -124,6 +134,7 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
 
     func stopUpdating() {
         manager.stopUpdatingLocation()
+        manager.stopMonitoringSignificantLocationChanges()
         // Drop the background-mode opt-in when not recording so the app doesn't show the
         // indicator unnecessarily and iOS isn't asked to keep us alive.
         manager.allowsBackgroundLocationUpdates = false
@@ -139,6 +150,17 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         let received = locations
         Task { @MainActor in
             guard let loc = received.last else { return }
+            // Wake-from-silence path.  If this delivery follows a long quiet
+            // period, the most likely source is either SLC (iOS just woke
+            // us from suspension because the device moved 500+ m) or a
+            // delayed delivery after iOS-side throttling.  Either way, we
+            // need continuous updates flowing again — attemptResume hits
+            // startUpdatingLocation() idempotently, and the 30 s rate limit
+            // prevents any pathological feedback.
+            if let last = self.lastLocationReceivedAt,
+               Date().timeIntervalSince(last) > Self.watchdogStalenessThresholdSeconds {
+                self.attemptResume(reason: "delivery-after-silence")
+            }
             self.lastLocation = loc
             self.lastLocationReceivedAt = Date()
             self.onLocationUpdate?(loc)

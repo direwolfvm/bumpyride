@@ -126,6 +126,18 @@ struct RouteMapView: View {
         let color: Color
     }
 
+    /// Maximum time gap between two consecutive `RidePoint`s that we'll
+    /// draw a polyline segment across.  Beyond this, the route is broken
+    /// visually so the user sees "missing data" rather than a misleading
+    /// straight-line jump across a region we have no GPS for.
+    ///
+    /// Tuned at 30 s — comfortably above the normal 1–3 s between fixes,
+    /// short enough to expose the multi-minute mid-ride dropouts that
+    /// motivated this filter.  Two genuinely-separate brakes at the
+    /// same intersection ~5–10 s apart still draw connected; only real
+    /// dropouts trip the break.
+    private static let maxSegmentTimeGapSeconds: TimeInterval = 30
+
     private func segments() -> [Segment] {
         guard points.count > 1 else { return [] }
         var out: [Segment] = []
@@ -136,6 +148,12 @@ struct RouteMapView: View {
         for i in 1..<points.count {
             let a = points[i - 1]
             let b = points[i]
+            // Skip drawing a segment when the gap between fixes is long
+            // enough that the connecting line wouldn't represent the
+            // rider's actual path — typically a mid-ride GPS dropout.
+            // The polyline visually breaks here.
+            let gap = b.timestamp.timeIntervalSince(a.timestamp)
+            if gap > Self.maxSegmentTimeGapSeconds { continue }
             let color: Color
             if colorRoute {
                 let avg = (a.bumpiness + b.bumpiness) / 2
