@@ -193,21 +193,31 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         // file-level comment for the policy.
         let received = locations
         Task { @MainActor in
-            guard let loc = received.last else { return }
+            guard !received.isEmpty else { return }
             // Wake-from-silence path.  If this delivery follows a long quiet
             // period, the most likely source is either SLC (iOS just woke
             // us from suspension because the device moved 500+ m) or a
             // delayed delivery after iOS-side throttling.  Either way, we
             // need continuous updates flowing again — attemptResume hits
             // startUpdatingLocation() idempotently, and the 30 s rate limit
-            // prevents any pathological feedback.
+            // prevents any pathological feedback.  Checked once per
+            // delivery before we update `lastLocationReceivedAt`.
             if let last = self.lastLocationReceivedAt,
                Date().timeIntervalSince(last) > Self.watchdogStalenessThresholdSeconds {
                 self.attemptResume(reason: "delivery-after-silence")
             }
-            self.lastLocation = loc
+            // Process every CLLocation in the bundle, not just `.last`.
+            // When the app is backgrounded, iOS often batches several
+            // fixes into one callback delivery — taking only `.last`
+            // discarded the rest and produced a misleadingly low sample
+            // rate.  RideRecorder's freshness filter (30 s) keeps any
+            // genuinely-stale entries out, but normal bundled deliveries
+            // pass cleanly.
+            for loc in received {
+                self.lastLocation = loc
+                self.onLocationUpdate?(loc)
+            }
             self.lastLocationReceivedAt = Date()
-            self.onLocationUpdate?(loc)
         }
     }
 

@@ -37,15 +37,21 @@ final class RideRecorder {
     /// not safe to pair with current motion-ring-buffer data, because the
     /// location is from "then" and the bumpiness reading is from "now."
     ///
-    /// Matters during recovery from a mid-ride dropout: iOS may deliver one
-    /// cached fix from before the gap when location resumes, with a
-    /// `timestamp` from minutes ago.  Saving a `RidePoint` that pairs that
-    /// stale lat/lon with the current bumpiness reading creates a corrupted
-    /// data point — looks like a bump happened in a place the rider was
-    /// minutes ago.  5 s is a generous threshold: fresh fixes from the GPS
-    /// chain typically have a sub-second age, and even a slow re-lock
-    /// shouldn't exceed a few seconds.
-    private static let maxLocationAgeSeconds: TimeInterval = 5.0
+    /// Matters during recovery from a mid-ride dropout: iOS may deliver
+    /// cached fixes from before the gap when location resumes, with
+    /// `timestamp`s from minutes ago.  Saving a `RidePoint` that pairs
+    /// that stale lat/lon with the current bumpiness reading creates a
+    /// corrupted data point — looks like a bump happened in a place the
+    /// rider was minutes ago.
+    ///
+    /// 30 s threshold: loose enough that backgrounded-app batched
+    /// deliveries (where iOS bundles several seconds' worth of fixes
+    /// into one callback) all pass through, but still tight enough to
+    /// reject genuinely-stale cached fixes from a multi-minute dropout
+    /// recovery.  Was 5 s briefly, but with `LocationManager`'s
+    /// full-bundle processing the older entries in a normal background
+    /// batch were getting rejected and we ended up under-sampling.
+    private static let maxLocationAgeSeconds: TimeInterval = 30.0
 
     private(set) var state: State = .idle
     private(set) var points: [RidePoint] = []
