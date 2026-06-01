@@ -8,6 +8,12 @@ struct SeismographView: View {
     var samples: [Float]
     var bumpiness: Double
     var capacity: Int
+    /// Current GPS speed in m/s.  `nil` if there's no fix yet (very first
+    /// seconds of a recording) or after a dropout.  Rendered as a
+    /// top-right readout symmetric with the bumpiness in the top-left,
+    /// using `Formatters.speed` which handles the nil/negative case
+    /// with an "— mph" placeholder.
+    var currentSpeed: Double?
     var settings: AppSettings
 
     private let verticalScale: Double = 1.5
@@ -24,7 +30,7 @@ struct SeismographView: View {
                     .stroke(settings.color(for: bumpiness), lineWidth: 1.5)
 
                 VStack {
-                    HStack {
+                    HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("BUMPINESS")
                                 .font(.caption2)
@@ -34,6 +40,19 @@ struct SeismographView: View {
                                 .foregroundStyle(settings.color(for: bumpiness))
                         }
                         Spacer()
+                        // Speed readout, symmetric with bumpiness in the
+                        // top-left.  Right-aligned so the value column
+                        // stays put as the digits change (avoids
+                        // visually-jumpy 1-character vs 2-character
+                        // transitions).
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("SPEED")
+                                .font(.caption2)
+                                .foregroundStyle(.white.opacity(0.6))
+                            Text(Formatters.speed(currentSpeed))
+                                .font(.title2.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(.white)
+                        }
                     }
                     .padding(.horizontal, 12)
                     .padding(.top, 10)

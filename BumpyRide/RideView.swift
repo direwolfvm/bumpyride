@@ -286,12 +286,22 @@ struct RideView: View {
 
     // MARK: Live recording / idle content
 
+    /// Current GPS speed in m/s, or `nil` if there's no fresh fix.
+    /// `CLLocation.speed` is non-optional but uses negative values to
+    /// signal "no valid speed" — collapse that into `nil` here so the
+    /// SeismographView's optional-handling kicks in.
+    private var liveCurrentSpeedMps: Double? {
+        guard let loc = recorder.currentLocation else { return nil }
+        return loc.speed >= 0 ? loc.speed : nil
+    }
+
     private var liveContent: some View {
         VStack(spacing: 12) {
             SeismographView(
                 samples: recorder.liveSamples,
                 bumpiness: recorder.currentBumpiness,
                 capacity: recorder.motion.windowCapacity,
+                currentSpeed: liveCurrentSpeedMps,
                 settings: settings
             )
             .frame(height: 160)
@@ -1011,11 +1021,11 @@ struct RideView: View {
     ///   gracefully with an em-dash rather than inventing a metric.
     /// Stats bar at the bottom of the recording / playback views.
     ///
-    /// `elapsedTime`, when non-nil, displays as "Time" in the first slot
-    /// instead of the playback mode's "Points / Events / Calls".  Used
-    /// for the live-recording call site, where ride duration is the more
-    /// useful at-a-glance metric than a per-fix sample count.  Playback
-    /// callers omit it and get the count.
+    /// `elapsedTime`, when non-nil, switches to the live-mode layout:
+    ///   Time / Distance / Avg / Max
+    /// where Avg is `distance / elapsedTime` converted to mph.  Playback
+    /// callers omit `elapsedTime` and get the original three-column
+    /// layout with mode-specific stats in the first and last slots.
     private func statsBar(
         pointsCount: Int,
         distance: Double,
@@ -1040,6 +1050,16 @@ struct RideView: View {
             }
             Divider().frame(height: 24)
             stat(label: "Distance", value: Formatters.distance(distance))
+            // Average speed slot — live mode only.  Trip-average (total
+            // distance / total elapsed including stops), not moving-
+            // average; mirrors what most cycling apps default to.
+            // Guards against zero elapsed (first frame after start) so
+            // we don't flash NaN/Inf for a tick.
+            if let elapsedTime, elapsedTime > 0 {
+                Divider().frame(height: 24)
+                let avgMps = distance / elapsedTime
+                stat(label: "Avg", value: Formatters.speed(avgMps))
+            }
             Divider().frame(height: 24)
             switch mode {
             case .bumps:

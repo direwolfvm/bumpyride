@@ -13,6 +13,15 @@ enum Formatters {
         return String(format: "%.0f ft", feet)
     }
 
+    /// Format speed from m/s as a "X.X mph" string for display.  US-units
+    /// matches `distance(_:)`.  Returns "— mph" for a `nil` input so call
+    /// sites with optional GPS speed can pass through directly.
+    static func speed(_ metersPerSecond: Double?) -> String {
+        guard let mps = metersPerSecond, mps >= 0 else { return "— mph" }
+        let mph = mps * 2.23694
+        return String(format: "%.1f mph", mph)
+    }
+
     static func duration(_ seconds: TimeInterval) -> String {
         let s = Int(seconds)
         let h = s / 3600
