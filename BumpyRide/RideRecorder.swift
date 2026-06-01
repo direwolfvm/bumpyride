@@ -61,6 +61,20 @@ final class RideRecorder {
     private(set) var closeCalls: [CloseCall] = []
     private(set) var startedAt: Date?
     private(set) var endedAt: Date?
+
+    /// Incrementally-maintained ride totals.  Computed once per appended
+    /// `RidePoint` and read in O(1) by views, instead of being recomputed
+    /// from the full `points` array on every render.
+    ///
+    /// Earlier code had these as O(N) computed properties on RideView,
+    /// which the per-second TimelineView refresh of the stats bar turned
+    /// into a real lag source on long rides: 2N CLLocation allocations
+    /// per render every second, scaling with ride length.  These cached
+    /// values stay constant-time at the read site regardless.
+    ///
+    /// Reset to zero in `start()` and `reset()`.
+    private(set) var totalDistanceMeters: Double = 0
+    private(set) var maxRecordedBumpiness: Double = 0
     /// Stable ride id assigned at `start()` time and used by both the journal and
     /// the eventual `Ride` returned from `stop()`.  Lets us recover the exact same
     /// ride identity if the app dies and the user accepts recovery on relaunch.
@@ -88,6 +102,8 @@ final class RideRecorder {
         guard state == .idle || state == .finished else { return }
         points = []
         closeCalls = []
+        totalDistanceMeters = 0
+        maxRecordedBumpiness = 0
         let now = Date()
         startedAt = now
         endedAt = nil
@@ -165,6 +181,8 @@ final class RideRecorder {
         journal.clear()
         points = []
         closeCalls = []
+        totalDistanceMeters = 0
+        maxRecordedBumpiness = 0
         startedAt = nil
         endedAt = nil
         pendingRideId = nil
@@ -254,6 +272,18 @@ final class RideRecorder {
             accelWindow: window,
             horizontalAccel: horizontalAccel
         )
+        // Maintain the incremental ride totals BEFORE appending so we can
+        // reference the previous-last point as the segment start.  The
+        // totals become O(1) reads at the stats-bar render site instead
+        // of O(N) recomputations every TimelineView tick.
+        if let prev = points.last {
+            let a = CLLocation(latitude: prev.latitude, longitude: prev.longitude)
+            let b = CLLocation(latitude: point.latitude, longitude: point.longitude)
+            totalDistanceMeters += b.distance(from: a)
+        }
+        if point.bumpiness > maxRecordedBumpiness {
+            maxRecordedBumpiness = point.bumpiness
+        }
         points.append(point)
         // Persist immediately to the journal so a process kill in the next
         // microsecond doesn't lose this point.

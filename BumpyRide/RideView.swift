@@ -298,7 +298,7 @@ struct RideView: View {
             .padding(.horizontal)
 
             RouteMapView(
-                points: recorder.points,
+                points: liveDisplayPoints,
                 followUser: recorder.state == .recording,
                 highlightIndex: nil,
                 settings: settings
@@ -325,8 +325,8 @@ struct RideView: View {
                     .map { max(0, context.date.timeIntervalSince($0)) } ?? 0
                 statsBar(
                     pointsCount: recorder.points.count,
-                    distance: currentLiveDistance,
-                    maxBump: currentLiveMaxBumpiness,
+                    distance: recorder.totalDistanceMeters,
+                    maxBump: recorder.maxRecordedBumpiness,
                     brakeEvents: [],
                     closeCalls: [],
                     mode: .bumps,
@@ -1068,20 +1068,30 @@ struct RideView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private var currentLiveDistance: Double {
-        let pts = recorder.points
-        guard pts.count > 1 else { return 0 }
-        var d: Double = 0
-        for i in 1..<pts.count {
-            let a = CLLocation(latitude: pts[i-1].latitude, longitude: pts[i-1].longitude)
-            let b = CLLocation(latitude: pts[i].latitude, longitude: pts[i].longitude)
-            d += b.distance(from: a)
-        }
-        return d
-    }
+    /// Cap on the number of recent `RidePoint`s passed to the live
+    /// `RouteMapView`.  On a long ride the recorder's `points` array can
+    /// grow into the thousands, and the map renders one `MapPolyline`
+    /// view per segment — that view-count grows with the array and
+    /// makes the live view increasingly laggy.  Capping to the most
+    /// recent ~1000 keeps the SwiftUI view hierarchy bounded.
+    ///
+    /// 1000 points ≈ 16 min of riding at ~1 Hz sampling.  The map
+    /// follows the user (`followUser: true` during recording), so older
+    /// portions of the route are off-screen anyway; clipping them from
+    /// the view hierarchy is a no-op visually.  Saved-ride playback
+    /// uses the full points array, so the trim only applies to the
+    /// live recording UI.
+    private static let maxLivePolylinePoints: Int = 1000
 
-    private var currentLiveMaxBumpiness: Double {
-        recorder.points.map(\.bumpiness).max() ?? recorder.currentBumpiness
+    /// Trailing window of points fed to the live `RouteMapView`.  See
+    /// `maxLivePolylinePoints` for why we cap.  Cheap: `Array.suffix` is
+    /// O(min(count, max)).
+    private var liveDisplayPoints: [RidePoint] {
+        let pts = recorder.points
+        if pts.count <= Self.maxLivePolylinePoints {
+            return pts
+        }
+        return Array(pts.suffix(Self.maxLivePolylinePoints))
     }
 
     // MARK: Save sheet
