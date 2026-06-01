@@ -313,14 +313,26 @@ struct RideView: View {
             // omitted from the live stats per the v1.3 design — the user
             // is logging them via the button below; surfacing a running
             // count would tempt mid-ride attention.
-            statsBar(
-                pointsCount: recorder.points.count,
-                distance: currentLiveDistance,
-                maxBump: currentLiveMaxBumpiness,
-                brakeEvents: [],
-                closeCalls: [],
-                mode: .bumps
-            )
+            //
+            // TimelineView ticks the stats bar at 1 Hz independently of
+            // the recorder's data-driven re-renders so the elapsed-time
+            // readout keeps advancing even when the user has paused, the
+            // GPS is between fixes, etc.  When the recorder hasn't been
+            // started yet (`startedAt == nil`) we pass 0, giving a
+            // "0:00" display rather than a stale jump.
+            TimelineView(.periodic(from: .now, by: 1.0)) { context in
+                let elapsed = recorder.startedAt
+                    .map { max(0, context.date.timeIntervalSince($0)) } ?? 0
+                statsBar(
+                    pointsCount: recorder.points.count,
+                    distance: currentLiveDistance,
+                    maxBump: currentLiveMaxBumpiness,
+                    brakeEvents: [],
+                    closeCalls: [],
+                    mode: .bumps,
+                    elapsedTime: elapsed
+                )
+            }
             .padding(.horizontal)
 
             if let banner = permissionBanner() {
@@ -351,8 +363,11 @@ struct RideView: View {
         }
     }
 
-    /// Full-width "Log close call" button.  Orange tint differentiates it
-    /// from the green Start/Resume and red Stop so a thumb stab during a
+    /// Full-width "Log close call" button.  Purple tint matches the
+    /// violet diamonds used for close-call markers on the route map and
+    /// the close-call tile-overlay diamonds on the Bump Map tab —
+    /// consistent visual identity across surfaces.  Still distinct from
+    /// the green Start/Resume and red Stop so a thumb stab during a
     /// stressful moment can't easily hit the wrong action.  Disabled
     /// while we don't yet have a GPS fix — the button stays visible so
     /// the user knows where to find it once a fix arrives, rather than
@@ -365,7 +380,7 @@ struct RideView: View {
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(.borderedProminent)
-        .tint(.orange)
+        .tint(.purple)
         .controlSize(.large)
         .disabled(!recorder.canLogCloseCall)
     }
@@ -373,10 +388,12 @@ struct RideView: View {
     /// Brief confirmation + undo affordance shown for 5 s after a tap.
     /// One row: checkmark + "Close call logged" + "Undo" button.  Designed
     /// to be glanceable — a rider should not need to read it carefully.
+    /// Matches the button's purple tint for visual continuity with the
+    /// preceding tap.
     private func closeCallUndoBanner(for call: CloseCall) -> some View {
         HStack(spacing: 12) {
             Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.orange)
+                .foregroundStyle(.purple)
             Text("Close call logged")
                 .font(.callout.weight(.medium))
             Spacer()
@@ -384,7 +401,7 @@ struct RideView: View {
                 undoPendingCloseCall(call)
             }
             .font(.callout.weight(.semibold))
-            .foregroundStyle(.orange)
+            .foregroundStyle(.purple)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -392,7 +409,7 @@ struct RideView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.orange.opacity(0.4), lineWidth: 1)
+                .stroke(Color.purple.opacity(0.4), lineWidth: 1)
         )
         .transition(.move(edge: .bottom).combined(with: .opacity))
     }
@@ -992,22 +1009,34 @@ struct RideView: View {
     ///   useful (route length) but there's no third aggregate worth
     ///   showing (close calls have no magnitude), so we omit it
     ///   gracefully with an em-dash rather than inventing a metric.
+    /// Stats bar at the bottom of the recording / playback views.
+    ///
+    /// `elapsedTime`, when non-nil, displays as "Time" in the first slot
+    /// instead of the playback mode's "Points / Events / Calls".  Used
+    /// for the live-recording call site, where ride duration is the more
+    /// useful at-a-glance metric than a per-fix sample count.  Playback
+    /// callers omit it and get the count.
     private func statsBar(
         pointsCount: Int,
         distance: Double,
         maxBump: Double,
         brakeEvents: [BrakeEvent],
         closeCalls: [CloseCall],
-        mode: MapViewMode
+        mode: MapViewMode,
+        elapsedTime: TimeInterval? = nil
     ) -> some View {
         HStack(spacing: 16) {
-            switch mode {
-            case .bumps:
-                stat(label: "Points", value: "\(pointsCount)")
-            case .brakes:
-                stat(label: "Events", value: "\(brakeEvents.count)")
-            case .closeCalls:
-                stat(label: "Calls", value: "\(closeCalls.count)")
+            if let elapsedTime {
+                stat(label: "Time", value: Formatters.duration(elapsedTime))
+            } else {
+                switch mode {
+                case .bumps:
+                    stat(label: "Points", value: "\(pointsCount)")
+                case .brakes:
+                    stat(label: "Events", value: "\(brakeEvents.count)")
+                case .closeCalls:
+                    stat(label: "Calls", value: "\(closeCalls.count)")
+                }
             }
             Divider().frame(height: 24)
             stat(label: "Distance", value: Formatters.distance(distance))
