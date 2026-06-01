@@ -210,6 +210,26 @@ final class WebAccount {
         }
     }
 
+    // MARK: - Score
+
+    /// Read the user's gamification score from `/api/me/score`.  Same
+    /// 401-then-invalidate semantics as `fetchSharing`.  When the user
+    /// isn't sharing publicly, the server returns 200 with `eligible:
+    /// false` — the caller (typically `WebAccountView`) renders a
+    /// "turn on sharing to start earning points" empty state in that
+    /// case instead of misleading zero numbers.
+    func fetchScore() async throws -> WebSyncClient.ScoreData {
+        guard let stored = storage.load() else {
+            throw WebSyncClient.ClientError.unauthorized
+        }
+        do {
+            return try await client.getScore(token: stored.token)
+        } catch WebSyncClient.ClientError.unauthorized {
+            invalidate()
+            throw WebSyncClient.ClientError.unauthorized
+        }
+    }
+
     // MARK: - Pocket-mode calibration
 
     /// Read the server's stored pocket-mode calibration.  Same 401-then-invalidate

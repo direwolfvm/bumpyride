@@ -100,6 +100,73 @@ actor WebSyncClient {
         let lastComputedAt: Date?
     }
 
+    /// Server-side state of `/api/me/score`.  Contract from bumpyride-web PR #39:
+    /// gamification layer on top of the public bump map.  Three tiers of points
+    /// for each 20 ft cell a ride touches — 10 / 5 / 1 — with a 20-level
+    /// progression ladder.
+    ///
+    /// `eligible` is false when the user isn't currently sharing publicly.
+    /// In that state, all the counts and points are zero and the level is
+    /// the starting one — the UI uses this flag to swap to an empty-state
+    /// view rather than showing a misleadingly-low score.
+    struct ScoreData: Codable, Equatable, Sendable {
+        let totalPoints: Int
+        let breakdown: ScoreBreakdown
+        let level: CurrentLevel
+        /// All 20 levels in ascending order.  Server side stores them in
+        /// `src/lib/levels.ts`; we don't duplicate the list on iOS — we
+        /// just render what the server sends.  Lets the server add levels
+        /// (or rename them) without an iOS update.
+        let levels: [Level]
+        let eligible: Bool
+    }
+
+    /// Per-tier cell counts from `/api/me/score`.  These are *cell counts*,
+    /// not point totals — multiply by the tier weights (10 / 5 / 1) to get
+    /// the per-tier contribution to `totalPoints`.
+    ///
+    /// Note: server JSON key is `repeat`, which is a Swift keyword.  Mapped
+    /// to `repeats` (plural) via `CodingKeys` for ergonomic call-site usage.
+    struct ScoreBreakdown: Codable, Equatable, Sendable {
+        /// Count of cells where this user was the first ever to record bump
+        /// data.  Each contributes 10 points.
+        let firstEver: Int
+        /// Count of cells where this user was the first of their rides but
+        /// others had already mapped them.  Each contributes 5 points.
+        let firstForYou: Int
+        /// Count of subsequent visits to cells this user already mapped.
+        /// Each contributes 1 point.
+        let repeats: Int
+
+        private enum CodingKeys: String, CodingKey {
+            case firstEver
+            case firstForYou
+            case repeats = "repeat"
+        }
+    }
+
+    /// Where the user currently sits on the 20-level ladder.  `progress` is
+    /// 0.0 at the bottom of this level and 1.0 right before the next one
+    /// (server computed against `threshold` and `nextThreshold`).  At the
+    /// top level, `nextThreshold == threshold` and `progress == 1.0` — the
+    /// UI should treat that as "maxed out."
+    struct CurrentLevel: Codable, Equatable, Sendable {
+        let index: Int
+        let name: String
+        let threshold: Int
+        let nextThreshold: Int
+        let progress: Double
+    }
+
+    /// One row in the level ladder.  `id` from `index` for `ForEach`.
+    struct Level: Codable, Equatable, Sendable, Identifiable {
+        let index: Int
+        let name: String
+        let threshold: Int
+
+        var id: Int { index }
+    }
+
     /// Read the user's full public-bump-map sharing state.  Returns both
     /// `shareToPublicMap` and `publicMapEager` — see `SharingSettings`.
     func getSharing(token: String) async throws -> SharingSettings {
@@ -315,6 +382,45 @@ actor WebSyncClient {
             // Wrong confirmEmail, missing field, etc.  Caller surfaces this
             // as a user-fixable error (probably "the email doesn't match").
             throw ClientError.validationFailed
+        case 401:
+            throw ClientError.unauthorized
+        default:
+            throw ClientError.http(status: http.statusCode)
+        }
+    }
+
+    /// Read the user's gamification score from `GET /api/me/score`.  Server
+    /// is authoritative for both the totals and the level progression; iOS
+    /// just renders what comes back.  See `ScoreData` for the structure.
+    ///
+    /// When the user isn't currently sharing publicly, the server still
+    /// responds 200 with `eligible: false` and zeroed-out counts — the UI
+    /// uses the flag to switch to an empty state rather than displaying
+    /// a misleading "0 points" hero card.
+    func getScore(token: String) async throws -> ScoreData {
+        log.info("GET /api/me/score")
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/me/score"))
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 10
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw ClientError.transport
+        }
+        guard let http = response as? HTTPURLResponse else { throw ClientError.transport }
+
+        switch http.statusCode {
+        case 200..<300:
+            do {
+                return try JSONDecoder().decode(ScoreData.self, from: data)
+            } catch {
+                throw ClientError.decoding
+            }
         case 401:
             throw ClientError.unauthorized
         default:
