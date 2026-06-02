@@ -18,6 +18,19 @@ struct RideView: View {
     /// loaded ride.  Survives view teardown (e.g. tab switches), so
     /// scores stay cached across sessions in the same launch.
     @Bindable var rideScoreCache: RideScoreCache
+    /// Auth state for the Apple Health integration.  The per-ride Apple
+    /// Health row hides entirely when HealthKit isn't available, and
+    /// triggers an auth request before the first manual export if the
+    /// user hasn't already granted via the Settings toggle.
+    @Bindable var healthKitAuth: HealthKitAuthManager
+    /// Writes individual rides to Apple Health.  Used by the per-ride
+    /// "Add to Apple Health" button.  Same instance as the auto-export
+    /// path in `ContentView.onRideSaved`, so the exporter's idempotency
+    /// check naturally dedups manual + auto attempts.
+    ///
+    /// Plain `let` (not `@Bindable`) — the exporter has no observable
+    /// state for the view to bind to; it's a stateless command service.
+    let healthKitExporter: HealthKitExporter
 
     @State private var showingSaveSheet: Bool = false
     @State private var pendingRide: Ride?
@@ -36,6 +49,18 @@ struct RideView: View {
     @State private var exportAlertTitle: String = ""
     @State private var exportAlertMessage: String = ""
     @State private var isExporting: Bool = false
+
+    /// Local "currently writing this ride to HealthKit" flag for the
+    /// per-ride Apple Health row's spinner.  Persists across the
+    /// auth-then-export sequence so the row stays in "Adding…" state
+    /// from the moment of tap until completion.  Reset by the ride's
+    /// `.task(id:)` block when the loaded ride changes.
+    @State private var isExportingToHealth: Bool = false
+
+    /// Inline error caption under the Apple Health row.  `nil` when no
+    /// error to show; cleared at the start of each export attempt and
+    /// when the loaded ride changes.
+    @State private var healthExportError: String?
 
     /// Pocket-mode value the save sheet will commit.  Primed from
     /// `MountStyleDetector`'s verdict on Stop; user can override via the toggle in
@@ -672,6 +697,13 @@ struct RideView: View {
             rideScoreRow(for: ride)
                 .padding(.horizontal)
 
+            // Per-ride Apple Health row.  Three visual states — already
+            // in Health (✓), currently exporting (spinner), or
+            // not-yet-in-Health (Add button).  Hidden entirely on
+            // devices without HealthKit.  See `appleHealthRow` doc.
+            appleHealthRow(for: ride)
+                .padding(.horizontal)
+
             Button {
                 showingStartOverConfirm = true
             } label: {
@@ -686,9 +718,13 @@ struct RideView: View {
         }
         // Kick off the score fetch when the viewer opens / the loaded
         // ride changes.  Idempotent — `requestScore` is a no-op when an
-        // entry already exists for this id.
+        // entry already exists for this id.  Also reset the per-ride
+        // Apple Health row's transient state so a stale spinner or
+        // error from a previously-viewed ride doesn't carry over.
         .task(id: ride.id) {
             rideScoreCache.requestScore(for: ride.id)
+            isExportingToHealth = false
+            healthExportError = nil
         }
     }
 
@@ -715,6 +751,137 @@ struct RideView: View {
             .padding(.horizontal, 12)
             .background(Color(.secondarySystemBackground))
             .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    /// Per-ride Apple Health row.  Three visual states, all sharing the
+    /// same outer chrome so the layout doesn't shift between them:
+    ///
+    ///  - **Exporting**: spinner + "Adding to Apple Health…"
+    ///  - **Already in Health** (`ride.healthKitWorkoutUUID != nil`):
+    ///    green ✓ + "In Apple Health"
+    ///  - **Not in Health, idle**: tappable Button "Add to Apple Health"
+    ///
+    /// Hidden entirely on devices without HealthKit.  Stale-on-cross-
+    /// device-restore is a known limitation (see `Ride.healthKitWorkoutUUID`
+    /// doc): the badge may briefly say ✓ for a restored ride that isn't
+    /// actually in this device's HealthKit, until the user taps and the
+    /// exporter's idempotency check writes fresh.
+    @ViewBuilder
+    private func appleHealthRow(for ride: Ride) -> some View {
+        if healthKitAuth.isAvailable {
+            VStack(alignment: .leading, spacing: 6) {
+                Group {
+                    if isExportingToHealth {
+                        HStack(spacing: 10) {
+                            Image(systemName: "heart.text.square.fill")
+                                .font(.callout)
+                                .foregroundStyle(.pink)
+                            Text("Adding to Apple Health…")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            ProgressView().controlSize(.small)
+                        }
+                    } else if ride.healthKitWorkoutUUID != nil {
+                        HStack(spacing: 10) {
+                            Image(systemName: "heart.text.square.fill")
+                                .font(.callout)
+                                .foregroundStyle(.pink)
+                            Text("In Apple Health")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.callout)
+                                .foregroundStyle(.green)
+                        }
+                    } else {
+                        Button {
+                            addRideToHealth(ride)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "heart.text.square.fill")
+                                    .font(.callout)
+                                    .foregroundStyle(.pink)
+                                Text("Add to Apple Health")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                Image(systemName: "plus.circle.fill")
+                                    .font(.callout)
+                                    .foregroundStyle(.blue)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .background(Color(.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                if let message = healthExportError {
+                    Text(message)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 4)
+                }
+            }
+        }
+    }
+
+    /// Drive a manual Apple Health export for the given ride.  Handles
+    /// the auth-then-export sequence as one logical operation: spinner
+    /// goes up immediately on tap, comes down once the whole thing has
+    /// either succeeded or failed.  On success patches the loaded ride
+    /// with the resulting HKWorkout UUID and re-saves — the row then
+    /// re-renders into the ✓ state from the updated struct.
+    private func addRideToHealth(_ ride: Ride) {
+        healthExportError = nil
+        isExportingToHealth = true
+        Task {
+            defer { isExportingToHealth = false }
+
+            // Auth-on-demand.  If the user enabled auto-export earlier
+            // this branch is skipped; if they're using the manual button
+            // as a first touch, prompt now.
+            if !healthKitAuth.canWrite {
+                let granted = await healthKitAuth.requestAuthorization()
+                guard granted else {
+                    // .denied is a hard error (e.g. missing entitlement);
+                    // anything else is "user dismissed without granting,"
+                    // which is a soft no — phrase the message accordingly.
+                    if case .denied = healthKitAuth.state {
+                        healthExportError = "Couldn't enable Apple Health access."
+                    } else {
+                        healthExportError = "Apple Health access not granted."
+                    }
+                    return
+                }
+            }
+
+            do {
+                let result = try await healthKitExporter.export(ride)
+                switch result {
+                case .written(let uuid), .alreadyPresent(let uuid):
+                    var updated = ride
+                    updated.healthKitWorkoutUUID = uuid
+                    store.save(updated)
+                    // Also patch appState so the viewer renders the
+                    // updated struct (its `ride` parameter is a value
+                    // type; we need to push the new copy through).
+                    appState.loadedRide = updated
+                case .unavailable:
+                    healthExportError = "Apple Health isn't available on this device."
+                }
+            } catch {
+                // Underlying cause already logged by HealthKitExporter.
+                // User-visible message stays generic; tapping again
+                // will retry.
+                healthExportError = "Couldn't add to Apple Health. Try again."
+            }
         }
     }
 

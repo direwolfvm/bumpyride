@@ -114,7 +114,9 @@ struct ContentView: View {
                 appState: appState,
                 store: store,
                 settings: settings,
-                rideScoreCache: rideScoreCache
+                rideScoreCache: rideScoreCache,
+                healthKitAuth: healthKitAuth,
+                healthKitExporter: healthKitExporter
             )
             .tabItem { Label("Ride", systemImage: "bicycle") }
             .tag(AppState.Tab.ride)
