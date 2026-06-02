@@ -62,6 +62,19 @@ struct RideView: View {
     /// when the loaded ride changes.
     @State private var healthExportError: String?
 
+    /// Live brake-event list maintained during recording so the live
+    /// map can render red brake pins alongside the bumpiness polyline.
+    /// Recomputed at ~1 Hz by a polling task in `liveContent` while
+    /// `recorder.state == .recording`; cleared on pause / stop.
+    ///
+    /// We re-run the post-hoc detector on the in-progress points
+    /// rather than maintaining a separate streaming detector — same
+    /// algorithm at save time and during recording, so what the user
+    /// sees live matches what the saved ride keeps.  The detector is
+    /// O(N) and pure, so a 1 Hz recompute on a several-thousand-point
+    /// ride is single-digit milliseconds.
+    @State private var liveBrakeEvents: [BrakeEvent] = []
+
     /// Pocket-mode value the save sheet will commit.  Primed from
     /// `MountStyleDetector`'s verdict on Stop; user can override via the toggle in
     /// the Sensing section before tapping Save.
@@ -344,7 +357,15 @@ struct RideView: View {
                 points: liveDisplayPoints,
                 followUser: recorder.state == .recording,
                 highlightIndex: nil,
-                settings: settings
+                settings: settings,
+                // Live markers — red pins for hard brakes (detected
+                // post-hoc at ~1 Hz from the in-progress points, see
+                // `liveBrakeEvents` doc), violet diamonds for
+                // close-calls (already tracked live by RideRecorder).
+                // Both render regardless of bumpiness coloring; the
+                // user wanted to see them appear as they happen.
+                brakeEvents: liveBrakeEvents,
+                closeCalls: recorder.closeCalls
             )
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .padding(.horizontal)
@@ -403,6 +424,35 @@ struct RideView: View {
             controlButtons
                 .padding(.horizontal)
                 .padding(.bottom, 8)
+        }
+        // Live brake-event detection.  Re-runs whenever the recorder
+        // changes state — task body checks state on each tick and
+        // either polls (while recording) or clears (otherwise).
+        //
+        // Inherent ~1.5 s latency from the centered finite-difference
+        // smoothing window: a brake at the absolute tail of the
+        // points buffer can't be resolved until a couple of GPS fixes
+        // arrive after it.  Markers pop in slightly delayed and stay
+        // put once the window settles around them — same fidelity as
+        // the post-hoc detector at save time.
+        .task(id: recorder.state) {
+            guard recorder.state == .recording else {
+                liveBrakeEvents = []
+                return
+            }
+            // Compute immediately on transition into .recording so
+            // the first marker doesn't wait a full second after a
+            // resume from pause.
+            liveBrakeEvents = BrakeEventDetector.detect(in: recorder.points)
+            // 1 Hz poll.  Cooperative cancellation via Task.isCancelled
+            // when SwiftUI tears the task down (state change, view
+            // disappear).  Re-check state every wake so a stale task
+            // can't keep running past a pause.
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled, recorder.state == .recording else { break }
+                liveBrakeEvents = BrakeEventDetector.detect(in: recorder.points)
+            }
         }
     }
 

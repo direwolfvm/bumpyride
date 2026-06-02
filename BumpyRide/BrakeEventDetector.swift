@@ -120,7 +120,23 @@ enum BrakeEventDetector {
     /// hasn't run," and the convention is to switch that to `[]` after a
     /// successful empty pass.
     static func detect(in ride: Ride) -> [BrakeEvent] {
-        let points = ride.points
+        detect(in: ride.points)
+    }
+
+    /// Overload taking the points array directly.  Used by the live
+    /// recording UI (Ride tab) to surface brake markers as they emerge
+    /// during the ride, without having to wrap the in-progress points
+    /// in a synthetic `Ride`.  Output is identical to passing through
+    /// `detect(in: Ride)` with the same points — the detector only
+    /// reads `points` from the ride anyway.
+    ///
+    /// Idempotent and pure: callers can re-invoke as more points
+    /// arrive (e.g. once per second during recording) and the result
+    /// will converge to the same set the post-hoc detector would emit
+    /// at save time.  The tail few seconds may flicker as the centered
+    /// finite difference resolves — that's an inherent property of
+    /// GPS-derivative-based detection, not a freshness bug.
+    static func detect(in points: [RidePoint]) -> [BrakeEvent] {
         // Need at least 3 points for the centered finite difference.
         guard points.count >= 3 else { return [] }
 
