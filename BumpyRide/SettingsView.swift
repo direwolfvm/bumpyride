@@ -13,11 +13,18 @@ struct SettingsView: View {
     @Bindable var store: RideStore
     @Bindable var cloudStorage: CloudStorage
     @Bindable var healthKitAuth: HealthKitAuthManager
+    /// Plain `let` (not `@Bindable`) — the exporter has no observable
+    /// state; it's a stateless command service used by the backfill
+    /// sheet.
+    let healthKitExporter: HealthKitExporter
 
     /// Surfaces an inline error if the HealthKit auth request itself
     /// errored (entitlement missing, OS state weird).  Different from
     /// a deny — a deny just leaves the toggle off silently.
     @State private var healthAuthErrored: Bool = false
+
+    /// Drives the presentation of the Apple Health backfill sheet.
+    @State private var showingHealthBackfillSheet: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -298,6 +305,34 @@ struct SettingsView: View {
             }
             .disabled({ if case .requesting = healthKitAuth.state { return true } else { return false } }())
 
+            // Backfill row.  Tap opens the multi-phase sheet that adds
+            // previously-recorded rides (those without
+            // `healthKitWorkoutUUID`) to Apple Health.  Independent of
+            // the auto-export toggle — a user can run a one-shot
+            // backfill without turning auto-export on.
+            Button {
+                showingHealthBackfillSheet = true
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.up.heart.fill")
+                        .font(.title3)
+                        .foregroundStyle(.pink)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Sync past rides to Apple Health")
+                            .foregroundStyle(.primary)
+                        Text(backfillRowDetail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .buttonStyle(.plain)
+
             if healthAuthErrored {
                 Label("Couldn't enable Apple Health access. The app entitlement may be missing — try restarting BumpyRide.",
                       systemImage: "exclamationmark.triangle.fill")
@@ -314,6 +349,26 @@ struct SettingsView: View {
             If you also record rides with Apple Workout (e.g. on Apple Watch), you may want to leave this off to avoid duplicates.
             """)
         }
+        .sheet(isPresented: $showingHealthBackfillSheet) {
+            HealthKitBackfillSheet(
+                healthKitAuth: healthKitAuth,
+                healthKitExporter: healthKitExporter,
+                store: store
+            )
+        }
+    }
+
+    /// Secondary line under "Sync past rides to Apple Health" — counts
+    /// rides without a HealthKit stamp.  Computed live from the store
+    /// so it always reflects the current state (Phase E per-ride
+    /// exports and Phase D auto-exports both decrement this naturally
+    /// as they patch the ride struct).
+    private var backfillRowDetail: String {
+        let unsyncedCount = store.rides.filter { $0.healthKitWorkoutUUID == nil }.count
+        if unsyncedCount == 0 {
+            return "All caught up"
+        }
+        return "\(unsyncedCount) ride\(unsyncedCount == 1 ? "" : "s") not yet in Apple Health"
     }
 
     /// Custom binding so the toggle's off → on transition can interpose

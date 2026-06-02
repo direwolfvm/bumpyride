@@ -156,7 +156,8 @@ struct ContentView: View {
                 calibration: calibration,
                 store: store,
                 cloudStorage: cloudStorage,
-                healthKitAuth: healthKitAuth
+                healthKitAuth: healthKitAuth,
+                healthKitExporter: healthKitExporter
             )
             .tabItem { Label("Settings", systemImage: "gear") }
             .tag(AppState.Tab.settings)
