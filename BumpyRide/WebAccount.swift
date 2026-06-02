@@ -230,6 +230,25 @@ final class WebAccount {
         }
     }
 
+    /// Read the per-ride score breakdown for a single ride from
+    /// `/api/rides/{id}/score`.  Returns `RideScoreData` with the same
+    /// 401-then-invalidate semantics as `fetchScore`.  404 (ride doesn't
+    /// exist or doesn't belong to this user) surfaces as a generic
+    /// `.http(status: 404)`, which callers (the saved-ride playback view)
+    /// treat as "no score to display" — same UX as the eligible: false
+    /// case from a 200 response.
+    func fetchRideScore(rideId: UUID) async throws -> WebSyncClient.RideScoreData {
+        guard let stored = storage.load() else {
+            throw WebSyncClient.ClientError.unauthorized
+        }
+        do {
+            return try await client.getRideScore(rideId: rideId, token: stored.token)
+        } catch WebSyncClient.ClientError.unauthorized {
+            invalidate()
+            throw WebSyncClient.ClientError.unauthorized
+        }
+    }
+
     // MARK: - Pocket-mode calibration
 
     /// Read the server's stored pocket-mode calibration.  Same 401-then-invalidate

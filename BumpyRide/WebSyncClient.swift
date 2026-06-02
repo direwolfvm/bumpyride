@@ -158,6 +158,23 @@ actor WebSyncClient {
         let progress: Double
     }
 
+    /// Server-side state of `GET /api/rides/{id}/score`.  Smaller sibling of
+    /// `ScoreData`: same `ScoreBreakdown` shape (so iOS can reuse the type
+    /// it already has), but scoped to a single ride's `score_events` rather
+    /// than the user's lifetime totals.
+    ///
+    /// `eligible` is the 200-with-flag pattern documented in
+    /// `docs/PER_RIDE_SCORE_WEB_HANDOFF.md`: covers both pocket-mode rides
+    /// and rides uploaded while sharing was off, distinguishing "this
+    /// specific ride didn't qualify" from "ride doesn't exist" (which is
+    /// 404) without throwing.  All counts are zero when `eligible: false`.
+    struct RideScoreData: Codable, Equatable, Sendable {
+        let rideId: UUID
+        let totalPoints: Int
+        let breakdown: ScoreBreakdown
+        let eligible: Bool
+    }
+
     /// One row in the level ladder.  `id` from `index` for `ForEach`.
     struct Level: Codable, Equatable, Sendable, Identifiable {
         let index: Int
@@ -423,6 +440,50 @@ actor WebSyncClient {
             }
         case 401:
             throw ClientError.unauthorized
+        default:
+            throw ClientError.http(status: http.statusCode)
+        }
+    }
+
+    /// Read the per-ride score from `GET /api/rides/{id}/score`.  Returns
+    /// `RideScoreData` with the same breakdown shape as `/api/me/score`,
+    /// scoped to this one ride's `score_events` rows server-side.
+    ///
+    /// Per the contract in `docs/PER_RIDE_SCORE_WEB_HANDOFF.md`, 404 means
+    /// the ride doesn't exist or isn't owned by this user; 200 with
+    /// `eligible: false` means the ride exists but didn't earn points
+    /// (pocket-mode or sharing-off at sync time).  Callers should hide the
+    /// "Points earned" stat on `eligible: false` rather than show 0.
+    func getRideScore(rideId: UUID, token: String) async throws -> RideScoreData {
+        log.info("GET /api/rides/\(rideId.uuidString, privacy: .public)/score")
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/rides/\(rideId.uuidString)/score"))
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 10
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw ClientError.transport
+        }
+        guard let http = response as? HTTPURLResponse else { throw ClientError.transport }
+
+        switch http.statusCode {
+        case 200..<300:
+            do {
+                return try JSONDecoder().decode(RideScoreData.self, from: data)
+            } catch {
+                throw ClientError.decoding
+            }
+        case 401:
+            throw ClientError.unauthorized
+        case 404:
+            // Ride doesn't exist or isn't owned by this token's user.
+            // Distinct from the eligible: false case (which is 200).
+            throw ClientError.http(status: 404)
         default:
             throw ClientError.http(status: http.statusCode)
         }
