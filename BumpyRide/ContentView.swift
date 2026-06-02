@@ -34,11 +34,20 @@ struct ContentView: View {
     @State private var rideScoreCache: RideScoreCache
 
     /// Owns the app's single `HKHealthStore` and tracks user
-    /// authorization for the Apple Health integration.  Phase A wires
-    /// it up and resolves `.unknown` on launch; downstream phases
-    /// (Settings toggle, RideRecorder auto-export, ride detail button)
-    /// will pass it down as they're built.
-    @State private var healthKitAuth = HealthKitAuthManager()
+    /// authorization for the Apple Health integration.  Read by the
+    /// Settings toggle and the per-ride "Add to Apple Health" button
+    /// (Phase E) to gate UI on availability + auth state.
+    @State private var healthKitAuth: HealthKitAuthManager
+
+    /// MET-based active-energy estimator for the Apple Health write
+    /// path.  Caches the user's most-recent bodyMass sample once per
+    /// process so we don't re-query HealthKit on every export.
+    @State private var healthKitEnergyEstimator: HealthKitEnergyEstimator
+
+    /// Writes individual rides to Apple Health.  Idempotent — re-export
+    /// of an already-written ride returns `.alreadyPresent` with the
+    /// existing HKWorkout UUID.
+    @State private var healthKitExporter: HealthKitExporter
 
     /// Last calibration value we successfully PUT to the server.  Used to short-circuit
     /// no-op pushes on triggers like reachability returning while nothing has changed.
@@ -76,6 +85,13 @@ struct ContentView: View {
         )
         let calibration = CalibrationStore()
         let scoreCache = RideScoreCache(account: webAccount)
+        // HealthKit stack: auth manager owns the HKHealthStore, which
+        // estimator and exporter both need.  All three are MainActor
+        // and have no inter-init dependencies beyond the store handle,
+        // so ordering here is fine.
+        let healthAuth = HealthKitAuthManager()
+        let healthEstimator = HealthKitEnergyEstimator(store: healthAuth.store)
+        let healthExporter = HealthKitExporter(store: healthAuth.store, energyEstimator: healthEstimator)
         _cloudStorage = State(initialValue: cloud)
         _store = State(initialValue: store)
         _webAccount = State(initialValue: webAccount)
@@ -83,6 +99,9 @@ struct ContentView: View {
         _syncCoordinator = State(initialValue: coordinator)
         _calibration = State(initialValue: calibration)
         _rideScoreCache = State(initialValue: scoreCache)
+        _healthKitAuth = State(initialValue: healthAuth)
+        _healthKitEnergyEstimator = State(initialValue: healthEstimator)
+        _healthKitExporter = State(initialValue: healthExporter)
     }
 
     var body: some View {
@@ -134,7 +153,8 @@ struct ContentView: View {
                 syncQueue: syncQueue,
                 calibration: calibration,
                 store: store,
-                cloudStorage: cloudStorage
+                cloudStorage: cloudStorage,
+                healthKitAuth: healthKitAuth
             )
             .tabItem { Label("Settings", systemImage: "gear") }
             .tag(AppState.Tab.settings)
@@ -201,6 +221,38 @@ struct ContentView: View {
                 syncCoordinator.enqueue(ride.id)
                 syncCoordinator.kick()
                 calibration.recompute(from: store.rides)
+                // Auto-export to Apple Health.  Gated on three things
+                // so this stays cheap and doesn't loop:
+                //  - user has opted in via Settings,
+                //  - auth has been granted (we don't surprise-prompt
+                //    here; the toggle did that earlier),
+                //  - ride hasn't already been stamped on this device.
+                // The third condition is the loop guard: a successful
+                // export below re-saves the ride with the stamp set,
+                // which fires this callback again — without the nil
+                // check we'd re-export forever.
+                if settings.autoExportToAppleHealth,
+                   healthKitAuth.canWrite,
+                   ride.healthKitWorkoutUUID == nil {
+                    Task {
+                        do {
+                            let result = try await healthKitExporter.export(ride)
+                            switch result {
+                            case .written(let uuid), .alreadyPresent(let uuid):
+                                var updated = ride
+                                updated.healthKitWorkoutUUID = uuid
+                                store.save(updated)
+                            case .unavailable:
+                                break
+                            }
+                        } catch {
+                            // The exporter already logged the cause.
+                            // Failures are non-fatal: the user can
+                            // retry via the per-ride button added in
+                            // Phase E.
+                        }
+                    }
+                }
             }
             store.onRideDeleted = { id in
                 syncCoordinator.remove(id)

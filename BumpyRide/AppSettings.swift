@@ -62,6 +62,7 @@ final class AppSettings {
     private static let keyPurple = "bumpThresholdPurple"
     private static let keyBumpMapFilter = "bumpMapModeFilter"
     private static let keyMapViewMode = "mapViewMode"
+    private static let keyAutoExportToAppleHealth = "autoExportToAppleHealth"
 
     var yellowG: Double = 0.5 {
         didSet { UserDefaults.standard.set(yellowG, forKey: Self.keyYellow) }
@@ -92,6 +93,25 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(mapViewMode.rawValue, forKey: Self.keyMapViewMode) }
     }
 
+    /// Whether each newly-finalized ride should be automatically written
+    /// to Apple Health as an `HKWorkout`.  Defaults to `false` so the
+    /// integration is opt-in — flipping the Settings toggle from off to
+    /// on for the first time triggers the HealthKit auth sheet; only on
+    /// successful auth does the value land at `true`.
+    ///
+    /// Auto-export is gated on three conditions in `ContentView`:
+    ///  - this setting is `true`,
+    ///  - `HealthKitAuthManager.canWrite` is `true`,
+    ///  - the ride doesn't already have a `healthKitWorkoutUUID`.
+    ///
+    /// The last condition prevents an infinite loop: after a successful
+    /// export we re-save the ride with the stamp set, which re-fires the
+    /// `onRideSaved` callback — without this guard we'd re-export the
+    /// same ride forever.
+    var autoExportToAppleHealth: Bool = false {
+        didSet { UserDefaults.standard.set(autoExportToAppleHealth, forKey: Self.keyAutoExportToAppleHealth) }
+    }
+
     init() {
         let d = UserDefaults.standard
         if let v = d.object(forKey: Self.keyYellow) as? Double { yellowG = v }
@@ -106,6 +126,12 @@ final class AppSettings {
            let m = MapViewMode(rawValue: raw) {
             mapViewMode = m
         }
+        // Default false when the key is absent — `object(forKey:) as? Bool`
+        // returns nil for "never set," not for "set to false," so this is
+        // a clean opt-in.
+        if let v = d.object(forKey: Self.keyAutoExportToAppleHealth) as? Bool {
+            autoExportToAppleHealth = v
+        }
     }
 
     func resetToDefaults() {
@@ -115,6 +141,7 @@ final class AppSettings {
         purpleG = 2.0
         bumpMapFilter = .mountedOrUntagged
         mapViewMode = .bumps
+        autoExportToAppleHealth = false
     }
 
     private struct Stop {

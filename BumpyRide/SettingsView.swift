@@ -12,6 +12,12 @@ struct SettingsView: View {
     @Bindable var calibration: CalibrationStore
     @Bindable var store: RideStore
     @Bindable var cloudStorage: CloudStorage
+    @Bindable var healthKitAuth: HealthKitAuthManager
+
+    /// Surfaces an inline error if the HealthKit auth request itself
+    /// errored (entitlement missing, OS state weird).  Different from
+    /// a deny — a deny just leaves the toggle off silently.
+    @State private var healthAuthErrored: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -90,6 +96,10 @@ struct SettingsView: View {
                     Text("Web Account")
                 } footer: {
                     Text("Connect a bumpyride.me account to back up rides off-device. Token-only — your password never leaves the web app.")
+                }
+
+                if healthKitAuth.isAvailable {
+                    appleHealthSection
                 }
 
                 Section {
@@ -248,5 +258,109 @@ struct SettingsView: View {
         let hi = max(r.lowerBound, r.upperBound)
         if lo == hi { return lo...(hi + 0.05) }
         return lo...hi
+    }
+
+    // MARK: - Apple Health
+
+    /// "Apple Health" section.  Shown only when HealthKit is available on
+    /// the device (`healthKitAuth.isAvailable`); the parent gates on that
+    /// via `if`.  Internally we still need to handle three sub-states for
+    /// the toggle copy:
+    ///
+    ///  - `.notRequested`: never asked.  Flipping on triggers the auth
+    ///    sheet via the custom binding's setter.
+    ///  - `.granted`: toggle behaves like any other persisted bool.
+    ///  - `.denied`: the request itself errored (rare — usually a missing
+    ///    entitlement).  Show an inline warning rather than retrying
+    ///    silently.
+    ///
+    /// We deliberately do NOT detect "auth was revoked externally via
+    /// Settings → Privacy & Security → Health" — Apple's HealthKit API
+    /// hides that state.  The auto-export write will silently no-op if
+    /// revoked; user fixes from iOS Settings.
+    @ViewBuilder
+    private var appleHealthSection: some View {
+        Section {
+            Toggle(isOn: appleHealthToggleBinding) {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Add new rides to Apple Health")
+                        if case .requesting = healthKitAuth.state {
+                            Text("Requesting access…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } icon: {
+                    Image(systemName: "heart.text.square.fill")
+                        .foregroundStyle(.pink)
+                }
+            }
+            .disabled({ if case .requesting = healthKitAuth.state { return true } else { return false } }())
+
+            if healthAuthErrored {
+                Label("Couldn't enable Apple Health access. The app entitlement may be missing — try restarting BumpyRide.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .font(.callout)
+            }
+        } header: {
+            Text("Apple Health")
+        } footer: {
+            Text("""
+            New rides will appear in the Fitness app as cycling workouts and count toward your activity rings. \
+            BumpyRide writes the route, distance, and an estimated active-energy value based on your average speed and weight.
+
+            If you also record rides with Apple Workout (e.g. on Apple Watch), you may want to leave this off to avoid duplicates.
+            """)
+        }
+    }
+
+    /// Custom binding so the toggle's off → on transition can interpose
+    /// an authorization request before persisting the bit.  Off → on is
+    /// the only transition that needs special handling; on → off and the
+    /// no-op cases pass through normally.
+    private var appleHealthToggleBinding: Binding<Bool> {
+        Binding(
+            get: { settings.autoExportToAppleHealth },
+            set: { newValue in
+                if newValue {
+                    // Off → on.
+                    if healthKitAuth.canWrite {
+                        // Already authorized — flip the bit immediately,
+                        // no prompt.  Most subsequent toggles take this
+                        // path (auth survives across toggle off/on).
+                        settings.autoExportToAppleHealth = true
+                        healthAuthErrored = false
+                    } else {
+                        // Never asked, or last attempt errored.  Fire
+                        // the auth sheet and only land the bit if the
+                        // user dismisses it (the user may have ticked
+                        // none of the boxes, but we accept that — see
+                        // HealthKitAuthManager for why we can't tell).
+                        Task {
+                            let granted = await healthKitAuth.requestAuthorization()
+                            if granted {
+                                settings.autoExportToAppleHealth = true
+                                healthAuthErrored = false
+                            } else {
+                                // Toggle stays off — value already reflects that.
+                                // Distinguish a hard error (.denied state) from a
+                                // soft "user just dismissed without granting" so we
+                                // can show the inline warning only when actionable.
+                                if case .denied = healthKitAuth.state {
+                                    healthAuthErrored = true
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // On → off.  Just persist.  We don't revoke
+                    // HealthKit auth — user does that from iOS Settings
+                    // if they want — so re-enabling later won't re-prompt.
+                    settings.autoExportToAppleHealth = false
+                }
+            }
+        )
     }
 }
