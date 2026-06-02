@@ -187,26 +187,74 @@ extension WatchCoordinator: WCSessionDelegate {
         }
     }
 
-    // Phase B/D will fill these in.  Phase A: log and drop.
+    // Phase C will fill this in with applicationContext snapshot
+    // push (iOS → Watch direction).  No incoming application
+    // context expected from the watch side in our design.
     nonisolated func session(
         _ session: WCSession,
         didReceiveApplicationContext applicationContext: [String: Any]
     ) {
-        Self.log.notice("Received applicationContext (Phase A stub — ignored)")
+        Self.log.notice("Received applicationContext (unexpected — watch shouldn't push these)")
     }
 
+    /// Sendable-payload no-reply variant.  Phase D will dispatch real
+    /// commands here (pause / resume / stop / closeCall).  Phase B
+    /// uses the reply variant below for the ping round-trip.
     nonisolated func session(
         _ session: WCSession,
         didReceiveMessage message: [String: Any]
     ) {
-        Self.log.notice("Received message (Phase A stub — ignored)")
+        if let command = WatchPayload.decodeCommand(from: message) {
+            Self.log.notice("Received command (no reply): \(String(describing: command), privacy: .public)")
+            Task { @MainActor in self.handle(command: command) }
+        } else {
+            Self.log.notice("Received unrecognized message (no reply)")
+        }
     }
 
+    /// Reply variant.  Phase B uses this for the `.ping` connectivity
+    /// health check — watch sends `.ping`, iOS replies immediately
+    /// with `["pong": true]` so the watch can confirm the round-trip.
+    /// Phase D's commands that need acknowledgments (e.g. stop with
+    /// save) will also use this path.
+    nonisolated func session(
+        _ session: WCSession,
+        didReceiveMessage message: [String: Any],
+        replyHandler: @escaping ([String: Any]) -> Void
+    ) {
+        guard let command = WatchPayload.decodeCommand(from: message) else {
+            Self.log.notice("Received unrecognized message-with-reply")
+            replyHandler([:])
+            return
+        }
+        Self.log.notice("Received command (with reply): \(String(describing: command), privacy: .public)")
+        switch command {
+        case .ping:
+            // Immediate pong — no main-actor hop needed.
+            replyHandler(["pong": true])
+        default:
+            // Phase D will route these into RideRecorder.  For now
+            // reply with a "received" ack so the watch isn't left
+            // hanging on the reply handler.
+            replyHandler(["received": true])
+            Task { @MainActor in self.handle(command: command) }
+        }
+    }
+
+    /// Queued (offline-replay) command path.  Used by the watch when
+    /// the iPhone isn't reachable: command goes into the
+    /// `transferUserInfo` queue and lands here when the apps reconnect.
+    /// Same dispatch as the no-reply message variant.
     nonisolated func session(
         _ session: WCSession,
         didReceiveUserInfo userInfo: [String: Any] = [:]
     ) {
-        Self.log.notice("Received userInfo (Phase A stub — ignored)")
+        if let command = WatchPayload.decodeCommand(from: userInfo) {
+            Self.log.notice("Received queued command: \(String(describing: command), privacy: .public)")
+            Task { @MainActor in self.handle(command: command) }
+        } else {
+            Self.log.notice("Received unrecognized userInfo")
+        }
     }
 }
 #endif

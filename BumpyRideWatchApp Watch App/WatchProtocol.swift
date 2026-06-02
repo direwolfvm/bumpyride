@@ -29,7 +29,12 @@ import Foundation
 /// .idle), with zero values, so the watch never has to deal with
 /// optionals.  Equatable + Sendable so the watch side can drive a
 /// SwiftUI `@Observable` cleanly.
-struct WatchSnapshot: Codable, Equatable, Sendable {
+///
+/// `nonisolated` because the type is a pure value-type wire payload
+/// that gets en/decoded from WCSession's nonisolated delegate
+/// callbacks — without the opt-out, the project's MainActor default
+/// isolation would force a hop on every decode.
+nonisolated struct WatchSnapshot: Codable, Equatable, Sendable {
     /// Recorder lifecycle state mirrored from iOS's `RideRecorder.State`.
     /// Re-declared here (rather than imported) because the watch target
     /// doesn't have access to the iOS types, and a wire-format enum is
@@ -77,7 +82,9 @@ struct WatchSnapshot: Codable, Equatable, Sendable {
 /// iOS side needs without ambiguity.  Sendable + Codable for both
 /// WCSession transports (`sendMessage` real-time and
 /// `transferUserInfo` queued fallback).
-enum WatchCommand: Codable, Equatable, Sendable {
+///
+/// `nonisolated` for the same reason as `WatchSnapshot` — see its doc.
+nonisolated enum WatchCommand: Codable, Equatable, Sendable {
     /// Connectivity health check.  Round-trip reply confirms iOS is
     /// reachable.  Used by the watch's session manager to drive the
     /// "Phone connected ✓ / ✗" status.
@@ -106,28 +113,33 @@ enum WatchCommand: Codable, Equatable, Sendable {
 /// `WatchCommand` carries associated values and `WatchSnapshot` has
 /// nested types — both round-trip cleanly through JSON but get lossy
 /// when shoved into `[String: Any]` via plist-style reflection.
+///
+/// All members are explicitly `nonisolated` so they can be called
+/// from the WCSession delegate's `nonisolated` callback queue
+/// without an actor hop — the project default actor isolation is
+/// MainActor, which would otherwise inherit here.
 enum WatchPayload {
     /// Top-level dictionary key for a `WatchSnapshot` payload.
-    static let snapshotKey = "snapshot"
+    nonisolated static let snapshotKey = "snapshot"
     /// Top-level dictionary key for a `WatchCommand` payload.
-    static let commandKey = "command"
+    nonisolated static let commandKey = "command"
 
-    static func encode(_ snapshot: WatchSnapshot) throws -> [String: Any] {
+    nonisolated static func encode(_ snapshot: WatchSnapshot) throws -> [String: Any] {
         let data = try JSONEncoder().encode(snapshot)
         return [snapshotKey: data]
     }
 
-    static func decodeSnapshot(from message: [String: Any]) -> WatchSnapshot? {
+    nonisolated static func decodeSnapshot(from message: [String: Any]) -> WatchSnapshot? {
         guard let data = message[snapshotKey] as? Data else { return nil }
         return try? JSONDecoder().decode(WatchSnapshot.self, from: data)
     }
 
-    static func encode(_ command: WatchCommand) throws -> [String: Any] {
+    nonisolated static func encode(_ command: WatchCommand) throws -> [String: Any] {
         let data = try JSONEncoder().encode(command)
         return [commandKey: data]
     }
 
-    static func decodeCommand(from message: [String: Any]) -> WatchCommand? {
+    nonisolated static func decodeCommand(from message: [String: Any]) -> WatchCommand? {
         guard let data = message[commandKey] as? Data else { return nil }
         return try? JSONDecoder().decode(WatchCommand.self, from: data)
     }
