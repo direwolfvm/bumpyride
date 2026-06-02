@@ -13,6 +13,11 @@ struct RideView: View {
     @Bindable var appState: AppState
     var store: RideStore
     @Bindable var settings: AppSettings
+    /// Lazy per-ride score cache shared with `ContentView` so the
+    /// playback view can show a "Points earned" stat for the currently-
+    /// loaded ride.  Survives view teardown (e.g. tab switches), so
+    /// scores stay cached across sessions in the same launch.
+    @Bindable var rideScoreCache: RideScoreCache
 
     @State private var showingSaveSheet: Bool = false
     @State private var pendingRide: Ride?
@@ -220,6 +225,9 @@ struct RideView: View {
     private func commitDelete() {
         if let ride = appState.loadedRide {
             store.delete(ride)
+            // Drop any cached score for this id so a re-restore of the
+            // same UUID later doesn't surface stale data.
+            rideScoreCache.invalidate(ride.id)
             // Same "return to where you came from" semantic as the X
             // button — after deleting, the user wants to see the
             // updated list, which is the Saved tab.
@@ -657,6 +665,13 @@ struct RideView: View {
             )
             .padding(.horizontal)
 
+            // Per-ride score row — only renders when the cache has a
+            // .loaded entry for this ride.  Loading, ineligible, and
+            // failed all collapse to no row so the layout doesn't
+            // flicker.  Request kicked off in .task below.
+            rideScoreRow(for: ride)
+                .padding(.horizontal)
+
             Button {
                 showingStartOverConfirm = true
             } label: {
@@ -668,6 +683,38 @@ struct RideView: View {
             .controlSize(.large)
             .padding(.horizontal)
             .padding(.bottom, 8)
+        }
+        // Kick off the score fetch when the viewer opens / the loaded
+        // ride changes.  Idempotent — `requestScore` is a no-op when an
+        // entry already exists for this id.
+        .task(id: ride.id) {
+            rideScoreCache.requestScore(for: ride.id)
+        }
+    }
+
+    /// "Points earned: N" row shown only when the per-ride score is
+    /// available and the ride was eligible.  See `RideScoreCache.Entry`
+    /// for the state breakdown; loading / ineligible / failed all
+    /// render nothing.
+    @ViewBuilder
+    private func rideScoreRow(for ride: Ride) -> some View {
+        if case .loaded(let data) = rideScoreCache.entry(for: ride.id) {
+            HStack(spacing: 10) {
+                Image(systemName: "trophy.fill")
+                    .font(.callout)
+                    .foregroundStyle(.yellow)
+                Text("Points earned")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(data.totalPoints)")
+                    .font(.callout.monospacedDigit().weight(.bold))
+                    .foregroundStyle(.primary)
+            }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
         }
     }
 

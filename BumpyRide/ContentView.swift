@@ -27,6 +27,11 @@ struct ContentView: View {
     /// because RideStore needs its `ridesDirectoryURL`.  Also owns the
     /// one-shot migration from legacy local Documents into iCloud.
     @State private var cloudStorage: CloudStorage
+    /// Lazy cache of per-ride score data fetched from
+    /// `/api/rides/{id}/score`.  Lives at the ContentView level so it
+    /// survives RideView teardown (e.g., switching tabs and coming
+    /// back) — cached scores persist across the playback session.
+    @State private var rideScoreCache: RideScoreCache
 
     /// Last calibration value we successfully PUT to the server.  Used to short-circuit
     /// no-op pushes on triggers like reachability returning while nothing has changed.
@@ -63,12 +68,14 @@ struct ContentView: View {
             webAccount: webAccount
         )
         let calibration = CalibrationStore()
+        let scoreCache = RideScoreCache(account: webAccount)
         _cloudStorage = State(initialValue: cloud)
         _store = State(initialValue: store)
         _webAccount = State(initialValue: webAccount)
         _syncQueue = State(initialValue: queue)
         _syncCoordinator = State(initialValue: coordinator)
         _calibration = State(initialValue: calibration)
+        _rideScoreCache = State(initialValue: scoreCache)
     }
 
     var body: some View {
@@ -80,7 +87,8 @@ struct ContentView: View {
                 recorder: recorder,
                 appState: appState,
                 store: store,
-                settings: settings
+                settings: settings,
+                rideScoreCache: rideScoreCache
             )
             .tabItem { Label("Ride", systemImage: "bicycle") }
             .tag(AppState.Tab.ride)
@@ -247,6 +255,12 @@ struct ContentView: View {
                 syncCoordinator.backfillAll(rideIds: store.rides.map(\.id))
                 syncCoordinator.kick()
                 Task { await pullThenPushCalibration() }
+            } else {
+                // Disconnect: any cached per-ride scores belonged to the
+                // now-defunct token's owner.  Wipe so a re-pair to a
+                // different account doesn't surface the old account's
+                // points.
+                rideScoreCache.invalidateAll()
             }
         }
         .onChange(of: reachability.isReachable) { _, isReachable in
