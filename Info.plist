@@ -56,6 +56,10 @@
 	<string>BumpyRide uses motion sensors to measure bumpiness along your route.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>BumpyRide saves exported ride images to your photo library.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>BumpyRide saves your cycling rides to Apple Health so they appear in the Fitness app and count toward your activity rings.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>BumpyRide reads your weight from Apple Health to estimate calories burned for each ride.</string>
 
 	<key>UIBackgroundModes</key>
 	<array>

@@ -33,6 +33,13 @@ struct ContentView: View {
     /// back) — cached scores persist across the playback session.
     @State private var rideScoreCache: RideScoreCache
 
+    /// Owns the app's single `HKHealthStore` and tracks user
+    /// authorization for the Apple Health integration.  Phase A wires
+    /// it up and resolves `.unknown` on launch; downstream phases
+    /// (Settings toggle, RideRecorder auto-export, ride detail button)
+    /// will pass it down as they're built.
+    @State private var healthKitAuth = HealthKitAuthManager()
+
     /// Last calibration value we successfully PUT to the server.  Used to short-circuit
     /// no-op pushes on triggers like reachability returning while nothing has changed.
     @State private var lastPushedCalibration: WebSyncClient.ServerCalibration?
@@ -150,6 +157,11 @@ struct ContentView: View {
             if !hasSeenIntro {
                 showingIntro = true
             }
+            // Resolve HealthKit auth state from `.unknown` → either
+            // `.unavailable` (device can't do HealthKit) or one of the
+            // user-facing states.  Has to run before any UI reads the
+            // state — cheap and synchronous so it's fine here.
+            healthKitAuth.checkOnLaunch()
             // Migrate any rides still sitting in legacy local Documents into
             // iCloud (no-op when iCloud is unavailable, or when there's
             // nothing local to migrate).  Runs before the store's initial
