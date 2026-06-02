@@ -866,12 +866,17 @@ struct RideView: View {
                 let result = try await healthKitExporter.export(ride)
                 switch result {
                 case .written(let uuid), .alreadyPresent(let uuid):
-                    var updated = ride
-                    updated.healthKitWorkoutUUID = uuid
-                    store.save(updated)
+                    // Quiet save: the stamp is device-local, and
+                    // running through onRideSaved would re-enqueue a
+                    // multi-MB upload to bumpyride.me for a field the
+                    // server doesn't interpret.  See RideStore's
+                    // updateHealthKitWorkoutUUID doc for details.
+                    store.updateHealthKitWorkoutUUID(uuid, forRideId: ride.id)
                     // Also patch appState so the viewer renders the
                     // updated struct (its `ride` parameter is a value
                     // type; we need to push the new copy through).
+                    var updated = ride
+                    updated.healthKitWorkoutUUID = uuid
                     appState.loadedRide = updated
                 case .unavailable:
                     healthExportError = "Apple Health isn't available on this device."

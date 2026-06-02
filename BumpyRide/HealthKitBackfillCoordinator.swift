@@ -128,14 +128,16 @@ final class HealthKitBackfillCoordinator {
                 let result = try await exporter.export(ride)
                 switch result {
                 case .written(let uuid):
-                    var updated = ride
-                    updated.healthKitWorkoutUUID = uuid
-                    store.save(updated)
+                    // Quiet save — see `RideStore.updateHealthKitWorkoutUUID`
+                    // for the rationale.  A backfill of 50 rides is
+                    // exactly the workload that made the cascading
+                    // loud-save pattern visible in the field
+                    // (multi-MB POST + calibration PUT per ride),
+                    // hitting network timeouts and the OSLog quarantine.
+                    store.updateHealthKitWorkoutUUID(uuid, forRideId: ride.id)
                     exported += 1
                 case .alreadyPresent(let uuid):
-                    var updated = ride
-                    updated.healthKitWorkoutUUID = uuid
-                    store.save(updated)
+                    store.updateHealthKitWorkoutUUID(uuid, forRideId: ride.id)
                     alreadyPresent += 1
                 case .unavailable:
                     // HealthKit went away mid-backfill (extremely rare:

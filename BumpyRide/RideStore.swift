@@ -158,6 +158,41 @@ final class RideStore {
         }
     }
 
+    /// Update only the `healthKitWorkoutUUID` field of an existing ride
+    /// in place, without firing `onRideSaved`.
+    ///
+    /// Used by all three HealthKit write paths (auto-export in
+    /// `ContentView.onRideSaved`, manual button in `RideView`, backfill
+    /// coordinator) after a successful export to stamp the local Ride
+    /// with the resulting HKWorkout UUID.  Going through `save(_:)`
+    /// here would cascade — every stamp would re-enqueue the ride for
+    /// upload to bumpyride.me (re-sending the full multi-MB payload to
+    /// land a device-local 36-byte field the server doesn't interpret)
+    /// and re-recompute calibration unnecessarily.  Worst case on a
+    /// 50-ride backfill: 50 spurious POSTs and 50 spurious calibration
+    /// PUTs, observed in field testing to hit timeouts and the OSLog
+    /// quarantine on the device.
+    ///
+    /// Returns `true` on successful persist.  Does nothing and returns
+    /// `false` if the ride isn't in the store (e.g., user deleted it
+    /// between the exporter's call and persistence).
+    @discardableResult
+    func updateHealthKitWorkoutUUID(_ uuid: UUID, forRideId id: UUID) -> Bool {
+        guard let idx = rides.firstIndex(where: { $0.id == id }) else { return false }
+        var ride = rides[idx]
+        ride.healthKitWorkoutUUID = uuid
+        let url = directoryURL.appendingPathComponent("\(ride.id.uuidString).json")
+        do {
+            let data = try encoder.encode(ride)
+            try coordinatedWrite(data, to: url)
+            rides[idx] = ride
+            return true
+        } catch {
+            Self.log.error("Failed to update healthKitWorkoutUUID for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
     /// Atomic write wrapped in `NSFileCoordinator` so the iCloud sync engine
     /// (or another device touching the same file) sees a consistent snapshot.
     /// For local-only storage this adds negligible overhead and the

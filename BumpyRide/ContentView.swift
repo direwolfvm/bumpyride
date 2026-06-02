@@ -242,9 +242,13 @@ struct ContentView: View {
                             let result = try await healthKitExporter.export(ride)
                             switch result {
                             case .written(let uuid), .alreadyPresent(let uuid):
-                                var updated = ride
-                                updated.healthKitWorkoutUUID = uuid
-                                store.save(updated)
+                                // Quiet save: the stamp is device-local,
+                                // and going through onRideSaved here
+                                // would re-upload the whole ride to
+                                // bumpyride.me and re-push calibration
+                                // for a 36-byte field nobody else
+                                // interprets.
+                                store.updateHealthKitWorkoutUUID(uuid, forRideId: ride.id)
                             case .unavailable:
                                 break
                             }
