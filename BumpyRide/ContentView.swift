@@ -49,6 +49,12 @@ struct ContentView: View {
     /// existing HKWorkout UUID.
     @State private var healthKitExporter: HealthKitExporter
 
+    /// iOS side of the watchOS companion's WatchConnectivity session.
+    /// Phase A wires the WCSession lifecycle and surfaces reachability
+    /// + paired-watch + watch-app-installed state observably; Phases
+    /// B-G layer the actual snapshot push and command handling.
+    @State private var watchCoordinator = WatchCoordinator()
+
     /// Last calibration value we successfully PUT to the server.  Used to short-circuit
     /// no-op pushes on triggers like reachability returning while nothing has changed.
     @State private var lastPushedCalibration: WebSyncClient.ServerCalibration?
@@ -185,6 +191,11 @@ struct ContentView: View {
             // user-facing states.  Has to run before any UI reads the
             // state — cheap and synchronous so it's fine here.
             healthKitAuth.checkOnLaunch()
+            // Activate the WatchConnectivity session.  Cheap to call on
+            // devices without a paired watch — the session resolves to
+            // `.unavailable` and downstream code (Phase B+) gates on
+            // `sessionState`.  Idempotent on repeated invocations.
+            watchCoordinator.activate()
             // Migrate any rides still sitting in legacy local Documents into
             // iCloud (no-op when iCloud is unavailable, or when there's
             // nothing local to migrate).  Runs before the store's initial
