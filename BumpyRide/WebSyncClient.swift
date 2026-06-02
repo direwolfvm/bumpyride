@@ -175,6 +175,34 @@ actor WebSyncClient {
         let eligible: Bool
     }
 
+    /// Lightweight metadata for one ride from `/api/sync/rides`.  Used by
+    /// the iOS restore flow to drive the confirmation UI ("N rides on
+    /// server, ~X MB to download") and then iterate by id to fetch each
+    /// full payload via `/api/sync/ride/{id}`.
+    ///
+    /// `sizeBytes` is an *estimate* derived server-side from
+    /// `point_count` (per `docs/SERVER_RESTORE_WEB_HANDOFF.md`) — close
+    /// enough to size the user-facing download warning, but not a
+    /// commitment to exact wire-bytes.  Don't pre-allocate buffers off
+    /// it.
+    struct RideManifest: Codable, Equatable, Sendable, Identifiable {
+        let id: UUID
+        let title: String
+        let startedAt: Date
+        let endedAt: Date
+        let pointCount: Int
+        let sizeBytes: Int
+    }
+
+    /// One page of the cursor-paginated `/api/sync/rides` response.
+    /// `nextCursor == nil` is the terminal page.  `totalCount` is the
+    /// global count across all pages, used by the progress sheet.
+    struct RideListPage: Codable, Equatable, Sendable {
+        let rides: [RideManifest]
+        let nextCursor: String?
+        let totalCount: Int
+    }
+
     /// One row in the level ladder.  `id` from `index` for `ForEach`.
     struct Level: Codable, Equatable, Sendable, Identifiable {
         let index: Int
@@ -484,6 +512,116 @@ actor WebSyncClient {
             // Ride doesn't exist or isn't owned by this token's user.
             // Distinct from the eligible: false case (which is 200).
             throw ClientError.http(status: 404)
+        default:
+            throw ClientError.http(status: http.statusCode)
+        }
+    }
+
+    /// List one page of the user's rides from `GET /api/sync/rides` for
+    /// the restore flow.  Cursor-paginated; `cursor == nil` returns the
+    /// first page (sorted `started_at DESC` per the contract).
+    /// `nextCursor == nil` in the response means we've hit the end.
+    ///
+    /// `limit` defaults server-side to 100, capped at 500.  We pass
+    /// `nil` (server default) here; the orchestrator in the
+    /// `RestoreCoordinator` controls page size via this knob.
+    func listRides(cursor: String? = nil, limit: Int? = nil, token: String) async throws -> RideListPage {
+        log.info("GET /api/sync/rides (cursor=\(cursor != nil, privacy: .public), limit=\(limit ?? 0, privacy: .public))")
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("api/sync/rides"),
+            resolvingAgainstBaseURL: false
+        )!
+        var queryItems: [URLQueryItem] = []
+        if let cursor { queryItems.append(URLQueryItem(name: "cursor", value: cursor)) }
+        if let limit { queryItems.append(URLQueryItem(name: "limit", value: "\(limit)")) }
+        if !queryItems.isEmpty { components.queryItems = queryItems }
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        // Generous timeout; the list query is cheap server-side, but
+        // we'd rather forgive a slow network than fail the whole
+        // restore on a transient.
+        request.timeoutInterval = 15
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw ClientError.transport
+        }
+        guard let http = response as? HTTPURLResponse else { throw ClientError.transport }
+
+        switch http.statusCode {
+        case 200..<300:
+            do {
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                return try decoder.decode(RideListPage.self, from: data)
+            } catch {
+                throw ClientError.decoding
+            }
+        case 400:
+            // Most likely a stale or malformed cursor.  Surfaces as a
+            // restartable failure — the user can retry from page 1.
+            throw ClientError.validationFailed
+        case 401:
+            throw ClientError.unauthorized
+        default:
+            throw ClientError.http(status: http.statusCode)
+        }
+    }
+
+    /// Download a full ride payload from `GET /api/sync/ride/{id}` as
+    /// raw bytes.  Returns the iOS-shape JSON the server stores for
+    /// this ride; the caller decodes on its own actor.
+    ///
+    /// Returning `Data` rather than `Ride` mirrors the pattern in
+    /// `uploadRide(jsonBody:)`: `Ride`'s `Decodable` (and `Encodable`)
+    /// conformance is `MainActor`-isolated, which the actor-isolated
+    /// `WebSyncClient` can't reach into without a Swift 6 violation.
+    /// The caller (typically `RestoreCoordinator` on `@MainActor`)
+    /// decodes the bytes using the standard `.iso8601` strategy.
+    ///
+    /// Timeout is bumped to 60 s here because individual ride payloads
+    /// can be multi-MB on long pocketed rides (the May 27 export was
+    /// 5.4 MB).  At very slow connections we'd rather wait than fail
+    /// and have to retry from scratch — and the RestoreCoordinator
+    /// retries individual rides on transport errors anyway.
+    func downloadRide(rideId: UUID, token: String) async throws -> Data {
+        log.info("GET /api/sync/ride/\(rideId.uuidString, privacy: .public)")
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/sync/ride/\(rideId.uuidString)"))
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 60
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw ClientError.transport
+        }
+        guard let http = response as? HTTPURLResponse else { throw ClientError.transport }
+
+        switch http.statusCode {
+        case 200..<300:
+            return data
+        case 401:
+            throw ClientError.unauthorized
+        case 404:
+            // Ride doesn't exist (or doesn't belong to this user, which
+            // the server collapses into a 404 to avoid leaking
+            // enumeration).  Distinct case worth surfacing so the
+            // RestoreCoordinator can skip and continue.
+            throw ClientError.http(status: 404)
+        case 429:
+            // Server-side rate limit.  Surfaces as a generic transient
+            // error; caller backs off and retries.
+            throw ClientError.http(status: 429)
         default:
             throw ClientError.http(status: http.statusCode)
         }

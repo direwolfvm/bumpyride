@@ -249,6 +249,53 @@ final class WebAccount {
         }
     }
 
+    // MARK: - Restore (server-side ride download)
+
+    /// List one page of the user's rides on the server, paginated via
+    /// `cursor`.  Caller (`RestoreCoordinator`) loops until
+    /// `nextCursor == nil`.  Standard 401-then-invalidate semantics.
+    func listRides(cursor: String? = nil, limit: Int? = nil) async throws -> WebSyncClient.RideListPage {
+        guard let stored = storage.load() else {
+            throw WebSyncClient.ClientError.unauthorized
+        }
+        do {
+            return try await client.listRides(cursor: cursor, limit: limit, token: stored.token)
+        } catch WebSyncClient.ClientError.unauthorized {
+            invalidate()
+            throw WebSyncClient.ClientError.unauthorized
+        }
+    }
+
+    /// Download one ride payload by id.  Fetches the raw JSON bytes
+    /// from the actor-isolated client, then decodes on this MainActor
+    /// (which can reach `Ride`'s `Decodable` conformance without a
+    /// Swift 6 isolation violation).  The returned `Ride` is in the
+    /// same shape we upload via `POST /api/sync/ride` and can be
+    /// persisted directly via `RideStore.save(_:)` after dedup.
+    ///
+    /// 404 surfaces as `.http(status: 404)` so the coordinator can
+    /// skip and continue.  Decode failures surface as
+    /// `ClientError.decoding`.
+    func downloadRide(rideId: UUID) async throws -> Ride {
+        guard let stored = storage.load() else {
+            throw WebSyncClient.ClientError.unauthorized
+        }
+        let data: Data
+        do {
+            data = try await client.downloadRide(rideId: rideId, token: stored.token)
+        } catch WebSyncClient.ClientError.unauthorized {
+            invalidate()
+            throw WebSyncClient.ClientError.unauthorized
+        }
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return try decoder.decode(Ride.self, from: data)
+        } catch {
+            throw WebSyncClient.ClientError.decoding
+        }
+    }
+
     // MARK: - Pocket-mode calibration
 
     /// Read the server's stored pocket-mode calibration.  Same 401-then-invalidate
