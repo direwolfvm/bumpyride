@@ -21,6 +21,7 @@ struct WebAccountView: View {
     /// In practice users only ever tap one of them.
     @State private var showingClearDataSheet: Bool = false
     @State private var showingDeleteAccountSheet: Bool = false
+    @State private var showingRestoreRidesSheet: Bool = false
 
     /// Local cache of `/api/me/sharing` state.  The server is canonical; these are
     /// just the on-screen reflection.  Refreshed on screen appear and whenever
@@ -56,6 +57,7 @@ struct WebAccountView: View {
                 publicBumpMapSection
                 scoreSection
                 syncSection
+                restoreSection
                 dangerZoneSection(email: email)
             case .notConnected, .connecting, .error:
                 signInSection
@@ -82,6 +84,9 @@ struct WebAccountView: View {
                     await performDeleteAccount(keepPublicContributions: keep, confirmEmail: confirmEmail)
                 }
             )
+        }
+        .sheet(isPresented: $showingRestoreRidesSheet) {
+            RestoreRidesSheet(account: account, store: store)
         }
         // `id:` re-runs the task whenever the connected email changes (nil ⇄ email
         // and email-to-email), covering both first-load and post-pair refresh
@@ -593,6 +598,31 @@ struct WebAccountView: View {
             }
         } header: {
             Text("Pending uploads")
+        }
+    }
+
+    // MARK: - Restore (shown when connected)
+
+    /// Settings row that opens the restore sheet.  Single tap → sheet
+    /// fetches the manifest list, shows the user a preview ("X rides
+    /// available, ~Y MB"), and on confirm runs the `RestoreCoordinator`
+    /// to download + persist each one.  Server-wins on conflicts.
+    ///
+    /// Lives above the Danger Zone because it's a recovery action, not
+    /// a destructive one — closer to syncing in mental model.  Sized
+    /// like the existing sync/danger-zone rows so the section list
+    /// reads as a coherent stack of account-scoped operations.
+    private var restoreSection: some View {
+        Section {
+            Button {
+                showingRestoreRidesSheet = true
+            } label: {
+                Label("Restore my rides", systemImage: "icloud.and.arrow.down")
+            }
+        } header: {
+            Text("Restore")
+        } footer: {
+            Text("Download rides from bumpyride.me to this device. Useful after reinstalling the app or setting up a new phone. Existing rides with the same ID will be replaced with the server's copies.")
         }
     }
 
