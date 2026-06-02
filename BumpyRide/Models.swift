@@ -165,6 +165,27 @@ struct Ride: Codable, Identifiable, Hashable {
     /// available but no calls logged.  Both render as "no close calls" — no
     /// background reprocessor backfills these since the data is user-initiated.
     var closeCallEvents: [CloseCall]?
+    /// UUID of the `HKWorkout` we wrote to Apple Health for this ride, if
+    /// any.  `nil` for rides never exported (the steady state for most
+    /// rides until v1.5+) and for rides recorded before the integration
+    /// existed.
+    ///
+    /// **Device-local semantics**: an HKWorkout UUID is only meaningful
+    /// to the HealthKit store on the device that wrote it.  The field
+    /// rides through the server's storage for now (added as an
+    /// additive-optional JSON key, not interpreted server-side), but
+    /// when a ride is restored to a different device the stamped UUID
+    /// points to nothing in *that* device's HealthKit.
+    ///
+    /// The exporter's idempotency check (`HKMetadataKeyExternalUUID ==
+    /// ride.id.uuidString`) handles the cross-device case correctly —
+    /// it queries HealthKit by ride id, not by stamped UUID, so a
+    /// re-export on a fresh device finds no match and writes cleanly.
+    /// The only user-visible consequence is that a "✓ In Apple Health"
+    /// badge on a restored ride may be wrong until reconciled by an
+    /// actual export attempt.  Phase E's badge logic accepts this
+    /// trade-off.
+    var healthKitWorkoutUUID: UUID?
 
     init(
         id: UUID = UUID(),
@@ -175,7 +196,8 @@ struct Ride: Codable, Identifiable, Hashable {
         pocketMode: Bool? = nil,
         schemaVersion: Int = 3,
         brakeEvents: [BrakeEvent]? = nil,
-        closeCallEvents: [CloseCall]? = nil
+        closeCallEvents: [CloseCall]? = nil,
+        healthKitWorkoutUUID: UUID? = nil
     ) {
         self.id = id
         self.title = title
@@ -186,6 +208,7 @@ struct Ride: Codable, Identifiable, Hashable {
         self.schemaVersion = schemaVersion
         self.brakeEvents = brakeEvents
         self.closeCallEvents = closeCallEvents
+        self.healthKitWorkoutUUID = healthKitWorkoutUUID
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -198,6 +221,7 @@ struct Ride: Codable, Identifiable, Hashable {
         case schemaVersion
         case brakeEvents
         case closeCallEvents
+        case healthKitWorkoutUUID
     }
 
     init(from decoder: Decoder) throws {
@@ -217,6 +241,10 @@ struct Ride: Codable, Identifiable, Hashable {
         // closeCallEvents missing → nil → ride predates the feature; treat as
         // empty for rendering.  No reprocessor backfills this.
         self.closeCallEvents = try c.decodeIfPresent([CloseCall].self, forKey: .closeCallEvents)
+        // healthKitWorkoutUUID missing → nil → ride hasn't been exported on
+        // this device (the common case for any ride from a build that
+        // predates v1.5, or any v1.5+ ride with auto-export off).
+        self.healthKitWorkoutUUID = try c.decodeIfPresent(UUID.self, forKey: .healthKitWorkoutUUID)
     }
 
     var duration: TimeInterval { endedAt.timeIntervalSince(startedAt) }
@@ -256,6 +284,12 @@ struct Ride: Codable, Identifiable, Hashable {
         copy.points = slice
         copy.startedAt = slice.first?.timestamp ?? startedAt
         copy.endedAt = slice.last?.timestamp ?? endedAt
+        // The pre-trim HKWorkout (if any) was authored for the full ride.
+        // A trimmed ride is a different shape; clear the stamp so the UI
+        // re-offers export.  The original HKWorkout still lives in Apple
+        // Health for the user to delete manually if they want; we don't
+        // proactively reach into HealthKit to clean it up.
+        copy.healthKitWorkoutUUID = nil
         return copy
     }
 
@@ -272,6 +306,11 @@ struct Ride: Codable, Identifiable, Hashable {
         second.endedAt = second.points.last?.timestamp ?? endedAt
         second.title = title + " (part 2)"
         first.title = title + " (part 1)"
+        // Same reasoning as `trimmed`: both halves are structurally
+        // different from the original exported ride.  Clear the stamp on
+        // both so the UI re-offers export and the badge is honest.
+        first.healthKitWorkoutUUID = nil
+        second.healthKitWorkoutUUID = nil
         return (first, second)
     }
 

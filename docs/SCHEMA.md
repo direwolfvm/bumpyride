@@ -48,6 +48,10 @@ For aggregation on the server side, this distinction mostly doesn't matter: the 
 
 Non-breaking additions (adding a new optional field, adding a new enum case) do NOT bump `schemaVersion`. Consumers should be tolerant of fields they don't recognize.
 
+### Additive fields since v3
+
+- `Ride.healthKitWorkoutUUID` (optional UUID string, iOS v1.5): the local HKWorkout UUID for the ride if it has been exported to Apple Health. Device-local; not meaningful to a server or any other device. Server should store opaquely and round-trip on restore without interpreting.
+
 ## `Ride` object
 
 The top-level object.
@@ -63,8 +67,9 @@ The top-level object.
 | `pocketMode` | boolean | no² | `true` = phone was on the rider's body; `false` = phone was on a fixed bike mount; `null`/missing = mode not determined (legacy or undecided). Set at save time by `MountStyleDetector`, user-overridable. See the "Versioning" section for what this affects in `accelWindow` and `bumpiness`. |
 | `brakeEvents` | array of `BrakeEvent` | no³ | Sparse list of hard-braking events detected post-hoc on this ride. Added in v3. `null`/missing = detection hasn't run yet (legacy rides queued for auto-reprocessing); `[]` = ran and found nothing. |
 | `closeCallEvents` | array of `CloseCall` | no⁵ | Sparse list of user-reported close calls captured by tapping the "Log close call" button during recording. Added in v3. `null`/missing = ride predates the feature (no backfill possible); `[]` = feature available but nothing logged. |
+| `healthKitWorkoutUUID` | UUID string | no⁶ | Added in iOS v1.5. **Device-local**: the UUID of the `HKWorkout` we wrote to Apple Health on the iOS device that exported this ride. Only meaningful to the HealthKit store on that specific device; a server or a different device should treat it as opaque (round-trip it on storage but do not interpret). Used by the iOS app as a fast-path hint for the "✓ In Apple Health" badge; ground truth is always re-checked via `HKMetadataKeyExternalUUID == Ride.id` on the local HealthKit store. |
 
-¹ Default: `1` for records lacking the field. ² Default: `null` (unknown). ³ Default: `null` (not detected). ⁵ Default: `null` (predates feature).
+¹ Default: `1` for records lacking the field. ² Default: `null` (unknown). ³ Default: `null` (not detected). ⁵ Default: `null` (predates feature). ⁶ Default: `null` (not exported on this device).
 
 ### Derived values (NOT in the wire format)
 
