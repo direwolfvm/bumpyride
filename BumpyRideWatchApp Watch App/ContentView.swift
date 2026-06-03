@@ -1,15 +1,25 @@
 import SwiftUI
+import WatchKit
 
-/// **Phase B placeholder.**  Shows the WatchConnectivity session state
-/// and whether the iPhone is reachable, with a small bike-icon header.
-/// No interactive controls yet — Phases D-G build the close-call
-/// button, pause/resume/stop, and the stats carousel.
-///
-/// The status indicator gives the user immediate feedback that the
-/// watch app and iPhone app are talking.  During development we'll
-/// rely on this to verify the pairing.
+/// Phase E placeholder UI.  Now contains all four major affordances —
+/// connectivity indicator (Phase B), Pause/Stop controls (Phase D),
+/// close-call button (Phase E), and the diagnostic snapshot row (Phase
+/// C) — laid out as a vertically scrolling stack.  Phase G replaces
+/// this with a proper paged TabView where the close-call button is
+/// the default page front-and-center.
 struct ContentView: View {
     @Bindable var session: WatchSessionManager
+
+    /// Brief "Logged ✓" confirmation flag for the close-call button.
+    /// Set true on tap, auto-reset to false after `closeCallFeedbackSeconds`
+    /// so the user has visual confirmation that their tap registered
+    /// without having to read the (potentially lagging) snapshot.
+    @State private var closeCallFlash: Bool = false
+
+    /// Seconds the close-call button shows its "Logged ✓" state.
+    /// Doubles as a debounce — the button is disabled during this
+    /// window so a frantic double-tap doesn't queue two events.
+    private static let closeCallFeedbackSeconds: TimeInterval = 2.0
 
     var body: some View {
         VStack(spacing: 10) {
@@ -34,6 +44,14 @@ struct ContentView: View {
                 pingRow
                     .font(.caption2)
 
+                // Phase E close-call button.  The safety affordance —
+                // big tap target, haptic on confirm, visible only when
+                // the iPhone is recording so it's only there when it
+                // can actually do something useful.  In Phase G this
+                // moves to the default page of the paged TabView and
+                // dominates the screen.
+                closeCallButton
+
                 // Phase D control row.  Visible only when the iPhone
                 // says it's mid-ride; gives the watch user a way to
                 // pause/resume/stop without picking up the phone.
@@ -46,6 +64,56 @@ struct ContentView: View {
         }
         .padding(.horizontal, 6)
         .multilineTextAlignment(.center)
+    }
+
+    /// Phase E close-call button.  Visible only while the iPhone is
+    /// actively recording — surfacing it during `.paused` or
+    /// `.idle`/`.finished` would invite taps that no-op on the iOS
+    /// side (the recorder's `canLogCloseCall` gates on `.recording`).
+    ///
+    /// On tap:
+    ///   1. Send `.closeCall` via `session.send` (sendMessage when
+    ///      reachable, transferUserInfo fallback for offline-replay).
+    ///   2. Fire `.success` haptic on the watch so the rider knows the
+    ///      tap registered without looking down at the screen.
+    ///   3. Flash a green "Logged ✓" state for `closeCallFeedbackSeconds`,
+    ///      doubling as a debounce so a frantic double-tap doesn't
+    ///      queue two events.
+    ///
+    /// Per the v1.6 spec the close-call affordance NEVER silently
+    /// fails — the haptic fires unconditionally on tap so the rider
+    /// gets confirmation even if the WCSession transport happens to
+    /// be queueing for offline replay at that moment.
+    @ViewBuilder
+    private var closeCallButton: some View {
+        let s = session.lastSnapshot
+        if s.state == .recording {
+            Button {
+                tapCloseCall()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: closeCallFlash ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .font(.title3)
+                    Text(closeCallFlash ? "Logged" : "Close call")
+                        .font(.callout.weight(.semibold))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(closeCallFlash ? .green : .purple)
+            .disabled(closeCallFlash)
+        }
+    }
+
+    private func tapCloseCall() {
+        session.send(.closeCall)
+        WKInterfaceDevice.current().play(.success)
+        closeCallFlash = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(Self.closeCallFeedbackSeconds * 1_000_000_000))
+            closeCallFlash = false
+        }
     }
 
     /// Phase D control surface.  Rendered when the iPhone snapshot

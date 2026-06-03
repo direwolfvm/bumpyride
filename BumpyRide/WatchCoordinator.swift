@@ -243,8 +243,15 @@ final class WatchCoordinator: NSObject {
             _ = autoSave
             _ = recorder.stop()
         case .closeCall:
-            // Phase E will fill this in.
-            break
+            // Log at the iPhone's current GPS location.  The recorder
+            // no-ops if it's not in .recording state — covers the
+            // narrow window where the watch's snapshot lags reality
+            // (or a queued offline-replay command arrives after the
+            // ride has ended).  Discarded close-calls aren't surfaced
+            // back to the watch; per the v1.6 spec we accept the rare
+            // edge case where a tap doesn't land rather than logging
+            // to an unrelated ride.
+            _ = recorder.logCloseCall()
         }
         // Fast-path snapshot push so the watch UI reflects the new
         // state immediately, not after the next 1 Hz tick.  Safe to
