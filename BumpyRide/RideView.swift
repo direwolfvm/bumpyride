@@ -628,7 +628,20 @@ struct RideView: View {
         let locationOK = status == .authorizedAlways
             || status == .authorizedWhenInUse
             || status == .notDetermined
+        #if targetEnvironment(simulator)
+        // The iOS Simulator has no accelerometer, so
+        // CMMotionManager.isDeviceMotionAvailable is permanently false
+        // there.  Bypass the motion gate in simulator builds so we can
+        // exercise downstream paths (watch sync, save flow, sync queue,
+        // brake detector) without a physical device.  MotionManager's
+        // own start() no-ops when the sensor isn't available, so a
+        // simulator "ride" produces bumpiness=0 throughout — still
+        // useful for testing every code path that depends on a ride
+        // being in flight.  No-op on a physical iPhone.
+        return locationOK
+        #else
         return locationOK && recorder.motion.isAvailable
+        #endif
     }
 
     /// Live-recording control surface.  Three layouts, one per recorder state:
