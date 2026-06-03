@@ -74,6 +74,17 @@ final class WatchCoordinator: NSObject {
     /// observation, not the coordinator.
     @ObservationIgnored private let recorder: RideRecorder
 
+    /// Persistence destination for Phase F auto-save (watch's Stop
+    /// button with confirmation).  Same RideStore instance the rest
+    /// of the app uses, so the saved ride flows through onRideSaved,
+    /// the sync queue, calibration recompute, etc.
+    @ObservationIgnored private let store: RideStore
+
+    /// App-level state owner.  After a watch-initiated auto-save we
+    /// set `loadedRide` so the user sees the just-saved ride in
+    /// playback the next time they open the iPhone app.
+    @ObservationIgnored private let appState: AppState
+
     /// 1 Hz snapshot-emission task.  Runs for the lifetime of this
     /// coordinator (which is the app lifetime via `ContentView`'s
     /// `@State` ownership), self-gating on `sessionState` so it
@@ -88,8 +99,10 @@ final class WatchCoordinator: NSObject {
     /// framework dispatch when nothing has changed.
     @ObservationIgnored private var lastSentSnapshot: WatchSnapshot?
 
-    init(recorder: RideRecorder) {
+    init(recorder: RideRecorder, store: RideStore, appState: AppState) {
         self.recorder = recorder
+        self.store = store
+        self.appState = appState
         #if canImport(WatchConnectivity)
         if WCSession.isSupported() {
             self.session = WCSession.default
@@ -142,6 +155,49 @@ final class WatchCoordinator: NSObject {
             Self.log.error("updateApplicationContext failed: \(String(describing: error), privacy: .public)")
         }
         #endif
+    }
+
+    // MARK: - Watch-initiated auto-save
+
+    /// Finalize a ride started from the iPhone but stopped from the
+    /// watch.  Applies the same post-stop transforms the iPhone's
+    /// save sheet does:
+    ///
+    ///   1. Default title (`"Ride <date>"`).
+    ///   2. Auto-detected pocket mode via `MountStyleDetector`.
+    ///   3. If pocket-tagged, recompute bumpiness via
+    ///      `reprocessedWithPocketHPF()` so the saved values match the
+    ///      mounted-vs-pocket semantic the rest of the app expects.
+    ///   4. Brake detection via `withDetectedBrakeEvents()`.
+    ///   5. Persist via `store.save`, which fans out to onRideSaved
+    ///      → sync queue → calibration recompute → optional Apple
+    ///      Health auto-export.
+    ///   6. Stamp `appState.loadedRide` so the next time the user
+    ///      opens the iPhone app they see the just-saved ride in
+    ///      playback, same as if they'd hit Save on the iPhone's
+    ///      sheet.
+    ///   7. Reset the recorder so a new ride can be started.
+    ///
+    /// Errors during save are not surfaced back to the watch — the
+    /// watch's "Saved" toast is optimistic.  Local writes on disk
+    /// rarely fail; when they do, the user discovers the missing
+    /// ride next time they look at the saved list.  Real
+    /// acknowledgment-driven feedback can be added later if this
+    /// proves problematic in practice.
+    private func autoSaveRide(_ ride: Ride) {
+        var ride = ride
+        ride.title = Ride.defaultTitle(for: ride.startedAt)
+        let detection = MountStyleDetector.analyze(ride)
+        let pocketMode = (detection?.verdict == .likelyPocket)
+        ride.pocketMode = pocketMode
+        if pocketMode {
+            ride = ride.reprocessedWithPocketHPF()
+        }
+        ride = ride.withDetectedBrakeEvents()
+        store.save(ride)
+        appState.loadedRide = ride
+        recorder.reset()
+        Self.log.info("Auto-saved ride \(ride.id, privacy: .public) from watch Stop")
     }
 
     // MARK: - Snapshot stream
@@ -236,12 +292,22 @@ final class WatchCoordinator: NSObject {
         case .resume:
             recorder.resume()
         case .stop(let autoSave):
-            // Phase D: stop the recorder.  Phase F will wire the
-            // autoSave: true path to compute pocket mode + default
-            // title and persist via store.save.  Phase D ignores the
-            // flag — both values currently just stop.
-            _ = autoSave
-            _ = recorder.stop()
+            // recorder.stop() returns the finalized Ride or nil if
+            // there was nothing to save (no points, or already-idle
+            // recorder).  If autoSave is true and we got a Ride, run
+            // the same finalize-and-save pipeline the iPhone's save
+            // sheet does.  If autoSave is false (legacy Phase D
+            // behavior; no longer used by the watch UI), leave the
+            // recorder in .finished for the iPhone's manual save
+            // sheet to pick up.
+            let maybeRide = recorder.stop()
+            if autoSave, let ride = maybeRide {
+                autoSaveRide(ride)
+            } else if maybeRide == nil {
+                // Stop was a no-op (already-idle); make sure the
+                // recorder is in a clean state regardless.
+                recorder.reset()
+            }
         case .closeCall:
             // Log at the iPhone's current GPS location.  The recorder
             // no-ops if it's not in .recording state — covers the

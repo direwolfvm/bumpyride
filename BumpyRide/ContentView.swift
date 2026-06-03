@@ -12,7 +12,7 @@ import SwiftUI
 struct ContentView: View {
     @State private var recorder: RideRecorder
     @State private var settings = AppSettings()
-    @State private var appState = AppState()
+    @State private var appState: AppState
     @State private var bumpMap = BumpMapStore()
     @State private var brakeMap = BrakeMapStore()
     @State private var closeCallMap = CloseCallMapStore()
@@ -104,7 +104,15 @@ struct ContentView: View {
         // with a reference to it.  No semantic change for the rest of
         // the app — recorder behaves the same as before.
         let recorder = RideRecorder()
-        let watchCoordinator = WatchCoordinator(recorder: recorder)
+        // appState is constructed inline on its @State property; we
+        // need an explicit reference for WatchCoordinator init too,
+        // so promote it here.
+        let appState = AppState()
+        let watchCoordinator = WatchCoordinator(
+            recorder: recorder,
+            store: store,
+            appState: appState
+        )
         _cloudStorage = State(initialValue: cloud)
         _store = State(initialValue: store)
         _webAccount = State(initialValue: webAccount)
@@ -117,6 +125,7 @@ struct ContentView: View {
         _healthKitExporter = State(initialValue: healthExporter)
         _recorder = State(initialValue: recorder)
         _watchCoordinator = State(initialValue: watchCoordinator)
+        _appState = State(initialValue: appState)
     }
 
     var body: some View {

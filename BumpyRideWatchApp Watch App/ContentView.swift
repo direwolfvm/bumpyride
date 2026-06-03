@@ -21,6 +21,24 @@ struct ContentView: View {
     /// window so a frantic double-tap doesn't queue two events.
     private static let closeCallFeedbackSeconds: TimeInterval = 2.0
 
+    /// Phase F stop-confirmation alert visibility.  Driven by the Stop
+    /// button's tap; the alert's "Stop and save" button fires the
+    /// actual auto-save command.
+    @State private var showingStopConfirm: Bool = false
+
+    /// Phase F post-save "Saved" toast.  Shown optimistically the
+    /// moment the watch sends `.stop(autoSave: true)` — iOS-side save
+    /// failures aren't acknowledged back, on the assumption that
+    /// local writes rarely fail and the user would notice on the
+    /// phone if they did.  Auto-clears after
+    /// `savedToastSeconds`.
+    @State private var showingSavedToast: Bool = false
+
+    /// Seconds the "Saved" toast remains visible after a watch-
+    /// initiated stop+save.  Short enough to feel snappy, long
+    /// enough to be readable on a glance.
+    private static let savedToastSeconds: TimeInterval = 2.0
+
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: "bicycle")
@@ -64,6 +82,30 @@ struct ContentView: View {
         }
         .padding(.horizontal, 6)
         .multilineTextAlignment(.center)
+        .overlay {
+            if showingSavedToast {
+                savedToast
+                    .transition(.opacity.combined(with: .scale))
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: showingSavedToast)
+    }
+
+    /// Centered green-check "Saved" pill shown briefly after a
+    /// watch-initiated stop+save.  Opaque enough to read against any
+    /// background, sized small so it doesn't fully obscure the
+    /// underlying snapshot during fade-out.
+    private var savedToast: some View {
+        VStack(spacing: 6) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.title2)
+                .foregroundStyle(.green)
+            Text("Saved")
+                .font(.headline)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .background(Color.black.opacity(0.88), in: RoundedRectangle(cornerRadius: 14))
     }
 
     /// Phase E close-call button.  Visible only while the iPhone is
@@ -146,11 +188,11 @@ struct ContentView: View {
                 .tint(s.state == .recording ? .orange : .green)
 
                 Button {
-                    // Phase D: stop without save.  iPhone's existing
-                    // save sheet picks up next time the user opens
-                    // the app.  Phase F switches this to
-                    // .stop(autoSave: true) plus a confirmation alert.
-                    session.send(.stop(autoSave: false))
+                    // Phase F: confirm before stopping so a misclick
+                    // on a bouncy ride doesn't accidentally wrap up
+                    // a recording.  The actual command goes out from
+                    // the alert's confirm action below.
+                    showingStopConfirm = true
                 } label: {
                     Image(systemName: "stop.fill")
                         .font(.body)
@@ -160,6 +202,31 @@ struct ContentView: View {
                 .tint(.red)
             }
             .controlSize(.small)
+            .alert("Stop ride?", isPresented: $showingStopConfirm) {
+                Button("Stop & Save", role: .destructive) {
+                    confirmStopAndSave()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Your ride will be saved on your iPhone with the default title.")
+            }
+        }
+    }
+
+    /// Confirmed stop+save path.  Sends `.stop(autoSave: true)`, which
+    /// the iOS WatchCoordinator routes through the full finalize-and-
+    /// save pipeline (default title, pocket-mode detection, brake
+    /// detection, persist).  Locally displays a green "Saved" toast
+    /// for `savedToastSeconds` — optimistic since local writes rarely
+    /// fail.  The next snapshot iOS pushes will already show `.idle`,
+    /// hiding the controls and close-call button.
+    private func confirmStopAndSave() {
+        session.send(.stop(autoSave: true))
+        WKInterfaceDevice.current().play(.success)
+        showingSavedToast = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(Self.savedToastSeconds * 1_000_000_000))
+            showingSavedToast = false
         }
     }
 
