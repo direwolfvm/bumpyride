@@ -1,12 +1,25 @@
 import SwiftUI
 import WatchKit
 
-/// Phase E placeholder UI.  Now contains all four major affordances —
-/// connectivity indicator (Phase B), Pause/Stop controls (Phase D),
-/// close-call button (Phase E), and the diagnostic snapshot row (Phase
-/// C) — laid out as a vertically scrolling stack.  Phase G replaces
-/// this with a proper paged TabView where the close-call button is
-/// the default page front-and-center.
+/// Phase G UI.  A three-page `TabView` (page style, swipe between)
+/// matching the v1.6 design:
+///
+///   Page 1 — Controls (default).  Close-call button dominates the
+///   screen while recording; Pause/Stop below it.  Adapts to .paused
+///   (Resume/Stop) and .idle/.finished (connectivity / "start from
+///   iPhone" hint).  Default landing page so a wrist-raise after
+///   spotting a hazard surfaces the close-call button immediately.
+///
+///   Page 2 — Time + Distance.  Large monospaced numbers for the
+///   two "where am I in this ride" metrics.
+///
+///   Page 3 — Bumpiness.  Max + average for the "how rough is this
+///   ride" view.
+///
+/// The Phase B/C/D/E ping button and diagnostic snapshot row have
+/// been removed — they were debug affordances explicitly tagged for
+/// Phase G cleanup.  Connectivity state is now folded into the
+/// controls page's idle layout.
 struct ContentView: View {
     @Bindable var session: WatchSessionManager
 
@@ -21,67 +34,26 @@ struct ContentView: View {
     /// window so a frantic double-tap doesn't queue two events.
     private static let closeCallFeedbackSeconds: TimeInterval = 2.0
 
-    /// Phase F stop-confirmation alert visibility.  Driven by the Stop
-    /// button's tap; the alert's "Stop and save" button fires the
-    /// actual auto-save command.
+    /// Phase F stop-confirmation alert visibility.
     @State private var showingStopConfirm: Bool = false
 
-    /// Phase F post-save "Saved" toast.  Shown optimistically the
-    /// moment the watch sends `.stop(autoSave: true)` — iOS-side save
-    /// failures aren't acknowledged back, on the assumption that
-    /// local writes rarely fail and the user would notice on the
-    /// phone if they did.  Auto-clears after
-    /// `savedToastSeconds`.
+    /// Phase F post-save "Saved" toast (overlay across all pages).
     @State private var showingSavedToast: Bool = false
 
     /// Seconds the "Saved" toast remains visible after a watch-
-    /// initiated stop+save.  Short enough to feel snappy, long
-    /// enough to be readable on a glance.
+    /// initiated stop+save.
     private static let savedToastSeconds: TimeInterval = 2.0
 
     var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "bicycle")
-                .font(.title2)
-                .foregroundStyle(.tint)
-            Text("BumpyRide")
-                .font(.headline)
-
-            Divider()
-                .padding(.horizontal, 8)
-
-            connectivityRow
-                .font(.caption2)
-
-            // Phase B verification affordance.  Sends a ping to iOS
-            // and updates `session.pingResult` with the round-trip
-            // outcome — gives the user explicit proof the transport
-            // is working, vs. just trusting `isReachable`.  This row
-            // goes away in Phase G when the real UI lands.
-            if case .activated = session.sessionState {
-                pingRow
-                    .font(.caption2)
-
-                // Phase E close-call button.  The safety affordance —
-                // big tap target, haptic on confirm, visible only when
-                // the iPhone is recording so it's only there when it
-                // can actually do something useful.  In Phase G this
-                // moves to the default page of the paged TabView and
-                // dominates the screen.
-                closeCallButton
-
-                // Phase D control row.  Visible only when the iPhone
-                // says it's mid-ride; gives the watch user a way to
-                // pause/resume/stop without picking up the phone.
-                // Phase F adds the stop confirmation alert + auto-save.
-                controlsRow
-
-                snapshotRow
-                    .font(.caption2)
-            }
+        TabView {
+            controlPage
+                .tag(0)
+            timeDistancePage
+                .tag(1)
+            bumpinessPage
+                .tag(2)
         }
-        .padding(.horizontal, 6)
-        .multilineTextAlignment(.center)
+        .tabViewStyle(.page)
         .overlay {
             if showingSavedToast {
                 savedToast
@@ -91,10 +63,272 @@ struct ContentView: View {
         .animation(.easeOut(duration: 0.18), value: showingSavedToast)
     }
 
+    // MARK: - Page 1: Controls (default)
+
+    @ViewBuilder
+    private var controlPage: some View {
+        let s = session.lastSnapshot
+        VStack(spacing: 8) {
+            // Top status sliver — tiny indicator of what the iPhone is
+            // doing.  Helps the rider confirm at a glance that the
+            // watch is showing fresh state.
+            stateSliver(for: s.state)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            switch s.state {
+            case .recording:
+                closeCallButton
+                Spacer(minLength: 4)
+                pauseStopRow
+            case .paused:
+                pausedIndicator
+                Spacer(minLength: 4)
+                resumeStopRow
+            case .idle, .finished:
+                Spacer(minLength: 4)
+                idleHint
+                Spacer(minLength: 4)
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.bottom, 12)  // Clearance for page dots.
+        .multilineTextAlignment(.center)
+    }
+
+    @ViewBuilder
+    private func stateSliver(for state: WatchSnapshot.RecorderState) -> some View {
+        switch state {
+        case .recording:
+            Label("Recording", systemImage: "record.circle.fill")
+                .foregroundStyle(.red)
+        case .paused:
+            Label("Paused", systemImage: "pause.circle.fill")
+                .foregroundStyle(.orange)
+        case .finished:
+            Label("Finished", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .idle:
+            connectivitySliver
+        }
+    }
+
+    /// Sliver shown when the iPhone is idle — collapses connectivity
+    /// state into a single line so the bulk of the screen is the
+    /// idle hint, not a wall of status text.
+    @ViewBuilder
+    private var connectivitySliver: some View {
+        switch session.sessionState {
+        case .unavailable:
+            Label("Connectivity unavailable", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        case .notActivated, .activating:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("Connecting…")
+            }
+        case .failed:
+            Label("Connection failed", systemImage: "xmark.octagon.fill")
+                .foregroundStyle(.red)
+        case .activated:
+            if session.isReachable {
+                Label("Phone connected", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else {
+                Label("Phone not reachable", systemImage: "iphone.slash")
+            }
+        }
+    }
+
+    /// Idle/finished default hint — encourages starting a ride from
+    /// the iPhone.  Big bike icon + short message.  No buttons because
+    /// starting a ride from the watch isn't supported in v1.6 (would
+    /// require the watch to own GPS / motion, which is a much larger
+    /// feature scoped out per the v1.6 plan).
+    private var idleHint: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "bicycle")
+                .font(.largeTitle)
+                .foregroundStyle(.tint)
+            Text("Start a ride from your iPhone")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Big purple close-call button.  Fills most of the page while
+    /// recording — the safety affordance.  See `tapCloseCall` for
+    /// behavior.
+    @ViewBuilder
+    private var closeCallButton: some View {
+        Button {
+            tapCloseCall()
+        } label: {
+            VStack(spacing: 6) {
+                Image(systemName: closeCallFlash ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 44, weight: .bold))
+                Text(closeCallFlash ? "Logged" : "Close Call")
+                    .font(.headline)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(closeCallFlash ? .green : .purple)
+        .disabled(closeCallFlash)
+    }
+
+    /// Big "Paused" indicator shown when the iPhone is in `.paused`
+    /// state.  Visual signal that the ride is alive but sampling has
+    /// halted; reassures the user that taps below will resume rather
+    /// than start fresh.
+    private var pausedIndicator: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "pause.circle.fill")
+                .font(.system(size: 44, weight: .bold))
+                .foregroundStyle(.orange)
+            Text("Ride Paused")
+                .font(.headline)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Pause + Stop button row, shown while recording.  Pause is left
+    /// (lower stakes — easy to recover from); Stop is right (more
+    /// destructive — gated by confirmation alert).
+    private var pauseStopRow: some View {
+        HStack(spacing: 6) {
+            Button {
+                session.send(.pause)
+            } label: {
+                Image(systemName: "pause.fill")
+                    .font(.body)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .tint(.orange)
+
+            stopButton
+        }
+        .controlSize(.small)
+        .stopConfirmAlert(
+            isPresented: $showingStopConfirm,
+            onConfirm: confirmStopAndSave
+        )
+    }
+
+    /// Resume + Stop button row, shown while paused.  Resume is left
+    /// (returns to recording), Stop is right (same confirm flow as
+    /// from the recording state).
+    private var resumeStopRow: some View {
+        HStack(spacing: 6) {
+            Button {
+                session.send(.resume)
+            } label: {
+                Image(systemName: "play.fill")
+                    .font(.body)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .tint(.green)
+
+            stopButton
+        }
+        .controlSize(.small)
+        .stopConfirmAlert(
+            isPresented: $showingStopConfirm,
+            onConfirm: confirmStopAndSave
+        )
+    }
+
+    /// Stop button — extracted so both pause+stop and resume+stop
+    /// rows share identical visuals and behavior.  Tap triggers the
+    /// confirmation alert via the attached `.stopConfirmAlert`.
+    private var stopButton: some View {
+        Button {
+            showingStopConfirm = true
+        } label: {
+            Image(systemName: "stop.fill")
+                .font(.body)
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .tint(.red)
+    }
+
+    // MARK: - Page 2: Time + Distance
+
+    private var timeDistancePage: some View {
+        let s = session.lastSnapshot
+        let active = s.state != .idle
+        return statsPageScaffold(title: "Ride Stats") {
+            statRow(
+                label: "Elapsed",
+                value: active ? Self.formatElapsed(s.elapsedSeconds) : "—"
+            )
+            statRow(
+                label: "Distance",
+                value: active ? Self.formatDistance(s.distanceMeters) : "—"
+            )
+        }
+    }
+
+    // MARK: - Page 3: Bumpiness
+
+    private var bumpinessPage: some View {
+        let s = session.lastSnapshot
+        let active = s.state != .idle
+        return statsPageScaffold(title: "Bumpiness") {
+            statRow(
+                label: "Max",
+                value: active ? String(format: "%.2f g", s.maxBumpiness) : "—"
+            )
+            statRow(
+                label: "Avg",
+                value: active ? String(format: "%.2f g", s.averageBumpiness) : "—"
+            )
+        }
+    }
+
+    /// Shared layout chrome for stats pages.  Title at top in caption
+    /// style; content vertically centered.
+    private func statsPageScaffold<Content: View>(
+        title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(spacing: 12) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            VStack(spacing: 14) {
+                content()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .padding(.horizontal, 8)
+        .padding(.bottom, 12)  // Page dots clearance.
+    }
+
+    /// One stat — small label above, big monospaced value below.
+    /// Stacked vertically so it reads as a single labeled number
+    /// even at a glance.
+    private func statRow(label: String, value: String) -> some View {
+        VStack(spacing: 2) {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(.title2, design: .rounded).monospacedDigit().weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+        }
+    }
+
+    // MARK: - Saved toast (overlay)
+
     /// Centered green-check "Saved" pill shown briefly after a
-    /// watch-initiated stop+save.  Opaque enough to read against any
-    /// background, sized small so it doesn't fully obscure the
-    /// underlying snapshot during fade-out.
+    /// watch-initiated stop+save.  Renders as an overlay across all
+    /// pages so the user sees it regardless of which one they're on
+    /// when they tap Stop & Save.
     private var savedToast: some View {
         VStack(spacing: 6) {
             Image(systemName: "checkmark.circle.fill")
@@ -108,45 +342,7 @@ struct ContentView: View {
         .background(Color.black.opacity(0.88), in: RoundedRectangle(cornerRadius: 14))
     }
 
-    /// Phase E close-call button.  Visible only while the iPhone is
-    /// actively recording — surfacing it during `.paused` or
-    /// `.idle`/`.finished` would invite taps that no-op on the iOS
-    /// side (the recorder's `canLogCloseCall` gates on `.recording`).
-    ///
-    /// On tap:
-    ///   1. Send `.closeCall` via `session.send` (sendMessage when
-    ///      reachable, transferUserInfo fallback for offline-replay).
-    ///   2. Fire `.success` haptic on the watch so the rider knows the
-    ///      tap registered without looking down at the screen.
-    ///   3. Flash a green "Logged ✓" state for `closeCallFeedbackSeconds`,
-    ///      doubling as a debounce so a frantic double-tap doesn't
-    ///      queue two events.
-    ///
-    /// Per the v1.6 spec the close-call affordance NEVER silently
-    /// fails — the haptic fires unconditionally on tap so the rider
-    /// gets confirmation even if the WCSession transport happens to
-    /// be queueing for offline replay at that moment.
-    @ViewBuilder
-    private var closeCallButton: some View {
-        let s = session.lastSnapshot
-        if s.state == .recording {
-            Button {
-                tapCloseCall()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: closeCallFlash ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .font(.title3)
-                    Text(closeCallFlash ? "Logged" : "Close call")
-                        .font(.callout.weight(.semibold))
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(closeCallFlash ? .green : .purple)
-            .disabled(closeCallFlash)
-        }
-    }
+    // MARK: - Actions
 
     private func tapCloseCall() {
         session.send(.closeCall)
@@ -158,68 +354,6 @@ struct ContentView: View {
         }
     }
 
-    /// Phase D control surface.  Rendered when the iPhone snapshot
-    /// reports `.recording` or `.paused`.  Pause/Resume swap based on
-    /// state; Stop is always available (and currently fires-and-forgets
-    /// — Phase F adds confirmation + auto-save).
-    ///
-    /// Buttons send via `session.send(_:)`, which uses sendMessage
-    /// when reachable and transferUserInfo as a queued fallback.  No
-    /// optimistic local state — the next snapshot push from iOS (the
-    /// Phase C fast-path triggered by handle(command:)) updates the
-    /// UI within tens of ms.
-    @ViewBuilder
-    private var controlsRow: some View {
-        let s = session.lastSnapshot
-        if s.state == .recording || s.state == .paused {
-            HStack(spacing: 6) {
-                Button {
-                    if s.state == .recording {
-                        session.send(.pause)
-                    } else {
-                        session.send(.resume)
-                    }
-                } label: {
-                    Image(systemName: s.state == .recording ? "pause.fill" : "play.fill")
-                        .font(.body)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .tint(s.state == .recording ? .orange : .green)
-
-                Button {
-                    // Phase F: confirm before stopping so a misclick
-                    // on a bouncy ride doesn't accidentally wrap up
-                    // a recording.  The actual command goes out from
-                    // the alert's confirm action below.
-                    showingStopConfirm = true
-                } label: {
-                    Image(systemName: "stop.fill")
-                        .font(.body)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-            }
-            .controlSize(.small)
-            .alert("Stop ride?", isPresented: $showingStopConfirm) {
-                Button("Stop & Save", role: .destructive) {
-                    confirmStopAndSave()
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Your ride will be saved on your iPhone with the default title.")
-            }
-        }
-    }
-
-    /// Confirmed stop+save path.  Sends `.stop(autoSave: true)`, which
-    /// the iOS WatchCoordinator routes through the full finalize-and-
-    /// save pipeline (default title, pocket-mode detection, brake
-    /// detection, persist).  Locally displays a green "Saved" toast
-    /// for `savedToastSeconds` — optimistic since local writes rarely
-    /// fail.  The next snapshot iOS pushes will already show `.idle`,
-    /// hiding the controls and close-call button.
     private func confirmStopAndSave() {
         session.send(.stop(autoSave: true))
         WKInterfaceDevice.current().play(.success)
@@ -230,99 +364,7 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder
-    private var pingRow: some View {
-        Button {
-            session.ping()
-        } label: {
-            HStack(spacing: 4) {
-                switch session.pingResult {
-                case .none:
-                    Image(systemName: "antenna.radiowaves.left.and.right")
-                    Text("Ping iPhone")
-                case .pending:
-                    ProgressView().controlSize(.mini)
-                    Text("Pinging…")
-                case .success:
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text("Round-trip OK")
-                case .failure(let message):
-                    Image(systemName: "xmark.octagon.fill")
-                        .foregroundStyle(.red)
-                    Text(message)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-            }
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.mini)
-    }
-
-    @ViewBuilder
-    private var connectivityRow: some View {
-        switch session.sessionState {
-        case .unavailable:
-            Label("Watch connectivity unavailable", systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-        case .notActivated, .activating:
-            HStack(spacing: 4) {
-                ProgressView().controlSize(.mini)
-                Text("Connecting…")
-            }
-            .foregroundStyle(.secondary)
-        case .failed(let message):
-            VStack(spacing: 2) {
-                Label("Connection failed", systemImage: "xmark.octagon.fill")
-                    .foregroundStyle(.red)
-                Text(message)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-        case .activated:
-            if session.isReachable {
-                Label("Phone connected", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-            } else {
-                Label("Phone not reachable", systemImage: "iphone.slash")
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    /// Phase C diagnostic.  Shows the latest snapshot iOS has pushed —
-    /// state, elapsed time, distance, and bumpiness stats.  Replaced
-    /// in Phase G by the real paged TabView UI.  Only renders when the
-    /// session is `.activated` (gated above) so we don't show stale
-    /// `.idle` numbers before iOS has had a chance to push.
-    @ViewBuilder
-    private var snapshotRow: some View {
-        let s = session.lastSnapshot
-        Divider().padding(.horizontal, 8)
-        VStack(alignment: .leading, spacing: 2) {
-            statLine(label: "State", value: s.state.rawValue.capitalized)
-            if s.state != .idle {
-                statLine(label: "Elapsed", value: Self.formatElapsed(s.elapsedSeconds))
-                statLine(label: "Distance", value: Self.formatDistance(s.distanceMeters))
-                statLine(label: "Max", value: String(format: "%.2f g", s.maxBumpiness))
-                statLine(label: "Avg", value: String(format: "%.2f g", s.averageBumpiness))
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 4)
-    }
-
-    private func statLine(label: String, value: String) -> some View {
-        HStack {
-            Text(label)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-                .monospacedDigit()
-        }
-    }
+    // MARK: - Formatters
 
     private static func formatElapsed(_ seconds: TimeInterval) -> String {
         let total = Int(seconds.rounded(.down))
@@ -338,11 +380,29 @@ struct ContentView: View {
     private static func formatDistance(_ meters: Double) -> String {
         let miles = meters / 1609.344
         if miles < 0.1 {
-            // Feet for very short distances — matches iOS Formatters.distance.
             let feet = meters * 3.28084
             return String(format: "%.0f ft", feet)
         }
         return String(format: "%.2f mi", miles)
+    }
+}
+
+/// Stop-confirmation alert as a reusable view modifier so both the
+/// `.recording` and `.paused` control rows can attach identical
+/// confirm UX without duplicating the buttons + message.
+private extension View {
+    func stopConfirmAlert(
+        isPresented: Binding<Bool>,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        alert("Stop ride?", isPresented: isPresented) {
+            Button("Stop & Save", role: .destructive) {
+                onConfirm()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your ride will be saved on your iPhone with the default title.")
+        }
     }
 }
 
