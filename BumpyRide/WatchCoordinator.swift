@@ -219,11 +219,38 @@ final class WatchCoordinator: NSObject {
         )
     }
 
-    /// **Phase D will fill this in.**  Routes a command received from
-    /// the watch into `RideRecorder` (pause/resume/stop/closeCall).
-    /// Phase A: no-op.
+    /// Dispatch a command received from the watch into the recorder.
+    /// Pushes a fresh snapshot immediately afterward so the watch UI
+    /// reflects the new state within ~tens of ms rather than waiting
+    /// for the next 1 Hz tick.
+    ///
+    /// `.ping` is intentionally a no-op here — the reply variant in
+    /// `didReceiveMessage(_:replyHandler:)` handles it synchronously
+    /// without ever routing through `handle(command:)`.
     fileprivate func handle(command: WatchCommand) {
-        // Stub — implemented in Phase D.
+        switch command {
+        case .ping:
+            break  // Reply handler already responded.
+        case .pause:
+            recorder.pause()
+        case .resume:
+            recorder.resume()
+        case .stop(let autoSave):
+            // Phase D: stop the recorder.  Phase F will wire the
+            // autoSave: true path to compute pocket mode + default
+            // title and persist via store.save.  Phase D ignores the
+            // flag — both values currently just stop.
+            _ = autoSave
+            _ = recorder.stop()
+        case .closeCall:
+            // Phase E will fill this in.
+            break
+        }
+        // Fast-path snapshot push so the watch UI reflects the new
+        // state immediately, not after the next 1 Hz tick.  Safe to
+        // call even when not yet activated — sendSnapshot guards on
+        // sessionState.
+        sendSnapshot(currentSnapshot())
     }
 }
 

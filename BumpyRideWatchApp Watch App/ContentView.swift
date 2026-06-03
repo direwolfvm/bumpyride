@@ -34,12 +34,65 @@ struct ContentView: View {
                 pingRow
                     .font(.caption2)
 
+                // Phase D control row.  Visible only when the iPhone
+                // says it's mid-ride; gives the watch user a way to
+                // pause/resume/stop without picking up the phone.
+                // Phase F adds the stop confirmation alert + auto-save.
+                controlsRow
+
                 snapshotRow
                     .font(.caption2)
             }
         }
         .padding(.horizontal, 6)
         .multilineTextAlignment(.center)
+    }
+
+    /// Phase D control surface.  Rendered when the iPhone snapshot
+    /// reports `.recording` or `.paused`.  Pause/Resume swap based on
+    /// state; Stop is always available (and currently fires-and-forgets
+    /// — Phase F adds confirmation + auto-save).
+    ///
+    /// Buttons send via `session.send(_:)`, which uses sendMessage
+    /// when reachable and transferUserInfo as a queued fallback.  No
+    /// optimistic local state — the next snapshot push from iOS (the
+    /// Phase C fast-path triggered by handle(command:)) updates the
+    /// UI within tens of ms.
+    @ViewBuilder
+    private var controlsRow: some View {
+        let s = session.lastSnapshot
+        if s.state == .recording || s.state == .paused {
+            HStack(spacing: 6) {
+                Button {
+                    if s.state == .recording {
+                        session.send(.pause)
+                    } else {
+                        session.send(.resume)
+                    }
+                } label: {
+                    Image(systemName: s.state == .recording ? "pause.fill" : "play.fill")
+                        .font(.body)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(s.state == .recording ? .orange : .green)
+
+                Button {
+                    // Phase D: stop without save.  iPhone's existing
+                    // save sheet picks up next time the user opens
+                    // the app.  Phase F switches this to
+                    // .stop(autoSave: true) plus a confirmation alert.
+                    session.send(.stop(autoSave: false))
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.body)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+            }
+            .controlSize(.small)
+        }
     }
 
     @ViewBuilder
