@@ -140,20 +140,50 @@ struct ContentView: View {
         }
     }
 
-    /// Idle/finished default hint — encourages starting a ride from
-    /// the iPhone.  Big bike icon + short message.  No buttons because
-    /// starting a ride from the watch isn't supported in v1.6 (would
-    /// require the watch to own GPS / motion, which is a much larger
-    /// feature scoped out per the v1.6 plan).
+    /// Idle/finished default content — big bike icon plus either a
+    /// Start Ride button (when the iPhone app is reachable) or a
+    /// "start from iPhone" hint (when it isn't).
+    ///
+    /// Why gate Start on `isReachable`: WatchCommand normally falls
+    /// back to `transferUserInfo` for queued delivery when iOS is
+    /// unreachable, which is great for `.closeCall` (the safety
+    /// affordance never silently fails) but wrong for `.start`.  We
+    /// don't want a Start tap to queue and then trigger a recording
+    /// hours later when the user is no longer on the bike.  When
+    /// the iPhone is out of range, the hint falls back to the
+    /// always-works path (user reaches into pocket, taps Start on
+    /// the iPhone directly).
+    @ViewBuilder
     private var idleHint: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             Image(systemName: "bicycle")
                 .font(.largeTitle)
                 .foregroundStyle(.tint)
-            Text("Start a ride from your iPhone")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            if session.isReachable {
+                Button {
+                    tapStart()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "play.fill")
+                        Text("Start Ride")
+                            .font(.callout.weight(.semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+            } else {
+                Text("Start a ride from your iPhone")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
         }
+    }
+
+    private func tapStart() {
+        session.send(.start)
+        WKInterfaceDevice.current().play(.start)
     }
 
     /// Big purple close-call button.  Fills most of the page while

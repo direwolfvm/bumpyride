@@ -287,6 +287,14 @@ final class WatchCoordinator: NSObject {
         switch command {
         case .ping:
             break  // Reply handler already responded.
+        case .start:
+            // RideRecorder.start() guards on .idle/.finished — racy
+            // duplicate Starts are safely no-ops.  Permissions are
+            // assumed to be already granted; if not, motion.start()
+            // and location.startUpdating() will silently no-op the
+            // same way they would for a Start tapped on the iPhone
+            // before granting auth.
+            recorder.start()
         case .pause:
             recorder.pause()
         case .resume:

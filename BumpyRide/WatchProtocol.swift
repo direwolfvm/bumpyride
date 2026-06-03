@@ -89,6 +89,14 @@ nonisolated enum WatchCommand: Codable, Equatable, Sendable {
     /// reachable.  Used by the watch's session manager to drive the
     /// "Phone connected ✓ / ✗" status.
     case ping
+    /// User-tapped "Start Ride" on the watch.  iOS calls
+    /// `RideRecorder.start()` which guards on `.idle`/`.finished`,
+    /// so duplicate / racy starts are safely no-ops on the iOS side.
+    /// The watch UI only sends this command when iOS is reachable
+    /// (see the gate in `idleHint`) — we don't want a queued Start
+    /// arriving hours after the user tapped, when they're no longer
+    /// on the bike.
+    case start
     /// User-tapped "Pause" on the watch.
     case pause
     /// User-tapped "Resume" on the watch (from a paused state).
