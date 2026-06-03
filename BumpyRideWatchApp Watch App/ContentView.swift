@@ -80,11 +80,11 @@ struct ContentView: View {
             case .recording:
                 closeCallButton
                 Spacer(minLength: 4)
-                pauseStopRow
+                pauseOnlyRow
             case .paused:
                 pausedIndicator
                 Spacer(minLength: 4)
-                resumeStopRow
+                stopResumeRow
             case .idle, .finished:
                 Spacer(minLength: 4)
                 idleHint
@@ -159,16 +159,23 @@ struct ContentView: View {
     /// Big purple close-call button.  Fills most of the page while
     /// recording — the safety affordance.  See `tapCloseCall` for
     /// behavior.
+    ///
+    /// Label uses `.subheadline` (smaller than the original headline)
+    /// with `minimumScaleFactor(0.7)` so the text shrinks-to-fit
+    /// on small watches rather than wrapping or clipping against
+    /// the button's rounded edges.
     @ViewBuilder
     private var closeCallButton: some View {
         Button {
             tapCloseCall()
         } label: {
-            VStack(spacing: 6) {
+            VStack(spacing: 4) {
                 Image(systemName: closeCallFlash ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                    .font(.system(size: 44, weight: .bold))
+                    .font(.system(size: 38, weight: .bold))
                 Text(closeCallFlash ? "Logged" : "Close Call")
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -192,35 +199,42 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// Pause + Stop button row, shown while recording.  Pause is left
-    /// (lower stakes — easy to recover from); Stop is right (more
-    /// destructive — gated by confirmation alert).
-    private var pauseStopRow: some View {
+    /// Single full-width Pause button shown while recording.
+    /// Deliberately the only control available — to Stop a ride you
+    /// must first Pause it, which forces an explicit two-step
+    /// (Pause → Stop or Pause → Resume).  Makes accidental Stop
+    /// during an active ride much harder; bumpy roads + jersey
+    /// pocket make for plenty of unintended taps.
+    private var pauseOnlyRow: some View {
+        Button {
+            session.send(.pause)
+        } label: {
+            Image(systemName: "pause.fill")
+                .font(.body)
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .tint(.orange)
+        .controlSize(.small)
+    }
+
+    /// Stop + Resume button row, shown while paused.  Stop is left
+    /// (the "I really meant it" second step of the two-tap stop flow,
+    /// gated by confirmation); Resume is right (the recovery action
+    /// when the user paused only to take a break or correct a
+    /// misclick on the previous Pause).
+    private var stopResumeRow: some View {
         HStack(spacing: 6) {
             Button {
-                session.send(.pause)
+                showingStopConfirm = true
             } label: {
-                Image(systemName: "pause.fill")
+                Image(systemName: "stop.fill")
                     .font(.body)
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
-            .tint(.orange)
+            .tint(.red)
 
-            stopButton
-        }
-        .controlSize(.small)
-        .stopConfirmAlert(
-            isPresented: $showingStopConfirm,
-            onConfirm: confirmStopAndSave
-        )
-    }
-
-    /// Resume + Stop button row, shown while paused.  Resume is left
-    /// (returns to recording), Stop is right (same confirm flow as
-    /// from the recording state).
-    private var resumeStopRow: some View {
-        HStack(spacing: 6) {
             Button {
                 session.send(.resume)
             } label: {
@@ -230,29 +244,12 @@ struct ContentView: View {
             }
             .buttonStyle(.bordered)
             .tint(.green)
-
-            stopButton
         }
         .controlSize(.small)
         .stopConfirmAlert(
             isPresented: $showingStopConfirm,
             onConfirm: confirmStopAndSave
         )
-    }
-
-    /// Stop button — extracted so both pause+stop and resume+stop
-    /// rows share identical visuals and behavior.  Tap triggers the
-    /// confirmation alert via the attached `.stopConfirmAlert`.
-    private var stopButton: some View {
-        Button {
-            showingStopConfirm = true
-        } label: {
-            Image(systemName: "stop.fill")
-                .font(.body)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.bordered)
-        .tint(.red)
     }
 
     // MARK: - Page 2: Time + Distance
