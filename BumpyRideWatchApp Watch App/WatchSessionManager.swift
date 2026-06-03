@@ -222,19 +222,12 @@ extension WatchSessionManager: WCSessionDelegate {
         }
     }
 
-    // The Swift binding of WCSessionDelegate requires these even
-    // though the conceptual lifecycle is iOS-only (the watch app
-    // doesn't deactivate the same way; it's launched while paired and
-    // exits when the user closes it).  Empty stubs keep the conformance
-    // satisfied; the framework won't actually call them on watchOS in
-    // any meaningful state we care about.
-    nonisolated func sessionDidBecomeInactive(_ session: WCSession) {
-        Self.log.notice("WCSession became inactive (watchOS — not expected to occur)")
-    }
-
-    nonisolated func sessionDidDeactivate(_ session: WCSession) {
-        Self.log.notice("WCSession deactivated (watchOS — not expected to occur)")
-    }
+    // Note: WCSessionDelegate's `sessionDidBecomeInactive` and
+    // `sessionDidDeactivate` are explicitly marked
+    // `@available(watchOS, unavailable)` in the framework headers —
+    // those concepts only apply on iOS where the user can re-pair
+    // their phone with a different watch.  We must NOT declare them
+    // here on watchOS; the iOS `WatchCoordinator` is where they live.
 
     // Phase C will populate this with snapshot decoding and
     // `lastSnapshot` updates.  Phase B: log and drop.
