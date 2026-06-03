@@ -160,24 +160,34 @@ struct ContentView: View {
     /// recording — the safety affordance.  See `tapCloseCall` for
     /// behavior.
     ///
-    /// Label uses `.subheadline` (smaller than the original headline)
-    /// with `minimumScaleFactor(0.7)` so the text shrinks-to-fit
-    /// on small watches rather than wrapping or clipping against
-    /// the button's rounded edges.
+    /// Sizing notes after on-device testing:
+    ///
+    ///   - Don't pin the label to `.frame(maxHeight: .infinity)`.
+    ///     borderedProminent clips its content area, and a too-tall
+    ///     icon+text VStack will lose descenders.  Let the button
+    ///     size to (content + padding) instead.
+    ///
+    ///   - Icon at 28pt, label at caption-size — both shrink-to-fit
+    ///     via `minimumScaleFactor` for the smallest watch sizes.
+    ///
+    /// The whole row stays generous via `maxWidth: .infinity` so the
+    /// tap target is the full button width regardless of label
+    /// shrinking.
     @ViewBuilder
     private var closeCallButton: some View {
         Button {
             tapCloseCall()
         } label: {
-            VStack(spacing: 4) {
+            VStack(spacing: 2) {
                 Image(systemName: closeCallFlash ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                    .font(.system(size: 38, weight: .bold))
+                    .font(.system(size: 28, weight: .bold))
                 Text(closeCallFlash ? "Logged" : "Close Call")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.caption.weight(.semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
         }
         .buttonStyle(.borderedProminent)
         .tint(closeCallFlash ? .green : .purple)
