@@ -11,7 +11,7 @@ import SwiftUI
 /// rebuild.
 struct ContentView: View {
     @State private var recorder: RideRecorder
-    @State private var settings = AppSettings()
+    @State private var settings: AppSettings
     @State private var appState: AppState
     @State private var bumpMap = BumpMapStore()
     @State private var brakeMap = BrakeMapStore()
@@ -55,6 +55,20 @@ struct ContentView: View {
     /// `RideRecorder`.  Phase D will wire incoming commands back into
     /// the recorder via `handle(command:)`.
     @State private var watchCoordinator: WatchCoordinator
+
+    /// v1.7 watch HealthKit handoff coordinator.  Calls
+    /// `HKHealthStore.startWatchApp(toHandle:)` on iPhone-app
+    /// foreground when the user has opted in via Settings.  Gates
+    /// itself on paired watch + HK availability — see its
+    /// `considerLaunchingWatchApp()`.
+    @State private var watchLaunchCoordinator: WatchLaunchCoordinator
+
+    /// Drives the scenePhase → foreground watch-app launch trigger.
+    /// `.onChange(of: scenePhase)` only fires on changes, so we
+    /// also call `considerLaunchingWatchApp()` from the existing
+    /// `.task` block to handle cold-start (when scenePhase is
+    /// already `.active` at first render).
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Last calibration value we successfully PUT to the server.  Used to short-circuit
     /// no-op pushes on triggers like reachability returning while nothing has changed.
@@ -113,6 +127,16 @@ struct ContentView: View {
             store: store,
             appState: appState
         )
+        // Same lift for settings — WatchLaunchCoordinator gates on
+        // `settings.openWatchAppOnLaunch` so it needs a reference,
+        // and the construction order means we have to promote
+        // settings out of inline @State.
+        let settings = AppSettings()
+        let watchLaunchCoordinator = WatchLaunchCoordinator(
+            settings: settings,
+            watchCoordinator: watchCoordinator,
+            healthKitAuth: healthAuth
+        )
         _cloudStorage = State(initialValue: cloud)
         _store = State(initialValue: store)
         _webAccount = State(initialValue: webAccount)
@@ -125,7 +149,9 @@ struct ContentView: View {
         _healthKitExporter = State(initialValue: healthExporter)
         _recorder = State(initialValue: recorder)
         _watchCoordinator = State(initialValue: watchCoordinator)
+        _watchLaunchCoordinator = State(initialValue: watchLaunchCoordinator)
         _appState = State(initialValue: appState)
+        _settings = State(initialValue: settings)
     }
 
     var body: some View {
@@ -215,6 +241,13 @@ struct ContentView: View {
             // `.unavailable` and downstream code (Phase B+) gates on
             // `sessionState`.  Idempotent on repeated invocations.
             watchCoordinator.activate()
+            // v1.7: consider auto-launching the watch app.  All gates
+            // are evaluated inside the coordinator — this is a no-op
+            // for users without the toggle on, without a paired watch,
+            // or without HealthKit auth granted.  The same call is
+            // also made via .onChange(of: scenePhase) below for
+            // re-foregrounding.
+            await watchLaunchCoordinator.considerLaunchingWatchApp()
             // Migrate any rides still sitting in legacy local Documents into
             // iCloud (no-op when iCloud is unavailable, or when there's
             // nothing local to migrate).  Runs before the store's initial
@@ -380,6 +413,16 @@ struct ContentView: View {
             // Every meaningful local change triggers a push.  Idempotent on the server
             // and short-circuited locally if the value matches our last successful PUT.
             Task { await pushCalibrationIfChanged() }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            // v1.7: re-foregrounding triggers another considerLaunchingWatchApp pass.
+            // SwiftUI's .onChange doesn't fire on the initial value, so cold-start
+            // is covered by the same call in the existing .task block above.  Both
+            // paths route through the same idempotent coordinator method.
+            guard newPhase == .active else { return }
+            Task { @MainActor in
+                await watchLaunchCoordinator.considerLaunchingWatchApp()
+            }
         }
     }
 
