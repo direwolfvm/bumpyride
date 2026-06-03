@@ -69,7 +69,27 @@ final class WatchCoordinator: NSObject {
     private let session: WCSession?
     #endif
 
-    override init() {
+    /// Source of the data we push to the watch.  Held weakly via
+    /// `@ObservationIgnored` since we want the recorder to drive
+    /// observation, not the coordinator.
+    @ObservationIgnored private let recorder: RideRecorder
+
+    /// 1 Hz snapshot-emission task.  Runs for the lifetime of this
+    /// coordinator (which is the app lifetime via `ContentView`'s
+    /// `@State` ownership), self-gating on `sessionState` so it
+    /// produces no network activity until the session is `.activated`.
+    /// `[weak self]` capture means the task exits naturally on
+    /// deinit; no explicit cancellation needed.
+    @ObservationIgnored private var snapshotTask: Task<Void, Never>?
+
+    /// Most recently transmitted snapshot.  Used to dedupe sends —
+    /// `updateApplicationContext` will coalesce duplicate payloads
+    /// anyway, but skipping the call avoids the JSON encode and
+    /// framework dispatch when nothing has changed.
+    @ObservationIgnored private var lastSentSnapshot: WatchSnapshot?
+
+    init(recorder: RideRecorder) {
+        self.recorder = recorder
         #if canImport(WatchConnectivity)
         if WCSession.isSupported() {
             self.session = WCSession.default
@@ -82,6 +102,7 @@ final class WatchCoordinator: NSObject {
         self.sessionState = .unavailable
         #endif
         super.init()
+        startSnapshotStream()
     }
 
     /// Begin session activation.  Idempotent — calling repeatedly while
@@ -106,11 +127,96 @@ final class WatchCoordinator: NSObject {
         #endif
     }
 
-    /// **Phase B will fill this in.**  Pushes the snapshot to the watch
-    /// via `updateApplicationContext` (replaceable, queued, survives
-    /// backgrounding).  Phase A: no-op.
+    /// Push a snapshot to the watch via `updateApplicationContext`.
+    /// Idempotent and cheap to call repeatedly — the framework
+    /// coalesces replaceable updates.  Errors are logged; the
+    /// next tick will retry with a fresh snapshot.
     func sendSnapshot(_ snapshot: WatchSnapshot) {
-        // Stub — implemented in Phase B.
+        #if canImport(WatchConnectivity)
+        guard let session, case .activated = sessionState else { return }
+        do {
+            let payload = try WatchPayload.encode(snapshot)
+            try session.updateApplicationContext(payload)
+            lastSentSnapshot = snapshot
+        } catch {
+            Self.log.error("updateApplicationContext failed: \(String(describing: error), privacy: .public)")
+        }
+        #endif
+    }
+
+    // MARK: - Snapshot stream
+
+    /// Start the 1 Hz polling loop that builds a `WatchSnapshot` from
+    /// the recorder's current state and pushes it to the watch.
+    /// Idempotent — restarts the task if already running, so callers
+    /// can invoke after activation state changes without worrying
+    /// about double-running.
+    ///
+    /// Why poll vs. observe?  RideRecorder's stats fields are
+    /// `@Observable` and would let us push on every change — but that
+    /// would fire 50+ times per second when motion samples land,
+    /// which is wasteful for a UI that displays only at 1 Hz anyway.
+    /// Polling at 1 Hz with dedup gives identical user-visible
+    /// behavior at a fraction of the wakeups.
+    private func startSnapshotStream() {
+        snapshotTask?.cancel()
+        snapshotTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let snapshot = self.currentSnapshot()
+                if snapshot != self.lastSentSnapshot {
+                    self.sendSnapshot(snapshot)
+                }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+    }
+
+    /// Build a snapshot from the recorder's current state.  Pure read;
+    /// safe to call any time.  Average bumpiness is O(N) over the
+    /// points buffer; at typical ride lengths (a few thousand points
+    /// max) this is single-digit microseconds.
+    private func currentSnapshot() -> WatchSnapshot {
+        let state: WatchSnapshot.RecorderState
+        switch recorder.state {
+        case .idle: state = .idle
+        case .recording: state = .recording
+        case .paused: state = .paused
+        case .finished: state = .finished
+        }
+
+        // Elapsed time: clamped to (endedAt - startedAt) once the ride
+        // finishes, otherwise live ticks at wall-clock rate.  We don't
+        // try to deduct paused intervals here — the watch UI shows
+        // `.paused` as a distinct state, so users can disambiguate.
+        let elapsed: TimeInterval
+        if let started = recorder.startedAt {
+            if let ended = recorder.endedAt {
+                elapsed = ended.timeIntervalSince(started)
+            } else {
+                elapsed = Date().timeIntervalSince(started)
+            }
+        } else {
+            elapsed = 0
+        }
+
+        let avg: Double
+        if recorder.points.isEmpty {
+            avg = 0
+        } else {
+            let sum = recorder.points.reduce(0.0) { $0 + $1.bumpiness }
+            avg = sum / Double(recorder.points.count)
+        }
+
+        return WatchSnapshot(
+            state: state,
+            elapsedSeconds: elapsed,
+            distanceMeters: recorder.totalDistanceMeters,
+            currentBumpiness: recorder.currentBumpiness,
+            maxBumpiness: recorder.maxRecordedBumpiness,
+            averageBumpiness: avg,
+            pendingSaveAcknowledged: false
+        )
     }
 
     /// **Phase D will fill this in.**  Routes a command received from

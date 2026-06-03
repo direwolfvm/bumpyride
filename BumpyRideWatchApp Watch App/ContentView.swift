@@ -33,6 +33,9 @@ struct ContentView: View {
             if case .activated = session.sessionState {
                 pingRow
                     .font(.caption2)
+
+                snapshotRow
+                    .font(.caption2)
             }
         }
         .padding(.horizontal, 6)
@@ -99,6 +102,59 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// Phase C diagnostic.  Shows the latest snapshot iOS has pushed —
+    /// state, elapsed time, distance, and bumpiness stats.  Replaced
+    /// in Phase G by the real paged TabView UI.  Only renders when the
+    /// session is `.activated` (gated above) so we don't show stale
+    /// `.idle` numbers before iOS has had a chance to push.
+    @ViewBuilder
+    private var snapshotRow: some View {
+        let s = session.lastSnapshot
+        Divider().padding(.horizontal, 8)
+        VStack(alignment: .leading, spacing: 2) {
+            statLine(label: "State", value: s.state.rawValue.capitalized)
+            if s.state != .idle {
+                statLine(label: "Elapsed", value: Self.formatElapsed(s.elapsedSeconds))
+                statLine(label: "Distance", value: Self.formatDistance(s.distanceMeters))
+                statLine(label: "Max", value: String(format: "%.2f g", s.maxBumpiness))
+                statLine(label: "Avg", value: String(format: "%.2f g", s.averageBumpiness))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 4)
+    }
+
+    private func statLine(label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .monospacedDigit()
+        }
+    }
+
+    private static func formatElapsed(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded(.down))
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, s)
+        }
+        return String(format: "%d:%02d", m, s)
+    }
+
+    private static func formatDistance(_ meters: Double) -> String {
+        let miles = meters / 1609.344
+        if miles < 0.1 {
+            // Feet for very short distances — matches iOS Formatters.distance.
+            let feet = meters * 3.28084
+            return String(format: "%.0f ft", feet)
+        }
+        return String(format: "%.2f mi", miles)
     }
 }
 

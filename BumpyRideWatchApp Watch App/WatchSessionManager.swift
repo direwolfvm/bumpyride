@@ -229,13 +229,23 @@ extension WatchSessionManager: WCSessionDelegate {
     // their phone with a different watch.  We must NOT declare them
     // here on watchOS; the iOS `WatchCoordinator` is where they live.
 
-    // Phase C will populate this with snapshot decoding and
-    // `lastSnapshot` updates.  Phase B: log and drop.
+    /// Receive the latest snapshot iOS has pushed via
+    /// `updateApplicationContext`.  Decode and publish to `lastSnapshot`
+    /// — the UI binds to that and re-renders.  Apple delivers the
+    /// *latest* context on app launch as well, so the watch UI shows
+    /// the iPhone's last-known state immediately on resume.
     nonisolated func session(
         _ session: WCSession,
         didReceiveApplicationContext applicationContext: [String: Any]
     ) {
-        Self.log.notice("Received applicationContext (Phase B stub — ignored)")
+        guard let snapshot = WatchPayload.decodeSnapshot(from: applicationContext) else {
+            Self.log.notice("Received unrecognized applicationContext")
+            return
+        }
+        Self.log.info("Received snapshot: state=\(snapshot.state.rawValue, privacy: .public) elapsed=\(snapshot.elapsedSeconds, format: .fixed(precision: 1), privacy: .public)")
+        Task { @MainActor in
+            self.lastSnapshot = snapshot
+        }
     }
 }
 #endif

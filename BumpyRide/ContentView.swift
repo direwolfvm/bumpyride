@@ -10,7 +10,7 @@ import SwiftUI
 /// wired in `.task` since those want to run once per appearance, not once per view
 /// rebuild.
 struct ContentView: View {
-    @State private var recorder = RideRecorder()
+    @State private var recorder: RideRecorder
     @State private var settings = AppSettings()
     @State private var appState = AppState()
     @State private var bumpMap = BumpMapStore()
@@ -50,10 +50,11 @@ struct ContentView: View {
     @State private var healthKitExporter: HealthKitExporter
 
     /// iOS side of the watchOS companion's WatchConnectivity session.
-    /// Phase A wires the WCSession lifecycle and surfaces reachability
-    /// + paired-watch + watch-app-installed state observably; Phases
-    /// B-G layer the actual snapshot push and command handling.
-    @State private var watchCoordinator = WatchCoordinator()
+    /// Phase A wires the WCSession lifecycle and surfaces reachability;
+    /// Phase C drives the 1 Hz snapshot push from the injected
+    /// `RideRecorder`.  Phase D will wire incoming commands back into
+    /// the recorder via `handle(command:)`.
+    @State private var watchCoordinator: WatchCoordinator
 
     /// Last calibration value we successfully PUT to the server.  Used to short-circuit
     /// no-op pushes on triggers like reachability returning while nothing has changed.
@@ -98,6 +99,12 @@ struct ContentView: View {
         let healthAuth = HealthKitAuthManager()
         let healthEstimator = HealthKitEnergyEstimator(store: healthAuth.store)
         let healthExporter = HealthKitExporter(store: healthAuth.store, energyEstimator: healthEstimator)
+        // Recorder must be constructed explicitly (rather than inline
+        // on the @State) so the WatchCoordinator can be initialized
+        // with a reference to it.  No semantic change for the rest of
+        // the app — recorder behaves the same as before.
+        let recorder = RideRecorder()
+        let watchCoordinator = WatchCoordinator(recorder: recorder)
         _cloudStorage = State(initialValue: cloud)
         _store = State(initialValue: store)
         _webAccount = State(initialValue: webAccount)
@@ -108,6 +115,8 @@ struct ContentView: View {
         _healthKitAuth = State(initialValue: healthAuth)
         _healthKitEnergyEstimator = State(initialValue: healthEstimator)
         _healthKitExporter = State(initialValue: healthExporter)
+        _recorder = State(initialValue: recorder)
+        _watchCoordinator = State(initialValue: watchCoordinator)
     }
 
     var body: some View {
