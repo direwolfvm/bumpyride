@@ -17,6 +17,10 @@ struct SettingsView: View {
     /// state; it's a stateless command service used by the backfill
     /// sheet.
     let healthKitExporter: HealthKitExporter
+    /// Watch session owner.  Used here to gate the Apple Watch
+    /// section on `isPaired` — no point surfacing watch settings to
+    /// users without a paired Apple Watch.
+    @Bindable var watchCoordinator: WatchCoordinator
 
     /// Surfaces an inline error if the HealthKit auth request itself
     /// errored (entitlement missing, OS state weird).  Different from
@@ -107,6 +111,10 @@ struct SettingsView: View {
 
                 if healthKitAuth.isAvailable {
                     appleHealthSection
+                }
+
+                if watchCoordinator.isPaired {
+                    appleWatchSection
                 }
 
                 Section {
@@ -355,6 +363,41 @@ struct SettingsView: View {
                 healthKitExporter: healthKitExporter,
                 store: store
             )
+        }
+    }
+
+    // MARK: - Apple Watch
+
+    /// "Apple Watch" section, surfaced only when a watch is paired.
+    /// v1.7 Phase A: a single toggle for whether opening the iPhone
+    /// app should also open the watch app and start a HealthKit
+    /// workout session (the prerequisite for collecting heart rate
+    /// during a ride).
+    ///
+    /// Phase A only stores the bit — phases C-G wire it into actual
+    /// behavior (startWatchApp on the iOS side, HKWorkoutSession on
+    /// the watch side, heart rate streaming back to iOS).  Until
+    /// those land, toggling on/off changes nothing user-visible.
+    @ViewBuilder
+    private var appleWatchSection: some View {
+        Section {
+            Toggle(isOn: $settings.openWatchAppOnLaunch) {
+                Label {
+                    Text("Open watch app with this app")
+                } icon: {
+                    Image(systemName: "applewatch")
+                        .foregroundStyle(.blue)
+                }
+            }
+        } header: {
+            Text("Apple Watch")
+        } footer: {
+            Text("""
+            When on, opening BumpyRide on your iPhone also opens the BumpyRide watch app and starts heart-rate monitoring. \
+            Heart rate is added to your ride's Apple Health workout.
+
+            Off by default — flip on if you want auto-launch.
+            """)
         }
     }
 

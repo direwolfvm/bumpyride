@@ -63,6 +63,7 @@ final class AppSettings {
     private static let keyBumpMapFilter = "bumpMapModeFilter"
     private static let keyMapViewMode = "mapViewMode"
     private static let keyAutoExportToAppleHealth = "autoExportToAppleHealth"
+    private static let keyOpenWatchAppOnLaunch = "openWatchAppOnLaunch"
 
     var yellowG: Double = 0.5 {
         didSet { UserDefaults.standard.set(yellowG, forKey: Self.keyYellow) }
@@ -112,6 +113,26 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(autoExportToAppleHealth, forKey: Self.keyAutoExportToAppleHealth) }
     }
 
+    /// Whether opening the iPhone app should also open the BumpyRide
+    /// watch app and start a HealthKit workout session.  Defaults to
+    /// `false` so the behavior is opt-in — auto-launching the watch
+    /// app would be surprising to users who upgrade from v1.6.
+    ///
+    /// The toggle's secondary purpose: a running `HKWorkoutSession`
+    /// on the watch is the only way to read heart rate during a ride,
+    /// so this flag also gates whether watch-collected heart rate
+    /// data lands in the saved ride's HealthKit workout.  Settings
+    /// copy describes both effects so the user understands what
+    /// they're enabling.
+    ///
+    /// The Settings row that drives this is hidden entirely when no
+    /// Apple Watch is paired (gated on
+    /// `WatchCoordinator.isPaired`) — no point exposing a setting
+    /// the user can't act on.
+    var openWatchAppOnLaunch: Bool = false {
+        didSet { UserDefaults.standard.set(openWatchAppOnLaunch, forKey: Self.keyOpenWatchAppOnLaunch) }
+    }
+
     init() {
         let d = UserDefaults.standard
         if let v = d.object(forKey: Self.keyYellow) as? Double { yellowG = v }
@@ -132,6 +153,9 @@ final class AppSettings {
         if let v = d.object(forKey: Self.keyAutoExportToAppleHealth) as? Bool {
             autoExportToAppleHealth = v
         }
+        if let v = d.object(forKey: Self.keyOpenWatchAppOnLaunch) as? Bool {
+            openWatchAppOnLaunch = v
+        }
     }
 
     func resetToDefaults() {
@@ -142,6 +166,7 @@ final class AppSettings {
         bumpMapFilter = .mountedOrUntagged
         mapViewMode = .bumps
         autoExportToAppleHealth = false
+        openWatchAppOnLaunch = false
     }
 
     private struct Stop {

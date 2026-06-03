@@ -181,7 +181,8 @@ struct ContentView: View {
                 store: store,
                 cloudStorage: cloudStorage,
                 healthKitAuth: healthKitAuth,
-                healthKitExporter: healthKitExporter
+                healthKitExporter: healthKitExporter,
+                watchCoordinator: watchCoordinator
             )
             .tabItem { Label("Settings", systemImage: "gear") }
             .tag(AppState.Tab.settings)
