@@ -85,19 +85,34 @@ struct EditRideView: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            Slider(
-                value: Binding(
-                    get: { Double(scrubIdx) },
-                    set: { scrubIdx = Int($0.rounded()) }
-                ),
-                in: 0...Double(maxIndex),
-                step: 1
-            )
+            // Guard against degenerate slider ranges.  A 0- or 1-point
+            // ride yields maxIndex == 0, which makes Slider's
+            // 0...0 + step 1 range crash with "max stride must be
+            // positive."  See the same fix in RideView.scrubberSection.
+            // Trim/split don't make sense for such a ride anyway —
+            // there's no slice to take — so we hide the slider and let
+            // the user back out via Cancel.
+            if maxIndex >= 1 {
+                Slider(
+                    value: Binding(
+                        get: { Double(scrubIdx) },
+                        set: { scrubIdx = Int($0.rounded()) }
+                    ),
+                    in: 0...Double(maxIndex),
+                    step: 1
+                )
 
-            HStack {
-                Text("Zoom")
-                    .font(.caption).foregroundStyle(.secondary)
-                Slider(value: $zoom, in: 0.05...1.0)
+                HStack {
+                    Text("Zoom")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Slider(value: $zoom, in: 0.05...1.0)
+                }
+            } else {
+                Text("Single-point ride — nothing to trim or split.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 4)
             }
         }
     }

@@ -1236,6 +1236,17 @@ struct RideView: View {
 
     private func scrubberSection(for ride: Ride) -> some View {
         let maxIdx = max(0, ride.points.count - 1)
+        // Guard against degenerate slider ranges.  A ride with 0 or 1
+        // points (which the watch-initiated auto-save flow can
+        // produce if Stop lands before more than one GPS fix arrives,
+        // and which the legacy save sheet flow could also produce
+        // via an immediate stop) would otherwise crash SwiftUI's
+        // Slider — `0...0` with step 1 evaluates to a stride of 0,
+        // which trips "max stride must be positive" inside
+        // SwiftUI/Slider.swift.  Skip the scrub slider entirely in
+        // that case; the rest of the playback view still renders
+        // correctly with whatever single point exists.
+        let hasScrubRange = ride.points.count >= 2
         return VStack(spacing: 8) {
             HStack {
                 Text(scrubTimeLabel(for: ride))
@@ -1249,22 +1260,32 @@ struct RideView: View {
                         .foregroundStyle(settings.color(for: p.bumpiness))
                 }
             }
-            Slider(
-                value: Binding(
-                    get: { Double(clampedScrub(for: ride)) },
-                    set: { scrubIndex = Int($0.rounded()) }
-                ),
-                in: 0...Double(maxIdx),
-                step: 1
-            )
-            HStack(spacing: 8) {
-                Image(systemName: "arrow.left.and.right.square")
+            if hasScrubRange {
+                Slider(
+                    value: Binding(
+                        get: { Double(clampedScrub(for: ride)) },
+                        set: { scrubIndex = Int($0.rounded()) }
+                    ),
+                    in: 0...Double(maxIdx),
+                    step: 1
+                )
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.left.and.right.square")
+                        .foregroundStyle(.secondary)
+                    Slider(value: $zoom, in: 0.05...1.0)
+                    Text(zoomLabel)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, alignment: .trailing)
+                }
+            } else {
+                // Single-point ride — show a minimal informative
+                // placeholder instead of broken scrub controls.
+                Text("Single-point ride — nothing to scrub.")
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
-                Slider(value: $zoom, in: 0.05...1.0)
-                Text(zoomLabel)
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 44, alignment: .trailing)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 4)
             }
         }
         .padding(.vertical, 8)
