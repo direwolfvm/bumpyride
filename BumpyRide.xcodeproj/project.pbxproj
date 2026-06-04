@@ -408,7 +408,7 @@
 				DEVELOPMENT_TEAM = LAKT4757H4;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = BumpyRideWatchApp;
+				INFOPLIST_KEY_CFBundleDisplayName = BumpyRide;
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "BumpyRide reads your heart rate during a ride so it can be added to your Apple Health workout.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "BumpyRide saves your cycling rides to Apple Health from your iPhone.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
@@ -445,7 +445,7 @@
 				DEVELOPMENT_TEAM = LAKT4757H4;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = BumpyRideWatchApp;
+				INFOPLIST_KEY_CFBundleDisplayName = BumpyRide;
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "BumpyRide reads your heart rate during a ride so it can be added to your Apple Health workout.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "BumpyRide saves your cycling rides to Apple Health from your iPhone.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
