@@ -158,6 +158,25 @@ final class HealthKitExporter {
                 )
                 samples.append(energySample)
             }
+            // v1.7 heart-rate enrichment.  If the watch's
+            // HKWorkoutSession was running during the ride (via the
+            // startWatchApp handoff), watchOS recorded heart rate
+            // samples directly into HealthKit's heartRate quantity
+            // type.  Query for any in this ride's window and
+            // associate them with our HKWorkout so the user sees a
+            // heart-rate trace in Apple Fitness alongside the route.
+            //
+            // Returns [] if HR read auth was denied or the watch
+            // session never ran for this ride — both are silent
+            // fall-through cases; the workout is still saved with
+            // distance + energy + route as before.
+            let heartRateSamples = await fetchHeartRateSamples(
+                start: startDate,
+                end: endDate,
+                store: store
+            )
+            samples.append(contentsOf: heartRateSamples)
+            Self.log.info("Found \(heartRateSamples.count, privacy: .public) HR sample(s) in window for \(ride.id, privacy: .public)")
             if !samples.isEmpty {
                 try await builder.addSamples(samples)
             }
@@ -237,6 +256,52 @@ final class HealthKitExporter {
                 } else {
                     continuation.resume(returning: nil)
                 }
+            }
+            store.execute(query)
+        }
+    }
+    #endif
+
+    // MARK: - Internal: heart-rate sample query
+
+    #if canImport(HealthKit)
+    /// Query HealthKit for heart-rate samples in `[start, end]`.
+    /// Used by v1.7 to enrich the cycling HKWorkout with HR data
+    /// the watch's HKWorkoutSession collected during the ride.
+    ///
+    /// Returns `[]` on any failure (auth denied, no samples in
+    /// range, query error) — the caller treats an empty result as
+    /// "no HR data to embed" rather than an export failure, so
+    /// rides export normally even when HR collection wasn't
+    /// running.
+    ///
+    /// `.strictStartDate` predicate so a sample that started
+    /// before the ride and ended during it doesn't get pulled in
+    /// — HR samples have effectively-instantaneous timestamps
+    /// anyway, but being strict matches the semantics we'd want
+    /// for any future per-sample association.
+    private func fetchHeartRateSamples(
+        start: Date,
+        end: Date,
+        store: HKHealthStore
+    ) async -> [HKQuantitySample] {
+        guard let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate) else {
+            return []
+        }
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)
+        return await withCheckedContinuation { continuation in
+            let query = HKSampleQuery(
+                sampleType: heartRateType,
+                predicate: predicate,
+                limit: HKObjectQueryNoLimit,
+                sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]
+            ) { _, samples, error in
+                if let error {
+                    Self.log.notice("HR sample query failed: \(String(describing: error), privacy: .public)")
+                    continuation.resume(returning: [])
+                    return
+                }
+                continuation.resume(returning: (samples as? [HKQuantitySample]) ?? [])
             }
             store.execute(query)
         }

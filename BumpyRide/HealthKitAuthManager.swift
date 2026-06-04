@@ -210,12 +210,20 @@ final class HealthKitAuthManager {
         ]
     }
 
-    /// Read types: body mass for the energy estimator.  We don't read
-    /// anything else.
+    /// Read types: body mass for the energy estimator (v1.5) plus
+    /// heart rate (v1.7) so the iOS `HealthKitExporter` can query for
+    /// heart-rate samples in the ride's date range and embed them in
+    /// the cycling workout it writes.  Heart-rate samples themselves
+    /// are written to HealthKit by watchOS while the watch's
+    /// `HKWorkoutSession` is active (see `WatchWorkoutManager`); we
+    /// just need read access to query them.
     static var readTypes: Set<HKObjectType> {
         var set: Set<HKObjectType> = []
         if let bodyMass = HKQuantityType.quantityType(forIdentifier: .bodyMass) {
             set.insert(bodyMass)
+        }
+        if let heartRate = HKQuantityType.quantityType(forIdentifier: .heartRate) {
+            set.insert(heartRate)
         }
         return set
     }

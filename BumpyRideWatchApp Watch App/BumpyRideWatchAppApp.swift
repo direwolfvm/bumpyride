@@ -43,6 +43,23 @@ struct BumpyRideWatchApp_Watch_AppApp: App {
                     workoutManager.start(with: config)
                     appDelegate.pendingWorkoutConfiguration = nil
                 }
+                .onChange(of: session.lastSnapshot.state) { _, newState in
+                    // v1.7 Phase F: end the watch's HKWorkoutSession
+                    // when the iPhone's recorder transitions to a
+                    // non-active state.  Heart-rate samples stay in
+                    // HealthKit (watchOS saves them independently);
+                    // the iPhone-side HealthKitExporter queries them
+                    // back at ride-save time and embeds them in the
+                    // canonical cycling HKWorkout.
+                    //
+                    // .recording → .paused doesn't trigger stop; a
+                    // paused ride is still in flight and we want HR
+                    // collection to keep going so the iPhone's
+                    // post-save query catches all of it.
+                    if newState == .idle || newState == .finished {
+                        workoutManager.stop()
+                    }
+                }
         }
     }
 }

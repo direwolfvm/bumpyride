@@ -381,7 +381,7 @@ struct SettingsView: View {
     @ViewBuilder
     private var appleWatchSection: some View {
         Section {
-            Toggle(isOn: $settings.openWatchAppOnLaunch) {
+            Toggle(isOn: openWatchAppToggleBinding) {
                 Label {
                     Text("Open watch app with this app")
                 } icon: {
@@ -399,6 +399,34 @@ struct SettingsView: View {
             Off by default — flip on if you want auto-launch.
             """)
         }
+    }
+
+    /// Custom binding for the "Open watch app with this app" toggle.
+    /// Off → on triggers `healthKitAuth.requestAuthorization()` so the
+    /// user is prompted for the heart-rate read added in v1.7 (Phase F
+    /// extended `HealthKitAuthManager.readTypes` to include it).  Users
+    /// who granted v1.5's Apple Health auth see only the new heart-rate
+    /// prompt; the others are silently kept as-is by HealthKit.
+    ///
+    /// The bit lands true even if the user dismisses the auth sheet
+    /// without granting — the watch session will still launch, just
+    /// without HR collection.  This matches the v1.7 design decision
+    /// "watch session still runs, no HR collection" (Phase A
+    /// confirmation question).
+    private var openWatchAppToggleBinding: Binding<Bool> {
+        Binding(
+            get: { settings.openWatchAppOnLaunch },
+            set: { newValue in
+                if newValue {
+                    Task {
+                        await healthKitAuth.requestAuthorization()
+                        settings.openWatchAppOnLaunch = true
+                    }
+                } else {
+                    settings.openWatchAppOnLaunch = false
+                }
+            }
+        )
     }
 
     /// Secondary line under "Sync past rides to Apple Health" — counts
