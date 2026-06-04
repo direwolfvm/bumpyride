@@ -72,19 +72,38 @@ enum BrakeEventDetector {
     ///   more lagged in pocket mode than the textbook deceleration
     ///   curve, so the smoothed-and-differentiated peak undershoots
     ///   what the rider actually experienced.
-    /// - rev 5 (this file): decel threshold 2.0 → 1.5 m/s² (≈ 0.15 g).
-    ///   Crosses into "moderate brake" territory.  Routine slowdowns
-    ///   at intersections may start appearing depending on rider
-    ///   habits; the count vs. false-positive trade is now firmly on
-    ///   the side of "show more, even if some are firm-not-hard."
-    static let revision: Int = 5
+    /// - rev 5 (8fde7cd's predecessor): decel threshold 2.0 → 1.5 m/s²
+    ///   (≈ 0.15 g).  Crosses into "moderate brake" territory.
+    ///   Routine slowdowns at intersections may start appearing
+    ///   depending on rider habits; the count vs. false-positive
+    ///   trade is now firmly on the side of "show more, even if some
+    ///   are firm-not-hard."
+    /// - rev 6 (this file): two changes.  First, replace centered
+    ///   finite difference with `max(forward, backward)` per point.
+    ///   Centered diff is a weighted average of forward and
+    ///   backward; when GPS sampling becomes asymmetric (a fix gap
+    ///   right after a hard brake, because the rider is stationary
+    ///   and below the 3 m distanceFilter), the long dt on the
+    ///   stationary side pulls the average down and hides the peak.
+    ///   `max(forward, backward)` correctly captures whichever
+    ///   adjacent segment had high decel, immune to gaps.  Strictly
+    ///   more sensitive than centered (provable: centered ≤
+    ///   max(forward, backward) always), so previously-detected
+    ///   events stay detected.  Second, threshold 1.5 → 1.3 m/s²
+    ///   (≈ 0.13 g): on a field test ride, a clear hard brake at the
+    ///   end peaked at 1.41 m/s² under the new algorithm — needed to
+    ///   drop the threshold to catch it.  1.3 leaves a small margin
+    ///   without crossing into casual coast-down territory.
+    static let revision: Int = 6
 
     /// Deceleration must exceed this to start counting toward a brake event.
-    /// 1.5 m/s² ≈ 0.15 g.  Below the 2 m/s² typical-firm-stop threshold;
+    /// 1.3 m/s² ≈ 0.13 g.  Below the 2 m/s² typical-firm-stop threshold;
     /// above coast-down on flat road (~0.5 m/s²) and gentle braking into
-    /// a roll (~1 m/s²).  Chosen empirically after rev 1's 2.5 m/s² and
-    /// rev 4's 2.0 m/s² both under-detected against real rides.
-    static let decelThresholdMPS2: Double = 1.5
+    /// a roll (~1 m/s²).  Chosen empirically: rev 5 used 1.5 m/s² which
+    /// missed a clear field-tested hard brake at the end of a ride that
+    /// peaked at 1.41 m/s² under the rev 6 max(forward, backward)
+    /// algorithm.  1.3 catches it with a small safety margin.
+    static let decelThresholdMPS2: Double = 1.3
 
     /// A run shorter than this is treated as transient noise.  0.4 s is
     /// long enough to require multiple confirming samples at typical
@@ -182,16 +201,50 @@ enum BrakeEventDetector {
         return smoothed
     }
 
-    /// Centered finite difference on smoothed speeds.  Endpoints get 0
-    /// (no valid neighbors).
+    /// Per-point deceleration via `max(forward, backward)` of two
+    /// one-sided finite differences:
+    ///
+    ///   forward[i]  = (speeds[i]   - speeds[i+1]) / (t[i+1] - t[i])
+    ///   backward[i] = (speeds[i-1] - speeds[i])   / (t[i]   - t[i-1])
+    ///   decel[i]    = max(forward[i], backward[i])
+    ///
+    /// Why max-of-one-sided rather than centered: the centered
+    /// formula is a weighted average of forward and backward, which
+    /// gets diluted whenever GPS sampling is asymmetric.  The
+    /// classic failure mode is a hard brake into a stop — the rider
+    /// drops to zero, the 3 m `distanceFilter` stops emitting GPS
+    /// fixes (no movement), and centered diff at the brake point
+    /// spans the actual brake interval plus several seconds of
+    /// "already stopped."  The long dt pulls the average down and
+    /// the peak is invisible to the threshold test.
+    /// `max(forward, backward)` correctly captures whichever
+    /// adjacent segment had the high decel rate, immune to the
+    /// asymmetry.
+    ///
+    /// Strictly more sensitive than centered: provably
+    /// `centered ≤ max(forward, backward)` for any sign-consistent
+    /// signals (since centered is a convex combination of the two).
+    /// So bumping the algorithm without lowering the threshold
+    /// preserves all previously-detected events.
+    ///
+    /// Endpoints (first and last) get 0 — only one side to look at,
+    /// not enough context to be confident.
     private static func decelerations(from speeds: [Double], points: [RidePoint]) -> [Double] {
         var decel = Array(repeating: 0.0, count: points.count)
         guard points.count >= 3 else { return decel }
         for i in 1..<(points.count - 1) {
-            let dt = points[i + 1].timestamp.timeIntervalSince(points[i - 1].timestamp)
-            // Avoid divide-by-near-zero on duplicate or near-duplicate timestamps.
-            guard dt > 0.05 else { continue }
-            decel[i] = (speeds[i - 1] - speeds[i + 1]) / dt
+            let dtBackward = points[i].timestamp.timeIntervalSince(points[i - 1].timestamp)
+            let dtForward = points[i + 1].timestamp.timeIntervalSince(points[i].timestamp)
+            // Avoid divide-by-near-zero on duplicate or near-duplicate
+            // timestamps on either side — guard each independently
+            // so a degenerate one side doesn't suppress the good one.
+            let backward: Double = dtBackward > 0.05
+                ? (speeds[i - 1] - speeds[i]) / dtBackward
+                : 0
+            let forward: Double = dtForward > 0.05
+                ? (speeds[i] - speeds[i + 1]) / dtForward
+                : 0
+            decel[i] = max(forward, backward)
         }
         return decel
     }
