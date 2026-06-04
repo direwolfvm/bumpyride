@@ -245,6 +245,10 @@ struct ContentView: View {
     /// (Pause → Stop or Pause → Resume).  Makes accidental Stop
     /// during an active ride much harder; bumpy roads + jersey
     /// pocket make for plenty of unintended taps.
+    ///
+    /// `borderedProminent` (not `bordered`) so the orange fill is
+    /// solid rather than translucent — on-device testing in direct
+    /// sunlight showed the bordered translucent style washing out.
     private var pauseOnlyRow: some View {
         Button {
             session.send(.pause)
@@ -253,7 +257,7 @@ struct ContentView: View {
                 .font(.body)
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.borderedProminent)
         .tint(.orange)
         .controlSize(.small)
     }
