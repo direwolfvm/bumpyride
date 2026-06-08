@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Observation
 import OSLog
 
@@ -222,6 +223,41 @@ final class SyncCoordinator {
             // for user-initiated rides only (see onUserRideUploaded).
             let isUserInitiated = queue.userInitiatedIds.contains(next.id)
             defer { currentUploadingId = nil }
+
+            // v1.7 H5: checksum-skip for backfill rides only.  A
+            // freshly-paired user who's about to upload 50 historical
+            // rides can skip any ride the server already has stored
+            // with a matching content hash — saving multi-MB upload
+            // per skip.  User-initiated rides ALWAYS upload: the
+            // local copy is the source of truth, and a 50 ms check
+            // round-trip would just delay the H1+H2+H3 fast-path.
+            //
+            // Check failures (transport, 5xx) silently fall through
+            // to the upload path — never the wrong-answer scenario.
+            if !isUserInitiated {
+                let hash = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+                do {
+                    let result = try await client.checkRide(id: next.id, hash: hash, token: stored.token)
+                    if result.exists && result.hashMatches {
+                        log.debug("Backfill ride \(next.id, privacy: .public) already on server with matching hash — skipping upload")
+                        queue.remove(next.id)
+                        attempt = 0
+                        continue
+                    }
+                } catch WebSyncClient.ClientError.unauthorized {
+                    log.error("401 from /api/sync/ride/check — invalidating account")
+                    webAccount?.invalidate()
+                    state = .waitingForAuth
+                    return
+                } catch {
+                    // Any other error from the check endpoint just
+                    // falls through to the upload path — the worst
+                    // case is we upload a ride the server already
+                    // has, which is harmless (the upload endpoint is
+                    // idempotent on ride id).
+                    log.debug("checkRide error for \(next.id, privacy: .public), proceeding with upload: \(String(describing: error), privacy: .public)")
+                }
+            }
 
             do {
                 try await client.uploadRide(jsonBody: body, token: stored.token)

@@ -710,6 +710,85 @@ actor WebSyncClient {
     /// The body is passed in as pre-encoded JSON `Data` so the encode step happens
     /// on the caller's actor.  This avoids hopping `Ride`'s MainActor-isolated
     /// `Encodable` conformance into this non-MainActor actor.
+    /// Response from `POST /api/sync/ride/check` — the v1.7 H5
+    /// backfill-skip optimization.  See
+    /// `docs/SYNC_CHECKSUM_WEB_HANDOFF.md` for the full contract.
+    struct RideCheckResponse: Codable, Equatable, Sendable {
+        /// `true` if the server has a ride row with the given UUID.
+        /// `false` means we have to upload — server has nothing.
+        let exists: Bool
+        /// `true` if the SHA-256 of the server's stored ride payload
+        /// matches the hash the client supplied.  Only meaningful
+        /// when `exists == true`.  When `exists && hashMatches`,
+        /// the client can skip the multi-MB upload entirely.
+        let hashMatches: Bool
+    }
+
+    /// Ask the server whether it already has a ride byte-for-byte
+    /// before uploading it.  v1.7 H5 backfill optimization: a
+    /// freshly-paired user who's about to upload 50 historical
+    /// rides can skip the upload of any ride the server already
+    /// has stored with the same content hash, instead of
+    /// re-shipping multi-MB payloads.
+    ///
+    /// Per the handoff doc (`docs/SYNC_CHECKSUM_WEB_HANDOFF.md`),
+    /// the server computes its hash on the same wire bytes the
+    /// client would send (the iOS-encoded ride JSON).
+    ///
+    /// Returns `.exists: false` for any ride id the server hasn't
+    /// seen — that's the upload-path signal.  Returns
+    /// `.exists: true, .hashMatches: false` when the server has a
+    /// ride with the same UUID but different content (e.g., the
+    /// user trimmed locally and the local copy is newer) — also
+    /// an upload-path signal.  Only `.exists && .hashMatches`
+    /// authorizes the client to skip upload.
+    ///
+    /// Errors mirror `uploadRide`'s: 401 → unauthorized, 4xx →
+    /// validation/http, transport → transport.
+    func checkRide(id: UUID, hash: String, token: String) async throws -> RideCheckResponse {
+        log.debug("POST /api/sync/ride/check — id=\(id, privacy: .public)")
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/sync/ride/check"))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 15
+
+        struct Request: Encodable {
+            let rideId: UUID
+            let hash: String
+        }
+        do {
+            request.httpBody = try JSONEncoder().encode(Request(rideId: id, hash: hash))
+        } catch {
+            throw ClientError.validationFailed
+        }
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw ClientError.transport
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw ClientError.transport
+        }
+        switch http.statusCode {
+        case 200..<300:
+            do {
+                return try JSONDecoder().decode(RideCheckResponse.self, from: data)
+            } catch {
+                throw ClientError.decoding
+            }
+        case 400:
+            throw ClientError.validationFailed
+        case 401:
+            throw ClientError.unauthorized
+        default:
+            throw ClientError.http(status: http.statusCode)
+        }
+    }
+
     func uploadRide(jsonBody: Data, token: String) async throws {
         // .debug (not .info) — during a backlog catch-up this fires for every
         // queued ride in rapid succession, and we recently learned that
