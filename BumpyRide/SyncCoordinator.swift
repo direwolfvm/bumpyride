@@ -67,6 +67,18 @@ final class SyncCoordinator {
     private weak var rideStore: RideStore?
     private weak var webAccount: WebAccount?
 
+    /// Fires when a user-initiated ride uploads successfully — i.e.
+    /// the upload of a freshly-saved ride completes, not a backfill
+    /// ride.  ContentView wires this to `RideScoreCache.requestScoreWithRetry`
+    /// so the per-ride score lands in cache while the user is still
+    /// looking at the app, and the v1.7 level-up celebration can fire
+    /// (H3) when the score crosses a threshold.
+    ///
+    /// Backfill uploads do NOT fire this callback — they don't need
+    /// per-ride score auto-fetch (the user can lazy-fetch when they
+    /// open them) and they don't trigger level-up celebrations.
+    var onUserRideUploaded: ((UUID) -> Void)?
+
     private var drainTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
     private var attempt: Int = 0
@@ -205,6 +217,10 @@ final class SyncCoordinator {
             }
 
             currentUploadingId = next.id
+            // Capture the bucket BEFORE the upload because queue.remove
+            // erases the membership info; the post-success callback fires
+            // for user-initiated rides only (see onUserRideUploaded).
+            let isUserInitiated = queue.userInitiatedIds.contains(next.id)
             defer { currentUploadingId = nil }
 
             do {
@@ -215,6 +231,9 @@ final class SyncCoordinator {
                 // The "Drain complete" .info at the end still gives one
                 // summary line per drain pass, which is the useful signal.
                 log.debug("Uploaded ride \(next.id, privacy: .public); remaining \(self.queue.count, privacy: .public)")
+                if isUserInitiated {
+                    onUserRideUploaded?(next.id)
+                }
             } catch WebSyncClient.ClientError.unauthorized {
                 log.error("401 from /api/sync/ride — invalidating account")
                 webAccount?.invalidate()

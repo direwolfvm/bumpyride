@@ -76,6 +76,56 @@ final class RideScoreCache {
         }
     }
 
+    /// Fetch a ride's score with retry/backoff.  Used after a
+    /// user-initiated ride uploads successfully — the server has the
+    /// ride payload but the score-events computation happens
+    /// asynchronously, and `GET /api/rides/{id}/score` returns 404
+    /// for a brief window after upload while the score lands.
+    ///
+    /// Retry schedule: immediately, then after 2 s, 5 s, 10 s.  Total
+    /// wall-clock cap ~17 s; typical server compute is sub-second so
+    /// the first or second attempt usually succeeds.  On final
+    /// exhaustion the entry resolves to `.ineligible` (the same UX
+    /// as "ride never qualified"), which is the right fallback —
+    /// the user can re-open the ride later to retry via the lazy
+    /// `requestScore` path.
+    ///
+    /// Unlike `requestScore`, this OVERWRITES any existing entry.
+    /// That's intentional: a previous `.ineligible` cached during
+    /// the upload-pending window should get replaced once the
+    /// server actually has the score.
+    func requestScoreWithRetry(for rideId: UUID) {
+        entries[rideId] = .loading
+        Task {
+            await fetchScoreWithRetry(for: rideId)
+        }
+    }
+
+    private func fetchScoreWithRetry(for rideId: UUID) async {
+        // Index 0 fires immediately; indices 1..3 sleep first.
+        let backoffsNs: [UInt64] = [0, 2_000_000_000, 5_000_000_000, 10_000_000_000]
+        for (i, backoff) in backoffsNs.enumerated() {
+            if backoff > 0 {
+                try? await Task.sleep(nanoseconds: backoff)
+            }
+            do {
+                let data = try await account.fetchRideScore(rideId: rideId)
+                entries[rideId] = data.eligible ? .loaded(data) : .ineligible
+                return
+            } catch WebSyncClient.ClientError.http(status: 404) {
+                // Score events not yet written.  Continue to next
+                // backoff.  On the final attempt this falls through
+                // to the post-loop ineligible assignment.
+                if i == backoffsNs.count - 1 {
+                    entries[rideId] = .ineligible
+                }
+            } catch {
+                entries[rideId] = .failed
+                return
+            }
+        }
+    }
+
     /// Drop a specific ride's entry.  Call when a ride is deleted so a
     /// future re-restore of the same UUID doesn't surface stale cached
     /// data.

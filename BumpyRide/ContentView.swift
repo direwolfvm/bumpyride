@@ -281,6 +281,14 @@ struct ContentView: View {
                 appState.selectedTab = .ride
             }
 
+            // v1.7 H2: when a user-initiated ride uploads, immediately
+            // kick the score cache to fetch with retry/backoff so the
+            // score lands in the Saved tab without the user opening the
+            // ride.  Backfill uploads don't fire this — see
+            // SyncCoordinator.onUserRideUploaded.
+            syncCoordinator.onUserRideUploaded = { [rideScoreCache] rideId in
+                rideScoreCache.requestScoreWithRetry(for: rideId)
+            }
             // Connect RideStore save/delete to the sync queue + calibration recompute.
             // Idempotent — re-running just overwrites the same closure references.
             store.onRideSaved = { ride in
