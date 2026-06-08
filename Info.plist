@@ -59,7 +59,7 @@
 	<key>NSHealthUpdateUsageDescription</key>
 	<string>BumpyRide saves your cycling rides to Apple Health so they appear in the Fitness app and count toward your activity rings.</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>BumpyRide reads your weight from Apple Health to estimate calories burned for each ride.</string>
+	<string>BumpyRide reads your weight from Apple Health to estimate calories burned for each ride, and your heart rate (collected by your Apple Watch during the ride) to add the heart rate trace to your saved ride's Apple Health workout.</string>
 
 	<key>UIBackgroundModes</key>
 	<array>
