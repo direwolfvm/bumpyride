@@ -55,6 +55,12 @@ struct RideView: View {
     /// auth-then-export sequence so the row stays in "Adding…" state
     /// from the moment of tap until completion.  Reset by the ride's
     /// `.task(id:)` block when the loaded ride changes.
+    /// v1.7 H4: whether the score breakdown disclosure is expanded.
+    /// Per-view; resets when the loaded ride changes via the same
+    /// .task(id: ride.id) block that resets other transient row
+    /// state.
+    @State private var scoreBreakdownExpanded: Bool = false
+
     @State private var isExportingToHealth: Bool = false
 
     /// Inline error caption under the Apple Health row.  `nil` when no
@@ -788,6 +794,7 @@ struct RideView: View {
             rideScoreCache.requestScore(for: ride.id)
             isExportingToHealth = false
             healthExportError = nil
+            scoreBreakdownExpanded = false
         }
     }
 
@@ -798,22 +805,93 @@ struct RideView: View {
     @ViewBuilder
     private func rideScoreRow(for ride: Ride) -> some View {
         if case .loaded(let data) = rideScoreCache.entry(for: ride.id) {
-            HStack(spacing: 10) {
-                Image(systemName: "trophy.fill")
-                    .font(.callout)
-                    .foregroundStyle(.yellow)
-                Text("Points earned")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("\(data.totalPoints)")
-                    .font(.callout.monospacedDigit().weight(.bold))
-                    .foregroundStyle(.primary)
+            VStack(spacing: 0) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        scoreBreakdownExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "trophy.fill")
+                            .font(.callout)
+                            .foregroundStyle(.yellow)
+                        Text("Points earned")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(data.totalPoints)")
+                            .font(.callout.monospacedDigit().weight(.bold))
+                            .foregroundStyle(.primary)
+                        // v1.7 H4: disclosure chevron.  Rotates 180°
+                        // on expansion so the visual state of the
+                        // breakdown is obvious at a glance.
+                        Image(systemName: "chevron.down")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(scoreBreakdownExpanded ? 180 : 0))
+                    }
+                }
+                .buttonStyle(.plain)
+
+                if scoreBreakdownExpanded {
+                    breakdownDetails(for: data.breakdown)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
             }
             .padding(.vertical, 8)
             .padding(.horizontal, 12)
             .background(Color(.secondarySystemBackground))
             .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    /// v1.7 H4: breakdown disclosure rows.  Surfaces the same
+    /// firstEver / firstForYou / repeats split the web app shows
+    /// on its Score page, scoped to just this ride's contribution.
+    /// Multipliers (×10, ×5, ×1) and per-tier subtotals so the user
+    /// can see why a ride scored what it did — fresh cells vs
+    /// catching up on already-known ones.
+    @ViewBuilder
+    private func breakdownDetails(for breakdown: WebSyncClient.ScoreBreakdown) -> some View {
+        VStack(spacing: 4) {
+            Divider()
+                .padding(.top, 8)
+                .padding(.bottom, 6)
+            breakdownLine(
+                label: "First-ever cells",
+                multiplier: 10,
+                count: breakdown.firstEver
+            )
+            breakdownLine(
+                label: "New to you",
+                multiplier: 5,
+                count: breakdown.firstForYou
+            )
+            breakdownLine(
+                label: "Revisited",
+                multiplier: 1,
+                count: breakdown.repeats
+            )
+        }
+    }
+
+    private func breakdownLine(label: String, multiplier: Int, count: Int) -> some View {
+        let points = count * multiplier
+        return HStack(spacing: 6) {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("×\(multiplier)")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.tertiary)
+            Spacer()
+            Text("\(count) cell\(count == 1 ? "" : "s")")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.tertiary)
+            Text("\(points)")
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(minWidth: 32, alignment: .trailing)
         }
     }
 
