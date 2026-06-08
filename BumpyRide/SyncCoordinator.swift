@@ -159,7 +159,19 @@ final class SyncCoordinator {
                 return
             }
 
-            // Pick the oldest queued ride that still exists locally.
+            // Pick the next queued ride that still exists locally.
+            // User-initiated rides drain first; backfill fills the gaps
+            // when no user-initiated work is queued.  Within each
+            // bucket: oldest startedAt first.
+            //
+            // Why prioritize: a freshly-saved ride that lands during a
+            // long backfill drain (e.g. just after pairing with the
+            // web app and the catch-up upload of 50 historical rides
+            // is mid-stream) used to wait behind every backfill ride
+            // for upload.  That delayed score availability and the
+            // level-up celebration by potentially 10+ minutes.
+            // User-first ordering gets a new ride to the server in
+            // seconds even when there's backlog work in flight.
             let queuedIds = queue.all()
             let queuedRides = queuedIds.compactMap { id in
                 store.rides.first(where: { $0.id == id })
@@ -170,7 +182,8 @@ final class SyncCoordinator {
                 queue.remove(id)
             }
 
-            guard let next = queuedRides.first else {
+            let userInitiated = queuedRides.first { queue.userInitiatedIds.contains($0.id) }
+            guard let next = userInitiated ?? queuedRides.first else {
                 state = .idle
                 return
             }
