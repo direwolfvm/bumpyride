@@ -33,6 +33,14 @@ struct ContentView: View {
     /// back) — cached scores persist across the playback session.
     @State private var rideScoreCache: RideScoreCache
 
+    /// v1.7 H3 level-up monitor.  Polls `/api/me/score` after each
+    /// user-initiated ride upload and surfaces a celebration sheet
+    /// when the user crosses a level threshold.  Stores the
+    /// last-seen level index in UserDefaults so first-run doesn't
+    /// fire a false-positive celebration for the level the user
+    /// was already at on upgrade.
+    @State private var levelMonitor: LevelProgressionMonitor
+
     /// Owns the app's single `HKHealthStore` and tracks user
     /// authorization for the Apple Health integration.  Read by the
     /// Settings toggle and the per-ride "Add to Apple Health" button
@@ -106,6 +114,7 @@ struct ContentView: View {
         )
         let calibration = CalibrationStore()
         let scoreCache = RideScoreCache(account: webAccount)
+        let levelMonitor = LevelProgressionMonitor(account: webAccount)
         // HealthKit stack: auth manager owns the HKHealthStore, which
         // estimator and exporter both need.  All three are MainActor
         // and have no inter-init dependencies beyond the store handle,
@@ -144,6 +153,7 @@ struct ContentView: View {
         _syncCoordinator = State(initialValue: coordinator)
         _calibration = State(initialValue: calibration)
         _rideScoreCache = State(initialValue: scoreCache)
+        _levelMonitor = State(initialValue: levelMonitor)
         _healthKitAuth = State(initialValue: healthAuth)
         _healthKitEnergyEstimator = State(initialValue: healthEstimator)
         _healthKitExporter = State(initialValue: healthExporter)
@@ -224,6 +234,18 @@ struct ContentView: View {
                 showingIntro = false
             }
         }
+        // v1.7 H3 level-up celebration.  Sheet item-binding: the
+        // monitor sets pendingCelebration when a level-up is
+        // detected; user dismissal (Continue button or swipe-down)
+        // resolves the item-binding's setter back to nil, which
+        // routes through `acknowledgeCelebration` to clear the
+        // monitor's published state.
+        .sheet(item: Binding(
+            get: { levelMonitor.pendingCelebration },
+            set: { _ in levelMonitor.acknowledgeCelebration() }
+        )) { celebration in
+            LevelUpCelebrationSheet(celebration: celebration)
+        }
         .task {
             // First-launch intro: present once per install.  Checked before any
             // other launch work since this is the user's first impression and
@@ -281,13 +303,17 @@ struct ContentView: View {
                 appState.selectedTab = .ride
             }
 
-            // v1.7 H2: when a user-initiated ride uploads, immediately
-            // kick the score cache to fetch with retry/backoff so the
-            // score lands in the Saved tab without the user opening the
-            // ride.  Backfill uploads don't fire this — see
+            // v1.7 H2 + H3: when a user-initiated ride uploads,
+            // (a) kick the score cache to fetch the per-ride score
+            //     with retry/backoff so it lands in the Saved tab
+            //     without the user opening the ride; and
+            // (b) check whether the user crossed a level threshold,
+            //     presenting the H3 celebration sheet if so.
+            // Backfill uploads don't fire either path — see
             // SyncCoordinator.onUserRideUploaded.
-            syncCoordinator.onUserRideUploaded = { [rideScoreCache] rideId in
+            syncCoordinator.onUserRideUploaded = { [rideScoreCache, levelMonitor] rideId in
                 rideScoreCache.requestScoreWithRetry(for: rideId)
+                Task { await levelMonitor.checkAfterRideUpload() }
             }
             // Connect RideStore save/delete to the sync queue + calibration recompute.
             // Idempotent — re-running just overwrites the same closure references.
