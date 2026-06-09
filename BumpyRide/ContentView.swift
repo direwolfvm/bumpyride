@@ -473,6 +473,33 @@ struct ContentView: View {
                 await watchLaunchCoordinator.considerLaunchingWatchApp()
             }
         }
+        // v1.8 K7: react to the toggle flipping on while the iPhone
+        // app is foreground.  Without this, the user flips Settings →
+        // Apple Watch → "Open watch app with this app" from off to
+        // on, then waits for the watch to launch — which never
+        // happens until they background + foreground the app.  Same
+        // idempotent path as the scenePhase trigger; coordinator's
+        // first gate is the toggle itself so a toggle off→on→off
+        // flicker just lands in `.skipped` cleanly.
+        .onChange(of: settings.openWatchAppOnLaunch) { _, newValue in
+            guard newValue else { return }
+            Task { @MainActor in
+                await watchLaunchCoordinator.considerLaunchingWatchApp()
+            }
+        }
+        // v1.8 K7: react to the watch app finishing install while
+        // the iPhone app is foreground.  Catches the case where the
+        // user opens iPhone first, then installs the BumpyRide watch
+        // app from the Watch app → "Show on Apple Watch."  WCSession
+        // fires sessionWatchStateDidChange which updates our
+        // isWatchAppInstalled flag; observing it here closes the
+        // loop without forcing a foreground/background dance.
+        .onChange(of: watchCoordinator.isWatchAppInstalled) { _, newValue in
+            guard newValue else { return }
+            Task { @MainActor in
+                await watchLaunchCoordinator.considerLaunchingWatchApp()
+            }
+        }
     }
 
     /// GET the server's calibration, adopt if it has more overlap data than us, then

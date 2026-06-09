@@ -43,20 +43,35 @@ struct BumpyRideWatchApp_Watch_AppApp: App {
                     workoutManager.start(with: config)
                     appDelegate.pendingWorkoutConfiguration = nil
                 }
-                .onChange(of: session.lastSnapshot.state) { _, newState in
-                    // v1.7 Phase F: end the watch's HKWorkoutSession
-                    // when the iPhone's recorder transitions to a
-                    // non-active state.  Heart-rate samples stay in
-                    // HealthKit (watchOS saves them independently);
-                    // the iPhone-side HealthKitExporter queries them
-                    // back at ride-save time and embeds them in the
-                    // canonical cycling HKWorkout.
+                .onChange(of: session.lastSnapshot.state) { oldState, newState in
+                    // v1.7 Phase F / v1.8 K8: end the watch's
+                    // HKWorkoutSession when the iPhone's recorder
+                    // transitions OUT of an active state.  Heart-rate
+                    // samples stay in HealthKit (watchOS saves them
+                    // independently); the iPhone-side HealthKitExporter
+                    // queries them back at ride-save time and embeds
+                    // them in the canonical cycling HKWorkout.
                     //
                     // .recording → .paused doesn't trigger stop; a
                     // paused ride is still in flight and we want HR
                     // collection to keep going so the iPhone's
                     // post-save query catches all of it.
-                    if newState == .idle || newState == .finished {
+                    //
+                    // **K8 fix**: only stop when transitioning FROM
+                    // an active state.  The previous version stopped
+                    // on `newState == .idle` regardless of `oldState`,
+                    // which fired immediately at app launch — the
+                    // first snapshot from the iPhone (which is in
+                    // .idle until the user taps Start) ended the
+                    // workout session we'd JUST started via the
+                    // startWatchApp handoff.  Without an active
+                    // HKWorkoutSession the watch app gets suspended
+                    // within ~30s of wrist-drop, which is exactly the
+                    // "doesn't last long on the wrist" symptom we
+                    // were seeing.
+                    let wasActive = (oldState == .recording || oldState == .paused)
+                    let nowInactive = (newState == .idle || newState == .finished)
+                    if wasActive && nowInactive {
                         workoutManager.stop()
                     }
                 }
