@@ -1,4 +1,5 @@
 import SwiftUI
+import HealthKit
 
 /// Watch app entry.  The auto-generated struct name keeps Xcode's
 /// disambiguation suffix (`Watch_AppApp`) because renaming it would
@@ -11,6 +12,10 @@ import SwiftUI
 ///
 /// Activation of the WC session is kicked off in a `.task` rather
 /// than in `init` so the App-conformance bootstrap stays fast.
+///
+/// **v1.8 K13** changed when the `HKWorkoutSession` starts.  See
+/// `pendingConfig` and the state-transition onChange for the
+/// "session matches iPhone .recording" contract.
 @main
 struct BumpyRideWatchApp_Watch_AppApp: App {
     /// System-managed `WKApplicationDelegate` instance.  Created and
@@ -21,11 +26,19 @@ struct BumpyRideWatchApp_Watch_AppApp: App {
 
     @State private var session = WatchSessionManager()
 
-    /// HKWorkoutSession owner for the v1.7 watch HealthKit handoff.
-    /// Starts a session when `appDelegate.pendingWorkoutConfiguration`
-    /// is set (handled by the `.onChange` below).  Phase F will wire
-    /// its `stop()` to the iPhone's ride-stop signal.
+    /// HKWorkoutSession owner.  Lifecycle is driven by iPhone state
+    /// transitions in the .onChange below — start when the user
+    /// actually begins riding, stop when they finish.
     @State private var workoutManager = WatchWorkoutManager()
+
+    /// Stashed workout configuration from a previous
+    /// `startWatchApp(toHandle:)` call, used at the moment we
+    /// actually start the session.  See K13 rationale below.
+    ///
+    /// Falls back to a default cycling/outdoor config if the watch
+    /// app was launched by some other path (manual tap, complication)
+    /// — `start(with:)` always wants a configuration.
+    @State private var pendingConfig: HKWorkoutConfiguration?
 
     var body: some Scene {
         WindowGroup {
@@ -34,47 +47,75 @@ struct BumpyRideWatchApp_Watch_AppApp: App {
                     session.activate()
                 }
                 .onChange(of: appDelegate.pendingWorkoutConfiguration) { _, config in
-                    // v1.7 Phase E: receive the workout configuration
-                    // from the delegate and spin up the HKWorkoutSession.
-                    // Clear the delegate's stash after consumption so a
-                    // subsequent startWatchApp from iOS is treated as a
-                    // fresh event rather than a state-comparison no-op.
+                    // **K13 change** (v1.8): no longer starts the
+                    // HKWorkoutSession on receipt of the config.
+                    // Just stash it for later use.
+                    //
+                    // The previous design (v1.7 Phase E) started the
+                    // session immediately when iPhone called
+                    // startWatchApp(toHandle:), which meant the watch's
+                    // "now playing"-style workout card began showing a
+                    // counting-up timer before the user had tapped
+                    // Start on the iPhone — and kept counting if the
+                    // user dismissed the watch app or the iPhone went
+                    // to background.  Confusing UX: the rider sees a
+                    // workout timer for a ride that hasn't begun yet.
+                    //
+                    // New contract: the workout session lifecycle
+                    // mirrors iPhone's recorder state.  When iPhone
+                    // transitions into .recording, we start the
+                    // session.  When it transitions out, we stop.
+                    // See the state-transition onChange below.
                     guard let config else { return }
-                    workoutManager.start(with: config)
+                    pendingConfig = config
                     appDelegate.pendingWorkoutConfiguration = nil
                 }
                 .onChange(of: session.lastSnapshot.state) { oldState, newState in
-                    // v1.7 Phase F / v1.8 K8: end the watch's
-                    // HKWorkoutSession when the iPhone's recorder
-                    // transitions OUT of an active state.  Heart-rate
-                    // samples stay in HealthKit (watchOS saves them
-                    // independently); the iPhone-side HealthKitExporter
-                    // queries them back at ride-save time and embeds
-                    // them in the canonical cycling HKWorkout.
+                    // **K13 + K8 + Phase F** combined lifecycle:
+                    // mirror iPhone's recorder state exactly.
                     //
-                    // .recording → .paused doesn't trigger stop; a
-                    // paused ride is still in flight and we want HR
-                    // collection to keep going so the iPhone's
-                    // post-save query catches all of it.
+                    //   .idle/.finished → .recording: start session
+                    //   .recording/.paused → .idle/.finished: stop session
+                    //   .recording ↔ .paused: leave session running
+                    //     (HR collection should continue across pauses;
+                    //     iPhone-side post-save query catches everything)
                     //
-                    // **K8 fix**: only stop when transitioning FROM
-                    // an active state.  The previous version stopped
-                    // on `newState == .idle` regardless of `oldState`,
-                    // which fired immediately at app launch — the
-                    // first snapshot from the iPhone (which is in
-                    // .idle until the user taps Start) ended the
-                    // workout session we'd JUST started via the
-                    // startWatchApp handoff.  Without an active
-                    // HKWorkoutSession the watch app gets suspended
-                    // within ~30s of wrist-drop, which is exactly the
-                    // "doesn't last long on the wrist" symptom we
-                    // were seeing.
+                    // K8's bug was stopping on EVERY transition to
+                    // .idle, including the first snapshot at app
+                    // launch.  K13 supersedes that by gating BOTH
+                    // start and stop on "was inactive / was active"
+                    // — the initial idle→idle landing is now neither
+                    // and triggers nothing.
+                    let wasInactive = (oldState == .idle || oldState == .finished)
+                    let nowActive = (newState == .recording || newState == .paused)
                     let wasActive = (oldState == .recording || oldState == .paused)
                     let nowInactive = (newState == .idle || newState == .finished)
+
+                    if wasInactive && nowActive {
+                        // Pull the iPhone-sent config or build a
+                        // default — either way the user has just
+                        // tapped Start, so spin up the session.
+                        let config = pendingConfig ?? defaultWorkoutConfig()
+                        workoutManager.start(with: config)
+                    }
                     if wasActive && nowInactive {
                         workoutManager.stop()
                     }
                 }
         }
+    }
+
+    /// Cycling/outdoor configuration used when the watch app starts
+    /// a workout session without having received a config from
+    /// iPhone via startWatchApp — e.g., the user opened the watch
+    /// app manually from the watch face and then tapped Start on
+    /// the iPhone.  Matches the activity type the iPhone-side
+    /// HealthKitExporter writes, so HR collection lands in the
+    /// right shape for the post-save association query.
+    private func defaultWorkoutConfig() -> HKWorkoutConfiguration {
+        let config = HKWorkoutConfiguration()
+        config.activityType = .cycling
+        config.locationType = .outdoor
+        return config
     }
 }
