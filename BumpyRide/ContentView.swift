@@ -41,6 +41,13 @@ struct ContentView: View {
     /// was already at on upgrade.
     @State private var levelMonitor: LevelProgressionMonitor
 
+    /// v1.8 WeatherKit cache.  Owned at the ContentView level so
+    /// the same fetched observation is reused across recording
+    /// resumes, tab switches, etc.  RideView's live-recording
+    /// polling calls `refresh(near:)` at 1 Hz; the coordinator's
+    /// freshness gate makes most calls no-ops.
+    @State private var weatherCoordinator = WeatherCoordinator()
+
     /// Owns the app's single `HKHealthStore` and tracks user
     /// authorization for the Apple Health integration.  Read by the
     /// Settings toggle and the per-ride "Add to Apple Health" button
