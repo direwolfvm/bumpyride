@@ -35,10 +35,16 @@ import HealthKit
 /// objects.  HealthKit calls suspend off main; no real-thread blocking.
 @MainActor
 final class HealthKitExporter {
-    // `Logger` is thread-safe by design; mark nonisolated so the
-    // HealthKit completion closures (which are Sendable, not
-    // MainActor-bound) can call it without an actor hop.
-    nonisolated private static let log = Logger(subsystem: "com.herbertindustries.BumpyRide", category: "healthkit")
+    // `DebugLog` wraps `Logger` and additionally fans out to a
+    // sidecar log file in iCloud when the user has flipped the
+    // Settings "Write Debug Log" toggle on.  Diagnosing real-world
+    // export failures (the "log stops after HR sample count" bug we
+    // chased in v1.8) needs this file because we can't read the
+    // unified log stream from a phone without entitlement.  Both
+    // the underlying os.Logger and DebugLogSink are thread-safe;
+    // nonisolated lets HealthKit completion closures call through
+    // without an actor hop.
+    nonisolated private static let log = DebugLog(category: "healthkit")
 
     /// Outcome of an export attempt.  Distinguishes a fresh write from
     /// a no-op skip so the caller can update local state correctly in
@@ -108,10 +114,12 @@ final class HealthKitExporter {
         // abort the write (a transient query error shouldn't block a
         // legitimate export).  If we miss an existing workout, the
         // attempted write will land as a duplicate — bad but rare.
+        Self.log.info("Export \(ride.id) start: checking idempotency")
         if let existing = await existingWorkoutUUID(for: ride.id, store: store) {
-            Self.log.info("Skip export \(ride.id, privacy: .public): already in HealthKit")
+            Self.log.info("Skip export \(ride.id): already in HealthKit as \(existing)")
             return .alreadyPresent(existing)
         }
+        Self.log.info("Export \(ride.id): no existing workout, building")
 
         // Configure as outdoor cycling.  The location type is what
         // determines whether HealthKit treats the workout as a
@@ -131,7 +139,14 @@ final class HealthKitExporter {
         let endDate = ride.endedAt
 
         do {
+            // Each HKWorkoutBuilder await below is an opaque suspension
+            // — the framework can hang for seconds (or longer in
+            // pathological auth states).  Bracket every one with a
+            // before/after log so a sidecar file from a stuck export
+            // tells us exactly which stage stopped advancing.
+            Self.log.info("Export \(ride.id): beginCollection at \(startDate)")
             try await builder.beginCollection(at: startDate)
+            Self.log.info("Export \(ride.id): beginCollection returned")
 
             // Build and add the quantity samples we have data for.
             // Distance is mandatory; energy is "we estimated it,"
@@ -147,7 +162,9 @@ final class HealthKitExporter {
                 )
                 samples.append(distanceSample)
             }
+            Self.log.info("Export \(ride.id): kcal estimate")
             let kcal = await energyEstimator.kcal(for: ride)
+            Self.log.info("Export \(ride.id): kcal=\(kcal)")
             if kcal > 0 {
                 let energySample = HKQuantitySample(
                     type: HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned)!,
@@ -170,15 +187,18 @@ final class HealthKitExporter {
             // session never ran for this ride — both are silent
             // fall-through cases; the workout is still saved with
             // distance + energy + route as before.
+            Self.log.info("Export \(ride.id): fetchHeartRateSamples")
             let heartRateSamples = await fetchHeartRateSamples(
                 start: startDate,
                 end: endDate,
                 store: store
             )
             samples.append(contentsOf: heartRateSamples)
-            Self.log.info("Found \(heartRateSamples.count, privacy: .public) HR sample(s) in window for \(ride.id, privacy: .public)")
+            Self.log.info("Export \(ride.id): \(heartRateSamples.count) HR sample(s); total samples \(samples.count)")
             if !samples.isEmpty {
+                Self.log.info("Export \(ride.id): addSamples (count=\(samples.count))")
                 try await builder.addSamples(samples)
+                Self.log.info("Export \(ride.id): addSamples returned")
             }
 
             // Workout-level metadata: external UUID for idempotency,
@@ -190,35 +210,44 @@ final class HealthKitExporter {
             ]
             metadata[Self.metadataKeyMaxBumpiness] = ride.maxBumpiness
             metadata[Self.metadataKeyAvgBumpiness] = ride.averageBumpiness
+            Self.log.info("Export \(ride.id): addMetadata")
             try await builder.addMetadata(metadata)
+            Self.log.info("Export \(ride.id): addMetadata returned")
 
+            Self.log.info("Export \(ride.id): endCollection at \(endDate)")
             try await builder.endCollection(at: endDate)
+            Self.log.info("Export \(ride.id): endCollection returned")
 
+            Self.log.info("Export \(ride.id): finishWorkout")
             guard let workout = try await builder.finishWorkout() else {
-                Self.log.error("Export \(ride.id, privacy: .public): finishWorkout returned nil")
+                Self.log.error("Export \(ride.id): finishWorkout returned nil")
                 throw ExportError.workoutNotSaved
             }
+            Self.log.info("Export \(ride.id): finishWorkout returned uuid=\(workout.uuid)")
 
             // Attach the GPS route, if any.  Failures here don't roll
             // back the workout (HealthKit doesn't support that) — we
             // log and continue.  The workout still credits the rings
             // and shows up in Fitness, just without a map.
             if !ride.points.isEmpty {
+                Self.log.info("Export \(ride.id): writeRoute (\(ride.points.count) points)")
                 do {
                     try await writeRoute(for: ride, attachingTo: workout, store: store)
+                    Self.log.info("Export \(ride.id): writeRoute returned")
                 } catch {
-                    Self.log.error("Export \(ride.id, privacy: .public): route attach failed: \(String(describing: error), privacy: .public)")
+                    Self.log.error("Export \(ride.id): route attach failed: \(String(describing: error))")
                     // Don't rethrow — workout is saved, route is just
                     // a nice-to-have.
                 }
             }
 
-            Self.log.info("Exported \(ride.id, privacy: .public) as HK workout \(workout.uuid, privacy: .public)")
+            Self.log.info("Exported \(ride.id) as HK workout \(workout.uuid)")
             return .written(workout.uuid)
         } catch let error as ExportError {
+            Self.log.error("Export \(ride.id): rethrowing ExportError \(String(describing: error))")
             throw error
         } catch {
-            Self.log.error("Export \(ride.id, privacy: .public): workout write failed: \(String(describing: error), privacy: .public)")
+            Self.log.error("Export \(ride.id): workout write failed: \(String(describing: error))")
             throw ExportError.workoutWriteFailed(underlying: error)
         }
         #else
@@ -247,7 +276,7 @@ final class HealthKitExporter {
                 sortDescriptors: nil
             ) { _, samples, error in
                 if let error {
-                    Self.log.notice("Idempotency query failed: \(String(describing: error), privacy: .public)")
+                    Self.log.notice("Idempotency query failed: \(String(describing: error))")
                     continuation.resume(returning: nil)
                     return
                 }
@@ -297,7 +326,7 @@ final class HealthKitExporter {
                 sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]
             ) { _, samples, error in
                 if let error {
-                    Self.log.notice("HR sample query failed: \(String(describing: error), privacy: .public)")
+                    Self.log.notice("HR sample query failed: \(String(describing: error))")
                     continuation.resume(returning: [])
                     return
                 }

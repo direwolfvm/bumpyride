@@ -111,6 +111,13 @@ struct ContentView: View {
         // not here, so init stays synchronous and we can still load the rides
         // that are already in the chosen directory immediately.
         let cloud = CloudStorage()
+        // Point the debug-log sidecar at the same folder rides live in
+        // so a per-ride <rideId>-debug.log lands next to <rideId>.json.
+        // Fire-and-forget — sink is an actor, configure hops to its
+        // executor.  Safe pre-toggle: configure also runs the 14-day
+        // log GC even when the toggle is off, which keeps stale files
+        // from accumulating if the user later turns it on.
+        Task { await DebugLogSink.shared.configure(directory: cloud.ridesDirectoryURL) }
         let store = RideStore(directoryURL: cloud.ridesDirectoryURL)
         let webAccount = WebAccount()
         let queue = SyncQueue()

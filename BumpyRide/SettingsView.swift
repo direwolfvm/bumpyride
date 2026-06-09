@@ -118,6 +118,18 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Toggle(isOn: $settings.debugLogEnabled) {
+                        Label("Write Debug Log", systemImage: "doc.text.magnifyingglass")
+                    }
+                } header: {
+                    Text("Diagnostics")
+                } footer: {
+                    Text(cloudStorage.isCloudAvailable
+                        ? "Writes a verbose log alongside each ride in iCloud Drive → BumpyRide → Rides. Per-ride file: \"<rideId>-debug.log\". Outside a ride: \"session-YYYY-MM-DD.log\". Helpful when troubleshooting a real-world ride. Files older than 14 days are cleaned up automatically."
+                        : "Writes a verbose log alongside each ride in this device's Documents folder. Per-ride file: \"<rideId>-debug.log\". Outside a ride: \"session-YYYY-MM-DD.log\". Files older than 14 days are cleaned up automatically.")
+                }
+
+                Section {
                     Button(role: .destructive) {
                         settings.resetToDefaults()
                     } label: {

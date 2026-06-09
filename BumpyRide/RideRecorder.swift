@@ -123,6 +123,12 @@ final class RideRecorder {
         endedAt = nil
         let rideId = UUID()
         pendingRideId = rideId
+        // Switch the debug-log sidecar (when enabled in Settings) to
+        // per-ride mode so every DebugLog call during this recording
+        // lands in <rideId>-debug.log alongside the JSON.  Hop to the
+        // sink actor without awaiting — order vs. journal start
+        // doesn't matter for correctness.
+        Task { await DebugLogSink.shared.bindRide(rideId) }
         // Open the crash-safe journal.  Failures are non-fatal — recording still
         // happens in memory, we just lose the ability to recover on force-quit.
         // Schema version 3 matches Models.swift's default — new fields
@@ -189,6 +195,13 @@ final class RideRecorder {
         motion.stop()
         location.stopUpdating()
         motion.reset()
+        // Release the per-ride sidecar binding now that the user has
+        // resolved this ride (saved or discarded).  Subsequent log
+        // events fall through to the daily session file until the
+        // next start() rebinds.  start() unconditionally rotates to
+        // the new ride id, so it's safe even if reset() is somehow
+        // skipped between rides.
+        Task { await DebugLogSink.shared.unbindRide() }
         // Discard any in-progress journal as well.  Called from save / discard
         // paths in RideView, and from start-over flows.  Safe to call when no
         // journal exists.

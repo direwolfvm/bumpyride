@@ -64,6 +64,7 @@ final class AppSettings {
     private static let keyMapViewMode = "mapViewMode"
     private static let keyAutoExportToAppleHealth = "autoExportToAppleHealth"
     private static let keyOpenWatchAppOnLaunch = "openWatchAppOnLaunch"
+    private static let keyDebugLogEnabled = "debugLogEnabled"
 
     var yellowG: Double = 0.5 {
         didSet { UserDefaults.standard.set(yellowG, forKey: Self.keyYellow) }
@@ -133,6 +134,23 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(openWatchAppOnLaunch, forKey: Self.keyOpenWatchAppOnLaunch) }
     }
 
+    /// Diagnostics toggle.  When on, every `DebugLog` call also writes
+    /// its line to a plain-text sidecar file in the iCloud Rides folder:
+    /// `<rideId>-debug.log` during a recording, `session-YYYY-MM-DD.log`
+    /// otherwise.  Off-state cost is one Bool read per log site, so
+    /// leaving it off in steady state has no real perf or storage hit.
+    ///
+    /// The didSet pushes the new value into `DebugLogSink.enabled` so
+    /// the static fast-path stays in sync without any observation
+    /// indirection.  Sidecar files older than 14 days are GC'd by the
+    /// sink at app launch.
+    var debugLogEnabled: Bool = false {
+        didSet {
+            UserDefaults.standard.set(debugLogEnabled, forKey: Self.keyDebugLogEnabled)
+            DebugLogSink.enabled = debugLogEnabled
+        }
+    }
+
     init() {
         let d = UserDefaults.standard
         if let v = d.object(forKey: Self.keyYellow) as? Double { yellowG = v }
@@ -156,6 +174,12 @@ final class AppSettings {
         if let v = d.object(forKey: Self.keyOpenWatchAppOnLaunch) as? Bool {
             openWatchAppOnLaunch = v
         }
+        if let v = d.object(forKey: Self.keyDebugLogEnabled) as? Bool {
+            debugLogEnabled = v
+            // Push the static snapshot too, since assigning the @Observable
+            // property in init doesn't fire didSet (per Swift semantics).
+            DebugLogSink.enabled = v
+        }
     }
 
     func resetToDefaults() {
@@ -167,6 +191,7 @@ final class AppSettings {
         mapViewMode = .bumps
         autoExportToAppleHealth = false
         openWatchAppOnLaunch = false
+        debugLogEnabled = false
     }
 
     private struct Stop {
