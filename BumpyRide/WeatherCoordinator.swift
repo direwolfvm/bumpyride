@@ -79,13 +79,46 @@ final class WeatherCoordinator {
     /// Idempotent and concurrency-safe — overlapping invocations
     /// from the polling loop coalesce onto a single in-flight task.
     ///
-    /// **I1 placeholder**: this body currently logs and returns.
-    /// Phase I2 replaces it with the actual `WeatherService` call.
+    /// **Coalescing**: if a fetch is already in flight, this call
+    /// is a no-op.  Otherwise it spawns a new Task that hits
+    /// WeatherKit and publishes the result, then clears
+    /// `fetchTask` so the next refresh can run.
     func refresh(near location: CLLocation, force: Bool = false) {
-        // Phase I2 will replace this with the real implementation.
-        // The signature is locked here so I3/I4's callers can
-        // already bind against it.
-        Self.log.debug("refresh(near:) called (I1 stub)")
+        #if canImport(WeatherKit)
+        // Cache hit: nothing to do unless caller forces.
+        if !force, isCacheFresh(for: location) {
+            return
+        }
+        // In-flight: coalesce.
+        if fetchTask != nil {
+            return
+        }
+        fetchTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            // `Task` doesn't have a usable defer for clearing
+            // `fetchTask` on early return paths (because the field
+            // assignment crosses an actor hop), so do it explicitly
+            // at every exit.
+            do {
+                Self.log.info("Fetching weather near (\(location.coordinate.latitude, format: .fixed(precision: 4), privacy: .public), \(location.coordinate.longitude, format: .fixed(precision: 4), privacy: .public))")
+                let weather = try await WeatherService.shared.weather(for: location)
+                self.current = weather.currentWeather
+                self.lastFetchAt = Date()
+                self.lastFetchLocation = location
+                Self.log.info("Weather fetched: \(weather.currentWeather.temperature.formatted(), privacy: .public), wind \(weather.currentWeather.wind.speed.formatted(), privacy: .public) from \(weather.currentWeather.wind.direction.value, format: .fixed(precision: 0), privacy: .public)°")
+            } catch {
+                Self.log.error("WeatherKit fetch failed: \(String(describing: error), privacy: .public)")
+                // Leave `current` and the fetch stamps alone — if we
+                // had a previous successful fetch the chip continues
+                // showing it; if not, the chip stays hidden.  A
+                // future refresh call will try again as soon as the
+                // gate permits.
+            }
+            self.fetchTask = nil
+        }
+        #else
+        Self.log.notice("WeatherKit not available on this platform; skipping refresh")
+        #endif
     }
 
     /// True if our cache is still fresh relative to the supplied
