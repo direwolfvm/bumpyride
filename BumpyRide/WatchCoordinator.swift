@@ -144,9 +144,18 @@ final class WatchCoordinator: NSObject {
     /// Idempotent and cheap to call repeatedly — the framework
     /// coalesces replaceable updates.  Errors are logged; the
     /// next tick will retry with a fresh snapshot.
+    ///
+    /// Early-exits silently when no watch app is installed (either
+    /// the phone is unpaired or the rider has a watch but hasn't
+    /// installed BumpyRide on it).  The system-level call would
+    /// throw `WCErrorCodeWatchAppNotInstalled` on every tick
+    /// otherwise — read the live `session.isWatchAppInstalled`
+    /// rather than the cached `isWatchAppInstalled` property to
+    /// avoid a race against `sessionWatchStateDidChange`.
     func sendSnapshot(_ snapshot: WatchSnapshot) {
         #if canImport(WatchConnectivity)
         guard let session, case .activated = sessionState else { return }
+        guard session.isWatchAppInstalled else { return }
         do {
             let payload = try WatchPayload.encode(snapshot)
             try session.updateApplicationContext(payload)
