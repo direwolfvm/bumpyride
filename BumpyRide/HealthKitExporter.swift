@@ -177,11 +177,11 @@ final class HealthKitExporter {
             }
             // v1.7 heart-rate enrichment.  If the watch's
             // HKWorkoutSession was running during the ride (via the
-            // startWatchApp handoff), watchOS recorded heart rate
+            // startWatchApp handoff), watchOS wrote heart-rate
             // samples directly into HealthKit's heartRate quantity
-            // type.  Query for any in this ride's window and
-            // associate them with our HKWorkout so the user sees a
-            // heart-rate trace in Apple Fitness alongside the route.
+            // type.  Query for any in this ride's window so we can
+            // associate them with our HKWorkout after finishWorkout
+            // — see store.add(_:to:) below.
             //
             // Returns [] if HR read auth was denied or the watch
             // session never ran for this ride — both are silent
@@ -193,8 +193,20 @@ final class HealthKitExporter {
                 end: endDate,
                 store: store
             )
-            samples.append(contentsOf: heartRateSamples)
-            Self.log.info("Export \(ride.id): \(heartRateSamples.count) HR sample(s); total samples \(samples.count)")
+            Self.log.info("Export \(ride.id): \(heartRateSamples.count) HR sample(s) fetched; \(samples.count) new sample(s) to add")
+            // **Critically, HR samples do NOT go through addSamples.**
+            // That method WRITES the supplied samples to HealthKit —
+            // requires write authorization for each sample's type and
+            // would fail with errorAuthorizationDenied since we only
+            // request *read* on heartRate.  Even if we had write auth
+            // it would duplicate: the watch already wrote those
+            // samples to HK during the live session.
+            //
+            // The correct API for "associate existing samples with a
+            // workout" is HKHealthStore.add(_:to:) called after
+            // finishWorkout — that path only needs workout-type write
+            // auth (which we have) and leaves the underlying samples
+            // untouched.  See post-finishWorkout block below.
             if !samples.isEmpty {
                 Self.log.info("Export \(ride.id): addSamples (count=\(samples.count))")
                 try await builder.addSamples(samples)
@@ -224,6 +236,28 @@ final class HealthKitExporter {
                 throw ExportError.workoutNotSaved
             }
             Self.log.info("Export \(ride.id): finishWorkout returned uuid=\(workout.uuid)")
+
+            // Associate the watch-collected HR samples with the
+            // freshly-saved workout.  `HKHealthStore.add(_:to:)`
+            // doesn't rewrite the samples — it only updates each
+            // sample's workout-association metadata, so all it
+            // needs is workout-type write authorization (which we
+            // already have).  Failures are non-fatal: the workout
+            // saved cleanly with distance + energy + route, the
+            // HR data still exists in HealthKit standalone, and
+            // Apple Fitness will surface it in the time-window
+            // aggregate view regardless of formal association.
+            if !heartRateSamples.isEmpty {
+                Self.log.info("Export \(ride.id): associating \(heartRateSamples.count) HR sample(s) with workout")
+                do {
+                    try await associate(samples: heartRateSamples, with: workout, store: store)
+                    Self.log.info("Export \(ride.id): HR association returned")
+                } catch {
+                    Self.log.notice("Export \(ride.id): HR association failed: \(String(describing: error))")
+                    // Don't rethrow — workout is saved, HR association
+                    // is a nice-to-have for the in-workout trace.
+                }
+            }
 
             // Attach the GPS route, if any.  Failures here don't roll
             // back the workout (HealthKit doesn't support that) — we
@@ -333,6 +367,31 @@ final class HealthKitExporter {
                 continuation.resume(returning: (samples as? [HKQuantitySample]) ?? [])
             }
             store.execute(query)
+        }
+    }
+    #endif
+
+    // MARK: - Internal: HR sample → workout association
+
+    #if canImport(HealthKit)
+    /// Wrap the completion-handler form of `HKHealthStore.add(_:to:)`
+    /// in async/await.  HealthKit hasn't gotten the async overload for
+    /// this method as of iOS 17 — we still have to bridge by hand.
+    /// Throws on failure so the caller can choose to swallow (we do
+    /// — HR association is nice-to-have, not critical).
+    private func associate(
+        samples: [HKSample],
+        with workout: HKWorkout,
+        store: HKHealthStore
+    ) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            store.add(samples, to: workout) { _, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
         }
     }
     #endif
