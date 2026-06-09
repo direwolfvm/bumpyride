@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Static keys we need that Xcode's INFOPLIST_KEY_* build settings
+	  don't synthesize.  When INFOPLIST_FILE is set alongside
+	  GENERATE_INFOPLIST_FILE = YES, Xcode merges this file with the
+	  build-setting-generated keys (WKApplication,
+	  WKCompanionAppBundleIdentifier, CFBundleVersion, etc) — so we
+	  only have to list what's missing here, not duplicate everything.
+
+	  WKBackgroundModes is the critical one.  Without "workout-processing"
+	  declared, HKHealthStore.startWatchApp(toHandle:) launches the
+	  watch app in a constrained background state — the workout
+	  session runs in code but watchOS won't bring the app to the
+	  foreground when the rider raises their wrist.  Symptom: iPhone
+	  logs show startWatchApp returning cleanly, but the watch never
+	  actually shows the app UI.
+
+	  INFOPLIST_KEY_WKBackgroundModes existed in the pbxproj but
+	  was silently dropped — that build-setting alias only covers
+	  keys in Apple's documented list, and WKBackgroundModes isn't
+	  on it.  The real plist entry has to be authored here.
+	-->
+	<key>WKBackgroundModes</key>
+	<array>
+		<string>workout-processing</string>
+	</array>
+</dict>
+</plist>
