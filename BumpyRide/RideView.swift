@@ -31,6 +31,12 @@ struct RideView: View {
     /// Plain `let` (not `@Bindable`) — the exporter has no observable
     /// state for the view to bind to; it's a stateless command service.
     let healthKitExporter: HealthKitExporter
+    /// v1.8 WeatherKit cache owned at the ContentView level.  Live
+    /// recording polls `refresh(near:)` at 1 Hz; the coordinator's
+    /// freshness gate makes most calls no-ops, so the WeatherKit
+    /// quota is sipped not gulped.  RouteMapView reads
+    /// `weatherCoordinator.current` for its top-trailing overlay.
+    @Bindable var weatherCoordinator: WeatherCoordinator
 
     @State private var showingSaveSheet: Bool = false
     @State private var pendingRide: Ride?
@@ -67,6 +73,19 @@ struct RideView: View {
     /// error to show; cleared at the start of each export attempt and
     /// when the loaded ride changes.
     @State private var healthExportError: String?
+
+    /// Bike's current compass heading in degrees, gated on
+    /// `CLLocation.speed >= 3 m/s` because `CLLocation.course` is
+    /// unreliable below that.  Returned as nil so `WeatherChip`
+    /// hides the headwind/tailwind label when the rider is
+    /// stationary or just starting.  3 m/s ≈ 6.7 mph — comfortably
+    /// below a casual cyclist's cruising speed.
+    private var reliableBikeHeading: Double? {
+        guard let loc = recorder.location.lastLocation else { return nil }
+        guard loc.speed >= 3.0 else { return nil }
+        guard loc.course >= 0 else { return nil }
+        return loc.course
+    }
 
     /// Live brake-event list maintained during recording so the live
     /// map can render red brake pins alongside the bumpiness polyline.
@@ -371,7 +390,13 @@ struct RideView: View {
                 // Both render regardless of bumpiness coloring; the
                 // user wanted to see them appear as they happen.
                 brakeEvents: liveBrakeEvents,
-                closeCalls: recorder.closeCalls
+                closeCalls: recorder.closeCalls,
+                // v1.8 weather overlay.  Hidden when cache empty;
+                // RouteMapView gates internally on whether to render
+                // the chip.  Heading is gated on reliable
+                // course/speed at the call site.
+                weather: weatherCoordinator.current,
+                bikeHeading: reliableBikeHeading
             )
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .padding(.horizontal)
@@ -430,6 +455,27 @@ struct RideView: View {
             controlButtons
                 .padding(.horizontal)
                 .padding(.bottom, 8)
+        }
+        // v1.8 weather polling.  Independent of the brake-event
+        // polling so they can have different cadences (brake at 1 Hz,
+        // weather refresh is gated internally and never burns the
+        // network even at 1 Hz call rate).  Drives the
+        // top-trailing chip on the route map via the
+        // `weatherCoordinator.current` binding.
+        //
+        // Polls only while .recording — paused / idle / finished
+        // don't move enough to invalidate the cache, and we don't
+        // want to spend WeatherKit quota when the rider has stopped
+        // for a meaningful break.
+        .task(id: recorder.state) {
+            guard recorder.state == .recording else { return }
+            while !Task.isCancelled {
+                if let loc = recorder.location.lastLocation {
+                    weatherCoordinator.refresh(near: loc)
+                }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled, recorder.state == .recording else { break }
+            }
         }
         // Live brake-event detection.  Re-runs whenever the recorder
         // changes state — task body checks state on each tick and

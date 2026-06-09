@@ -1,6 +1,9 @@
 import SwiftUI
 import MapKit
 import CoreLocation
+#if canImport(WeatherKit)
+import WeatherKit
+#endif
 
 /// SwiftUI map view used in the Ride tab.  Renders the route as a series of short
 /// `MapPolyline` segments so each segment can be colored independently by the average
@@ -32,6 +35,20 @@ struct RouteMapView: View {
     /// `true` (default): color each segment by bumpiness of its endpoints.
     /// `false`: render the whole route in a neutral gray.
     var colorRoute: Bool = true
+    /// v1.8: latest fetched current weather, or nil if no fetch has
+    /// landed yet.  When non-nil, the `WeatherChip` overlay renders
+    /// in the map's top-trailing corner.  Live-recording callers
+    /// pass `weatherCoordinator.current`; playback callers pass
+    /// nil (weather isn't displayed in playback in v1.8).
+    #if canImport(WeatherKit)
+    var weather: CurrentWeather? = nil
+    #endif
+    /// v1.8: bike's compass heading in degrees, or nil if not
+    /// reliable.  Forwarded to `WeatherChip` for the headwind /
+    /// tailwind / crosswind label and the relative arrow rotation.
+    /// Live callers gate on `CLLocation.speed >= 3 m/s` because
+    /// `CLLocation.course` is unreliable below that.
+    var bikeHeading: Double? = nil
 
     @State private var cameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
 
@@ -79,6 +96,14 @@ struct RouteMapView: View {
         .mapControls {
             MapCompass()
             MapScaleView()
+        }
+        .overlay(alignment: .topTrailing) {
+            #if canImport(WeatherKit)
+            if let weather {
+                WeatherChip(weather: weather, bikeHeading: bikeHeading)
+                    .padding(8)
+            }
+            #endif
         }
         .onAppear { updateCamera(initial: true) }
         .onChange(of: points.count) { _, _ in updateCamera(initial: false) }
