@@ -51,6 +51,8 @@ Non-breaking additions (adding a new optional field, adding a new enum case) do 
 ### Additive fields since v3
 
 - `Ride.healthKitWorkoutUUID` (optional UUID string, iOS v1.5): the local HKWorkout UUID for the ride if it has been exported to Apple Health. Device-local; not meaningful to a server or any other device. Server should store opaquely and round-trip on restore without interpreting.
+- `BrakeEvent.category` (optional string, iOS v1.7): user-supplied classification of the brake event. One of `safety`, `other`, `error`, `unknown`. See the BrakeEvent table for null semantics.
+- `CloseCall.category` (optional string, iOS v1.7): user-supplied classification of the close call. One of `vehicle`, `bike`, `pedestrian`. See the CloseCall table for null semantics.
 
 ## `Ride` object
 
@@ -110,6 +112,7 @@ Sparse — emitted by the iOS `BrakeEventDetector` post-hoc at ride save time. A
 | `longitude` | number | yes | Location at the peak. WGS-84. |
 | `peakDecelerationMPS2` | number | yes | Peak rate of speed reduction, m/s² (positive = slowing). Typical threshold: detector flags events sustained above ≈2.5 m/s² (0.25g). |
 | `durationSeconds` | number | yes | How long the rate stayed above the detector's threshold. |
+| `category` | string | no⁷ | Added in v1.7. User-supplied classification of the brake. One of `safety`, `other`, `error`, `unknown`. `null`/missing on legacy events and on freshly-detected events whose live categorization modal timed out untouched. |
 
 ## `CloseCall` object
 
@@ -121,8 +124,9 @@ Sparse — captured live when the rider taps the "Log close call" button during 
 | `timestamp` | ISO-8601 date | yes | Time of the tap (from `Date()`, ride-local). |
 | `latitude` | number | yes | Location at the moment of the tap. WGS-84. |
 | `longitude` | number | yes | Location at the moment of the tap. WGS-84. |
+| `category` | string | no⁸ | Added in v1.7. User-supplied classification. One of `vehicle`, `bike`, `pedestrian`. Default at tap-time is `vehicle` if the user dismisses the categorization modal. `null`/missing on legacy close calls recorded before v1.7.
 
-No severity, category, or notes fields in v1.0 of the feature. The design goal is one-handed, no-look tap-to-log while riding; richer metadata would be added in a follow-up release with a different interaction model.
+No severity or notes fields in the v1.0 of this feature. The design goal is one-handed, no-look tap-to-log while riding; richer metadata can be added later if the in-ride interaction model evolves.
 
 ### `accelWindow` encoding
 

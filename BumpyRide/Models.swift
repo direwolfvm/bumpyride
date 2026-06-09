@@ -64,6 +64,14 @@ struct CloseCall: Codable, Identifiable, Hashable, Sendable {
     var timestamp: Date
     var latitude: Double
     var longitude: Double
+    /// What the close call was with.  Added in v1.7 (J3) so the
+    /// public bump map can disambiguate the type — a near-miss with
+    /// a vehicle has different infrastructure implications from one
+    /// with a pedestrian on a multi-use trail.  `nil` for rides
+    /// recorded before the field existed; the live capture path
+    /// stamps `.vehicle` by default (most common case), the saved-
+    /// ride editor (J4) lets the user change it.
+    var category: CloseCallCategory?
 
     var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
@@ -74,7 +82,19 @@ struct CloseCall: Codable, Identifiable, Hashable, Sendable {
         case timestamp
         case latitude
         case longitude
+        case category
     }
+}
+
+/// What a `CloseCall` was with.  Stored as a JSON string so the web
+/// side and a future Android port can both consume it directly.
+/// `unknown` is intentionally NOT a case here — the live modal
+/// auto-dismisses to `.vehicle` (the documented default), and saved
+/// edits always carry an intentional value.
+enum CloseCallCategory: String, Codable, Equatable, Sendable, CaseIterable {
+    case vehicle
+    case bike
+    case pedestrian
 }
 
 /// A discrete hard-braking event detected post-hoc on a saved ride.  Sparse
@@ -95,6 +115,13 @@ struct BrakeEvent: Codable, Identifiable, Hashable, Sendable {
     var longitude: Double
     var peakDecelerationMPS2: Double
     var durationSeconds: Double
+    /// Why the rider braked, as categorized by the user.  Added in
+    /// v1.7 (J2).  `nil` on legacy events and on freshly-detected
+    /// events whose live categorization modal timed out — the
+    /// playback UI renders nil as "Unknown" to match the
+    /// documented dismissal-default semantic.  The saved-ride
+    /// editor (J4) lets the user assign or change this.
+    var category: BrakeEventCategory?
 
     var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
@@ -107,7 +134,34 @@ struct BrakeEvent: Codable, Identifiable, Hashable, Sendable {
         case longitude
         case peakDecelerationMPS2
         case durationSeconds
+        case category
     }
+}
+
+/// User-supplied classification of a `BrakeEvent`.  Stored as a JSON
+/// string for cross-platform clarity.  `nil` (not present) is the
+/// "user dismissed the modal / hasn't categorized yet" state — see
+/// `BrakeEvent.category` doc for the rendering semantic.  Different
+/// from CloseCallCategory because we explicitly want an `.unknown`
+/// case here: a brake that the detector emitted but the rider never
+/// touched is meaningfully different from one the rider actively
+/// flagged as `.other`.
+enum BrakeEventCategory: String, Codable, Equatable, Sendable, CaseIterable {
+    /// Rider braked to avoid an accident or hazard.  Informs the
+    /// public bump map's safety overlay (future).
+    case safety
+    /// Rider braked for a normal traffic reason — stoplight, stop
+    /// sign, turn, view, etc.  Not safety-relevant.
+    case other
+    /// The detector triggered on something that wasn't really a
+    /// brake (GPS noise, surface bump that looked like one).
+    /// Lets the user filter false positives out of aggregate
+    /// statistics.
+    case error
+    /// User saw the modal but dismissed without choosing.  Distinct
+    /// from `nil` (modal timed out untouched) only in record-
+    /// keeping; both render the same in the UI for now.
+    case unknown
 }
 
 /// A complete saved ride: title, time bounds, ordered points, and the sensing mode
