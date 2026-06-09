@@ -112,6 +112,13 @@ struct RideView: View {
     /// the head is popped and the next brake (if any) presents.
     @State private var pendingBrakeQueue: [BrakeEvent] = []
 
+    /// v1.7 J3: close call awaiting categorization from the live
+    /// tap path.  Drives the close-call categorization sheet's
+    /// item binding.  Single-slot rather than a queue because the
+    /// rider can only tap one button at a time; the modal blocks
+    /// further taps via interactiveDismissDisabled.
+    @State private var pendingCloseCallCategorization: CloseCall?
+
     /// Pocket-mode value the save sheet will commit.  Primed from
     /// `MountStyleDetector`'s verdict on Stop; user can override via the toggle in
     /// the Sensing section before tapping Save.
@@ -544,6 +551,17 @@ struct RideView: View {
                 }
             }
         }
+        // v1.7 J3: close-call categorization sheet.  Single-slot
+        // (not a queue) because each modal blocks further taps; the
+        // user can't accumulate uncategorized close calls.
+        .sheet(item: $pendingCloseCallCategorization) { call in
+            CloseCallCategorizationSheet(closeCall: call) { category in
+                // No-op against an undone close call (recorder's
+                // setCloseCallCategory has an id-not-found guard).
+                recorder.setCloseCallCategory(category, for: call.id)
+                pendingCloseCallCategorization = nil
+            }
+        }
     }
 
     /// Run the brake detector on the latest points buffer, publish
@@ -624,6 +642,14 @@ struct RideView: View {
         pendingCloseCall = call
         closeCallTapGeneration += 1
         scheduleCloseCallBannerDismiss(generation: closeCallTapGeneration)
+        // v1.7 J3: also drive the categorization sheet.  The undo
+        // banner (above) and the modal (this) coexist — the banner
+        // gives a 5 s "wait, that was a misclick" affordance while
+        // the modal sits in front asking the rider to categorize.
+        // If the rider undoes via the banner, the modal's commit
+        // becomes a no-op against the now-removed close call (see
+        // setCloseCallCategory's id-not-found guard).
+        pendingCloseCallCategorization = call
     }
 
     /// User tapped Undo within the 5 s window.  Remove the call from the

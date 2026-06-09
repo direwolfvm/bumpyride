@@ -332,7 +332,16 @@ final class WatchCoordinator: NSObject {
             // back to the watch; per the v1.6 spec we accept the rare
             // edge case where a tap doesn't land rather than logging
             // to an unrelated ride.
-            _ = recorder.logCloseCall()
+            //
+            // v1.7 J3: watch-initiated close calls auto-categorize
+            // as .vehicle (the documented default).  We don't pop a
+            // modal on the iPhone — per the J3 design decision, the
+            // categorization UI is iPhone-tap-only.  The user can
+            // change the category later via the saved-ride editor
+            // (J4).
+            if let logged = recorder.logCloseCall() {
+                recorder.setCloseCallCategory(.vehicle, for: logged.id)
+            }
         }
         // Fast-path snapshot push so the watch UI reflects the new
         // state immediately, not after the next 1 Hz tick.  Safe to

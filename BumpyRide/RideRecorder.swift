@@ -233,6 +233,17 @@ final class RideRecorder {
         brakeCategorizations[timestamp] = category
     }
 
+    /// v1.7 J3: assign a category to a close call already in the
+    /// recorder's `closeCalls` buffer.  Used by the live close-call
+    /// categorization sheet on iPhone (immediately after the tap)
+    /// and by the watch command handler (which stamps `.vehicle`
+    /// as the default per the v1.7 design decision).  No-op if the
+    /// id isn't present (close call was undone before this fired).
+    func setCloseCallCategory(_ category: CloseCallCategory, for id: UUID) {
+        guard let idx = closeCalls.firstIndex(where: { $0.id == id }) else { return }
+        closeCalls[idx].category = category
+    }
+
     @discardableResult
     func logCloseCall() -> CloseCall? {
         guard canLogCloseCall, let loc = location.lastLocation else { return nil }
