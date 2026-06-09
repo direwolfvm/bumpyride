@@ -48,12 +48,21 @@ final class WeatherCoordinator {
     #endif
 
     /// When `current` was successfully fetched.  Drives the time-
-    /// based freshness gate.
+    /// based freshness gate.  Only updated on success.
     @ObservationIgnored private var lastFetchAt: Date?
 
     /// Where `current` was successfully fetched.  Drives the
-    /// distance-based freshness gate.
+    /// distance-based freshness gate.  Only updated on success.
     @ObservationIgnored private var lastFetchLocation: CLLocation?
+
+    /// When the most recent fetch attempt began, regardless of
+    /// outcome.  Drives the failure-backoff gate so a permanent
+    /// configuration error (e.g. WeatherKit App-ID enrollment not
+    /// yet propagated through Apple's services) doesn't get
+    /// hammered at 1 Hz by the polling loop.  We attempt at most
+    /// once per `failureBackoffSeconds` when there's no fresh
+    /// cache.
+    @ObservationIgnored private var lastAttemptAt: Date?
 
     /// In-flight fetch task, if any.  Used to coalesce overlapping
     /// `refresh(near:)` calls from the 1 Hz polling loop in
@@ -72,6 +81,14 @@ final class WeatherCoordinator {
     /// in-neighborhood loop.
     private static let staleAfterMeters: CLLocationDistance = 3_200
 
+    /// Minimum gap between fetch attempts after a failure.  30 s
+    /// is short enough that real transient network blips recover
+    /// quickly, long enough that a permanent auth error (e.g.
+    /// WeatherKit App-ID enrollment not yet propagated) doesn't
+    /// produce the four-log-lines-per-second noise the 1 Hz
+    /// polling loop would otherwise generate.
+    private static let failureBackoffSeconds: TimeInterval = 30
+
     init() {}
 
     /// Refresh the current weather for the given location, if our
@@ -85,20 +102,35 @@ final class WeatherCoordinator {
     /// `fetchTask` so the next refresh can run.
     func refresh(near location: CLLocation, force: Bool = false) {
         #if canImport(WeatherKit)
-        // Cache hit: nothing to do unless caller forces.
-        if !force, isCacheFresh(for: location) {
-            return
+        if !force {
+            // Cache hit gate: a recent successful fetch close to
+            // this location is what we want.
+            if isCacheFresh(for: location) {
+                return
+            }
+            // Failure backoff gate: any recent attempt — success
+            // OR failure — that didn't already pass the freshness
+            // gate above means we should wait.  Without this, a
+            // failed fetch leaves `current` nil → cache is never
+            // fresh → next polling tick (1 s later) tries again,
+            // producing one log line per second.
+            if let lastAttemptAt,
+               Date().timeIntervalSince(lastAttemptAt) < Self.failureBackoffSeconds {
+                return
+            }
         }
         // In-flight: coalesce.
         if fetchTask != nil {
             return
         }
+        // Stamp the attempt BEFORE awaiting so a second refresh
+        // call that arrives during the await doesn't double-spawn.
+        // The fetchTask presence check above also catches this,
+        // but updating lastAttemptAt eagerly means the backoff
+        // window starts now rather than at task completion.
+        lastAttemptAt = Date()
         fetchTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            // `Task` doesn't have a usable defer for clearing
-            // `fetchTask` on early return paths (because the field
-            // assignment crosses an actor hop), so do it explicitly
-            // at every exit.
             do {
                 Self.log.info("Fetching weather near (\(location.coordinate.latitude, format: .fixed(precision: 4), privacy: .public), \(location.coordinate.longitude, format: .fixed(precision: 4), privacy: .public))")
                 let weather = try await WeatherService.shared.weather(for: location)
@@ -108,11 +140,12 @@ final class WeatherCoordinator {
                 Self.log.info("Weather fetched: \(weather.currentWeather.temperature.formatted(), privacy: .public), wind \(weather.currentWeather.wind.speed.formatted(), privacy: .public) from \(weather.currentWeather.wind.direction.value, format: .fixed(precision: 0), privacy: .public)°")
             } catch {
                 Self.log.error("WeatherKit fetch failed: \(String(describing: error), privacy: .public)")
-                // Leave `current` and the fetch stamps alone — if we
-                // had a previous successful fetch the chip continues
-                // showing it; if not, the chip stays hidden.  A
-                // future refresh call will try again as soon as the
-                // gate permits.
+                // Leave `current` and the success stamps alone — if
+                // we had a previous successful fetch the chip
+                // continues showing it; if not, the chip stays
+                // hidden.  lastAttemptAt was set before the await,
+                // so the next refresh call within
+                // `failureBackoffSeconds` will be gated.
             }
             self.fetchTask = nil
         }
