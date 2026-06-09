@@ -39,7 +39,7 @@ final class HealthKitExporter {
     // sidecar log file in iCloud when the user has flipped the
     // Settings "Write Debug Log" toggle on.  Diagnosing real-world
     // export failures (the "log stops after HR sample count" bug we
-    // chased in v1.8) needs this file because we can't read the
+    // chased in v1.7) needs this file because we can't read the
     // unified log stream from a phone without entitlement.  Both
     // the underlying os.Logger and DebugLogSink are thread-safe;
     // nonisolated lets HealthKit completion closures call through

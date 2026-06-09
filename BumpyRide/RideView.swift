@@ -31,7 +31,7 @@ struct RideView: View {
     /// Plain `let` (not `@Bindable`) — the exporter has no observable
     /// state for the view to bind to; it's a stateless command service.
     let healthKitExporter: HealthKitExporter
-    /// v1.8 WeatherKit cache owned at the ContentView level.  Live
+    /// v1.7 WeatherKit cache owned at the ContentView level.  Live
     /// recording polls `refresh(near:)` at 1 Hz; the coordinator's
     /// freshness gate makes most calls no-ops, so the WeatherKit
     /// quota is sipped not gulped.  RouteMapView reads
@@ -410,7 +410,7 @@ struct RideView: View {
                 // user wanted to see them appear as they happen.
                 brakeEvents: liveBrakeEvents,
                 closeCalls: recorder.closeCalls,
-                // v1.8 weather overlay.  Hidden when cache empty;
+                // v1.7 weather overlay.  Hidden when cache empty;
                 // RouteMapView gates internally on whether to render
                 // the chip.  Heading is gated on reliable
                 // course/speed at the call site.
@@ -475,7 +475,7 @@ struct RideView: View {
                 .padding(.horizontal)
                 .padding(.bottom, 8)
         }
-        // v1.8 weather polling.  Independent of the brake-event
+        // v1.7 weather polling.  Independent of the brake-event
         // polling so they can have different cadences (brake at 1 Hz,
         // weather refresh is gated internally and never burns the
         // network even at 1 Hz call rate).  Drives the
@@ -970,7 +970,7 @@ struct RideView: View {
         }
     }
 
-    /// v1.7 H4 / v1.8 stale-refresh: breakdown disclosure rows.
+    /// v1.7 H4 / v1.7 stale-refresh: breakdown disclosure rows.
     /// Mirrors the four-tier split the web app shows on its Score page,
     /// scoped to this ride's contribution.  Rows ordered by descending
     /// multiplier (×10, ×5, ×3, ×1) so the table reads as "rarest /

@@ -40,7 +40,7 @@ struct SavedRidesView: View {
             }
             .navigationTitle("Saved Rides")
             .toolbar {
-                // v1.8 K12: Score entry point promoted from
+                // v1.7 K12: Score entry point promoted from
                 // Settings → Web Account into the Saved Rides
                 // toolbar.  Trophy → ScoreView.  Hidden when the
                 // user isn't connected to a web account (ScoreView

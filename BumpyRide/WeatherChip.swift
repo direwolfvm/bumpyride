@@ -3,7 +3,7 @@ import SwiftUI
 import WeatherKit
 #endif
 
-/// v1.8 weather overlay for the live-recording map.  Compact two-row
+/// v1.7 weather overlay for the live-recording map.  Compact two-row
 /// readout with temperature on top, wind speed + relative arrow
 /// underneath, and a Headwind/Tailwind/Crosswind label tinted by
 /// the wind relation when bike heading is known.

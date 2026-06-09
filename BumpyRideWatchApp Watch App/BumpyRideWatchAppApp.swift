@@ -13,7 +13,7 @@ import HealthKit
 /// Activation of the WC session is kicked off in a `.task` rather
 /// than in `init` so the App-conformance bootstrap stays fast.
 ///
-/// **v1.8 K13** changed when the `HKWorkoutSession` starts.  See
+/// **v1.7 K13** changed when the `HKWorkoutSession` starts.  See
 /// `pendingConfig` and the state-transition onChange for the
 /// "session matches iPhone .recording" contract.
 @main
@@ -47,7 +47,7 @@ struct BumpyRideWatchApp_Watch_AppApp: App {
                     session.activate()
                 }
                 .onChange(of: appDelegate.pendingWorkoutConfiguration) { _, config in
-                    // **K13 change** (v1.8): no longer starts the
+                    // **K13 change** (v1.7): no longer starts the
                     // HKWorkoutSession on receipt of the config.
                     // Just stash it for later use.
                     //

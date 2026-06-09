@@ -1,6 +1,6 @@
 import Foundation
 
-/// Pure helper for the v1.8 weather chip's wind-relative-to-bike
+/// Pure helper for the v1.7 weather chip's wind-relative-to-bike
 /// label.  Given the wind's compass direction (where it's coming
 /// FROM) and the bike's compass heading (where it's going TO),
 /// computes whether the rider is fighting it, riding with it, or

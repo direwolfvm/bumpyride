@@ -48,7 +48,7 @@ struct WebAccountView: View {
             case .connected(let email):
                 connectedSection(email: email)
                 publicBumpMapSection
-                // v1.8 K12: scoreSection moved out of here into a
+                // v1.7 K12: scoreSection moved out of here into a
                 // top-right trophy button on the Saved Rides tab
                 // toolbar.  Reachable in one tap from the user's
                 // most-frequented surface instead of buried two
@@ -385,7 +385,7 @@ struct WebAccountView: View {
 
     // MARK: - Score
     //
-    // v1.8 K12: the inline score row + scoreSection + the
+    // v1.7 K12: the inline score row + scoreSection + the
     // refreshScoreSummary plumbing all moved to the Saved Rides
     // tab's top-right trophy button.  Logic for "show level + total
     // points" still lives in ScoreView itself, reached via the

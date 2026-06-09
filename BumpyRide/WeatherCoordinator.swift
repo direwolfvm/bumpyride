@@ -6,7 +6,7 @@ import OSLog
 import WeatherKit
 #endif
 
-/// Owner of the app's WeatherKit cache for the v1.8 live-recording
+/// Owner of the app's WeatherKit cache for the v1.7 live-recording
 /// weather overlay.  One instance for the whole app, lives at the
 /// `ContentView` level alongside the other root coordinators.
 ///

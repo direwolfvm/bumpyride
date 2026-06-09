@@ -41,7 +41,7 @@ struct ContentView: View {
     /// was already at on upgrade.
     @State private var levelMonitor: LevelProgressionMonitor
 
-    /// v1.8 WeatherKit cache.  Owned at the ContentView level so
+    /// v1.7 WeatherKit cache.  Owned at the ContentView level so
     /// the same fetched observation is reused across recording
     /// resumes, tab switches, etc.  RideView's live-recording
     /// polling calls `refresh(near:)` at 1 Hz; the coordinator's
@@ -473,7 +473,7 @@ struct ContentView: View {
                 await watchLaunchCoordinator.considerLaunchingWatchApp()
             }
         }
-        // v1.8 K7: react to the toggle flipping on while the iPhone
+        // v1.7 K7: react to the toggle flipping on while the iPhone
         // app is foreground.  Without this, the user flips Settings →
         // Apple Watch → "Open watch app with this app" from off to
         // on, then waits for the watch to launch — which never
@@ -487,7 +487,7 @@ struct ContentView: View {
                 await watchLaunchCoordinator.considerLaunchingWatchApp()
             }
         }
-        // v1.8 K7: react to the watch app finishing install while
+        // v1.7 K7: react to the watch app finishing install while
         // the iPhone app is foreground.  Catches the case where the
         // user opens iPhone first, then installs the BumpyRide watch
         // app from the Watch app → "Show on Apple Watch."  WCSession

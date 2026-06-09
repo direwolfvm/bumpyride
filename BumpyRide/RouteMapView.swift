@@ -35,15 +35,15 @@ struct RouteMapView: View {
     /// `true` (default): color each segment by bumpiness of its endpoints.
     /// `false`: render the whole route in a neutral gray.
     var colorRoute: Bool = true
-    /// v1.8: latest fetched current weather, or nil if no fetch has
+    /// v1.7: latest fetched current weather, or nil if no fetch has
     /// landed yet.  When non-nil, the `WeatherChip` overlay renders
     /// in the map's top-trailing corner.  Live-recording callers
     /// pass `weatherCoordinator.current`; playback callers pass
-    /// nil (weather isn't displayed in playback in v1.8).
+    /// nil (weather isn't displayed in playback in v1.7).
     #if canImport(WeatherKit)
     var weather: CurrentWeather? = nil
     #endif
-    /// v1.8: bike's compass heading in degrees, or nil if not
+    /// v1.7: bike's compass heading in degrees, or nil if not
     /// reliable.  Forwarded to `WeatherChip` for the headwind /
     /// tailwind / crosswind label and the relative arrow rotation.
     /// Live callers gate on `CLLocation.speed >= 3 m/s` because
