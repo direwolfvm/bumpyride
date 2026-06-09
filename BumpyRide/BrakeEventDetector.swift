@@ -94,7 +94,7 @@ enum BrakeEventDetector {
     ///   end peaked at 1.41 m/s² under the new algorithm — needed to
     ///   drop the threshold to catch it.  1.3 leaves a small margin
     ///   without crossing into casual coast-down territory.
-    /// - rev 7 (this file): adds a GPS-gap brake heuristic.  When a
+    /// - rev 7 (22e079e): adds a GPS-gap brake heuristic.  When a
     ///   gap >= 4 s has a speed drop >= 4 m/s (≈ 9 mph), emit a
     ///   brake event at the start of the gap with peakDecel = drop
     ///   / 2 s — attributes the drop to a typical hard-brake
@@ -109,7 +109,19 @@ enum BrakeEventDetector {
     ///   collapseAdjacent if both fire at the same location (real
     ///   brakes typically peak higher than the 2s-attributed gap
     ///   estimate).
-    static let revision: Int = 7
+    /// - rev 8 (this file): cap the horizontalAccel-derived peak at
+    ///   2× the GPS-derived peak before max-merging into refinedPeak.
+    ///   Field-test evidence from a recurring spot at 38.8413,-77.0479
+    ///   showed the same physical brake reported as 1.5 m/s² on
+    ///   quiet-accel days and 5.1 m/s² on noisy-accel days — a single
+    ///   road-bump sample landing inside the GPS run window was
+    ///   enough to triple the saved peak.  Capping preserves the
+    ///   "intra-second peak is higher than the 1-Hz GPS average"
+    ///   refinement on real hard brakes (a 3 m/s² GPS brake can
+    ///   still refine up to 6 m/s² if accel says so) while killing
+    ///   the runaway when GPS shows mild slowdown but a noise spike
+    ///   sneaks in.
+    static let revision: Int = 8
 
     /// Deceleration must exceed this to start counting toward a brake event.
     /// 1.3 m/s² ≈ 0.13 g.  Below the 2 m/s² typical-firm-stop threshold;
@@ -168,6 +180,27 @@ enum BrakeEventDetector {
     /// to refine the peak magnitude of an event the GPS-decel signal
     /// already identified.
     private static let accelRefinementGain: Double = 9.80665 * 0.8
+
+    /// rev 8: ceiling on how much horizontalAccel-derived refinement
+    /// can boost the saved peak above the GPS-derived peak.  The
+    /// refined peak is clamped to `gpsPeak * accelRefinementMaxRatio`.
+    ///
+    /// Rationale: horizontalAccel is a noisy signal — road bumps,
+    /// lateral cornering force, and pocket movement all bleed into
+    /// the horizontal channel.  Without a cap, a single spike sample
+    /// inside the GPS-detected run drives `peakDecelerationMPS2` to
+    /// physically implausible values (cycling tops out around 0.7 g
+    /// of brake before pitching, ≈ 6.9 m/s²; we routinely saw single
+    /// 1.8-g spikes from road texture).  Capping at 2× GPS preserves
+    /// the legitimate "intra-second peak is higher than the 1-Hz
+    /// GPS-decel average" use case (a real ~3 m/s² brake can refine
+    /// up to ~6 m/s²) while killing the runaway where GPS says
+    /// "mild slowdown" and accel says "huge spike."  Field-test
+    /// evidence: same recurring spot at 38.8413,-77.0479 saw the
+    /// same ~1.5–1.8 m/s² GPS brake reported as 1.5 on quiet-accel
+    /// days and 5.1 on noisy-accel days, depending on whether a
+    /// bump happened to land in the GPS-decel window.
+    private static let accelRefinementMaxRatio: Double = 2.0
 
     /// Find every brake event in a ride.  Returns `[]` if the ride is too
     /// short to compute a derivative or has no points above threshold.
@@ -380,9 +413,13 @@ enum BrakeEventDetector {
         // horizontalAccel sample, use it (scaled + discounted) as a
         // less-lagged estimate of the true peak.  GPS-decel here is
         // smoothed and lagged; horizontalAccel is per-sample direct.
+        // rev 8: clamp the accel-derived peak to `gpsPeak * 2.0` so a
+        // single noisy bump can't inflate the saved magnitude beyond
+        // physical plausibility.  See accelRefinementMaxRatio comment.
         let accelPeakG = run.compactMap { points[$0].horizontalAccel }.map(Double.init).max()
-        let accelDecel = (accelPeakG ?? 0) * accelRefinementGain
-        let refinedPeak = max(gpsPeak, accelDecel)
+        let accelDecelRaw = (accelPeakG ?? 0) * accelRefinementGain
+        let accelDecelCapped = min(accelDecelRaw, gpsPeak * accelRefinementMaxRatio)
+        let refinedPeak = max(gpsPeak, accelDecelCapped)
 
         let peakPoint = points[peakIdx]
         let duration = points[run.upperBound].timestamp.timeIntervalSince(points[run.lowerBound].timestamp)
