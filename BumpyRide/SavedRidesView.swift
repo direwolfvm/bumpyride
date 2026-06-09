@@ -39,6 +39,24 @@ struct SavedRidesView: View {
                 }
             }
             .navigationTitle("Saved Rides")
+            .toolbar {
+                // v1.8 K12: Score entry point promoted from
+                // Settings → Web Account into the Saved Rides
+                // toolbar.  Trophy → ScoreView.  Hidden when the
+                // user isn't connected to a web account (ScoreView
+                // would have nothing to render — gamification is a
+                // server-side concept gated on sharing).
+                if webAccount.isConnected {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        NavigationLink {
+                            ScoreView(account: webAccount)
+                        } label: {
+                            Image(systemName: "trophy.fill")
+                                .accessibilityLabel("Score")
+                        }
+                    }
+                }
+            }
         }
     }
 

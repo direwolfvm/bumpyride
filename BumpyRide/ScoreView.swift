@@ -118,9 +118,16 @@ struct ScoreView: View {
         }
     }
 
-    /// Three side-by-side tier cards, one per scoring rule.  Counts and
-    /// computed points shown together so the user can see both the
-    /// quantity of cells touched and the points contributed.
+    /// Four tier rows, one per scoring rule.  Counts and computed
+    /// points shown together so the user can see both the quantity of
+    /// cells touched and the points contributed.  Ordered by
+    /// descending multiplier (10 → 5 → 3 → 1) so the rarest /
+    /// most-valuable contribution reads first.
+    ///
+    /// The "Refreshed" row is omitted entirely when the server returns
+    /// no `staleRefresh` key (older deployments pre-migration 0016) —
+    /// same nil-guarded pattern used by the per-ride disclosure in
+    /// RideView so the rolling deploy window stays clean.
     private func breakdownSection(for breakdown: WebSyncClient.ScoreBreakdown) -> some View {
         Section {
             tierRow(
@@ -137,6 +144,15 @@ struct ScoreView: View {
                 color: .blue,
                 detail: "Cells others mapped before you"
             )
+            if let staleRefresh = breakdown.staleRefresh {
+                tierRow(
+                    title: "Refreshed",
+                    count: staleRefresh,
+                    pointsPerEvent: 3,
+                    color: .orange,
+                    detail: "Cells you last rode more than 10 days ago"
+                )
+            }
             tierRow(
                 title: "Repeat visits",
                 count: breakdown.repeats,
@@ -179,7 +195,8 @@ struct ScoreView: View {
         Section {
             ruleRow(symbol: "10", color: .purple, title: "First ever", body: "When you're the first person in the world to record bump data in a 20-ft cell, you earn 10 points.")
             ruleRow(symbol: "5", color: .blue, title: "First for you", body: "When you ride through a cell that other riders have already mapped, you earn 5 points the first time.")
-            ruleRow(symbol: "1", color: .gray, title: "Repeat visits", body: "Every subsequent ride through a cell you've already mapped earns 1 more point.")
+            ruleRow(symbol: "3", color: .orange, title: "Refreshed", body: "When you re-ride a cell you've already mapped but haven't visited in over 10 days, you earn 3 points — rewards keeping your coverage current.")
+            ruleRow(symbol: "1", color: .gray, title: "Repeat visits", body: "Every other ride through a cell you've already mapped earns 1 more point.")
         } header: {
             Text("How scoring works")
         } footer: {

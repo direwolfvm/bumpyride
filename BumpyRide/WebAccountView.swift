@@ -39,13 +39,6 @@ struct WebAccountView: View {
     @State private var publicMapEagerUpdating: Bool = false
     @State private var publicMapSharingError: String?
 
-    /// Inline score summary shown in the Score section.  Loaded on appear
-    /// alongside the sharing state.  `nil` while fetching or on failure —
-    /// the NavigationLink stays tappable either way so the user can drop
-    /// into the detail view (`ScoreView`) and see the full loading flow
-    /// there.
-    @State private var scoreSummary: WebSyncClient.ScoreData?
-
     private let tokensURL = URL(string: "https://bumpyride.me/settings/tokens")!
     private let landingURL = URL(string: "https://bumpyride.me")!
 
@@ -55,7 +48,11 @@ struct WebAccountView: View {
             case .connected(let email):
                 connectedSection(email: email)
                 publicBumpMapSection
-                scoreSection
+                // v1.8 K12: scoreSection moved out of here into a
+                // top-right trophy button on the Saved Rides tab
+                // toolbar.  Reachable in one tap from the user's
+                // most-frequented surface instead of buried two
+                // levels deep in Settings.
                 syncSection
                 restoreSection
                 dangerZoneSection(email: email)
@@ -93,17 +90,6 @@ struct WebAccountView: View {
         // without a separate .onChange.
         .task(id: account.connectedEmail) {
             await refreshPublicMapSharing()
-            await refreshScoreSummary()
-        }
-        // Auto-refresh the score summary whenever the sync queue clears.
-        // The transition from "syncing N rides" to "all up to date" is
-        // exactly when the server has fresh score data for the rides we
-        // just uploaded — perfect moment to re-fetch.  No-op if the user
-        // isn't connected or hasn't pulled this view in yet.
-        .onChange(of: syncQueue.isEmpty) { wasEmpty, isEmpty in
-            if !wasEmpty, isEmpty {
-                Task { await refreshScoreSummary() }
-            }
         }
     }
 
@@ -397,87 +383,17 @@ struct WebAccountView: View {
         publicMapSharingError = message
     }
 
-    // MARK: - Score (shown when connected)
-
-    /// Inline summary row + tap-through to `ScoreView`.  Three display
-    /// states depending on the cached `scoreSummary`:
-    ///
-    /// - Loaded + eligible: shows the level name + total points.
-    /// - Loaded + not eligible: shows a "Sharing off" caption, hinting
-    ///   the user toward the toggle in the section above.
-    /// - Loading or failed to load: shows "Tap to view" — the
-    ///   NavigationLink still works and the detail view handles its
-    ///   own loading flow.
-    private var scoreSection: some View {
-        Section {
-            NavigationLink {
-                ScoreView(account: account)
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "trophy.fill")
-                        .font(.title3)
-                        .foregroundStyle(scoreIconColor)
-                        .frame(width: 28)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(scoreTitle)
-                            .font(.body)
-                        if let detail = scoreDetail {
-                            Text(detail)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer()
-                }
-            }
-        } header: {
-            Text("Score")
-        } footer: {
-            Text("Earn points by riding through cells on the public bump map. 10 for the first ever, 5 for first-for-you, 1 per repeat visit.")
-        }
-    }
-
-    private var scoreTitle: String {
-        guard let summary = scoreSummary else { return "View score" }
-        if !summary.eligible { return "Score" }
-        return summary.level.name
-    }
-
-    private var scoreDetail: String? {
-        guard let summary = scoreSummary else { return "Tap to view" }
-        if !summary.eligible { return "Turn on sharing to start earning points" }
-        let pts = Self.formattedPoints(summary.totalPoints)
-        return "\(pts) point\(summary.totalPoints == 1 ? "" : "s") · Level \(summary.level.index)"
-    }
-
-    private var scoreIconColor: Color {
-        guard let summary = scoreSummary else { return .secondary }
-        return summary.eligible ? .yellow : .secondary
-    }
-
-    private func refreshScoreSummary() async {
-        guard case .connected = account.state else {
-            scoreSummary = nil
-            return
-        }
-        do {
-            scoreSummary = try await account.fetchScore()
-        } catch {
-            // Quiet failure — the detail view will show the error if the
-            // user taps through.  No banner here.
-            scoreSummary = nil
-        }
-    }
-
-    private static let scorePointsFormatter: NumberFormatter = {
-        let f = NumberFormatter()
-        f.numberStyle = .decimal
-        return f
-    }()
-
-    private static func formattedPoints(_ n: Int) -> String {
-        scorePointsFormatter.string(from: NSNumber(value: n)) ?? "\(n)"
-    }
+    // MARK: - Score
+    //
+    // v1.8 K12: the inline score row + scoreSection + the
+    // refreshScoreSummary plumbing all moved to the Saved Rides
+    // tab's top-right trophy button.  Logic for "show level + total
+    // points" still lives in ScoreView itself, reached via the
+    // toolbar NavigationLink — see SavedRidesView.toolbar.
+    //
+    // If you're looking for it: git log -- WebAccountView.swift
+    // and pick up the commit titled "K12: promote Score from
+    // WebAccount section to Saved Rides toolbar."
 
     // MARK: - Sync (shown when connected)
 
