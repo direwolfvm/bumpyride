@@ -134,13 +134,21 @@ actor WebSyncClient {
         /// Count of cells where this user was the first of their rides but
         /// others had already mapped them.  Each contributes 5 points.
         let firstForYou: Int
-        /// Count of subsequent visits to cells this user already mapped.
-        /// Each contributes 1 point.
+        /// Count of cells the user has been to before, but whose previous
+        /// visit was more than 10 days ago (server-defined window
+        /// `STALE_REFRESH_DAYS`).  Each contributes 3 points.  Server-side
+        /// migration 0016 added this tier between `firstForYou` and
+        /// `repeats`; older server deployments don't return it, so it's
+        /// optional and defaults to 0 at the call site.
+        let staleRefresh: Int?
+        /// Count of subsequent visits to cells this user already mapped
+        /// within the freshness window.  Each contributes 1 point.
         let repeats: Int
 
         private enum CodingKeys: String, CodingKey {
             case firstEver
             case firstForYou
+            case staleRefresh
             case repeats = "repeat"
         }
     }

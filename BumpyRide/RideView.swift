@@ -970,12 +970,18 @@ struct RideView: View {
         }
     }
 
-    /// v1.7 H4: breakdown disclosure rows.  Surfaces the same
-    /// firstEver / firstForYou / repeats split the web app shows
-    /// on its Score page, scoped to just this ride's contribution.
-    /// Multipliers (×10, ×5, ×1) and per-tier subtotals so the user
-    /// can see why a ride scored what it did — fresh cells vs
-    /// catching up on already-known ones.
+    /// v1.7 H4 / v1.8 stale-refresh: breakdown disclosure rows.
+    /// Mirrors the four-tier split the web app shows on its Score page,
+    /// scoped to this ride's contribution.  Rows ordered by descending
+    /// multiplier (×10, ×5, ×3, ×1) so the table reads as "rarest /
+    /// most valuable" first.  Multipliers + per-tier subtotals let the
+    /// user see why a ride scored what it did — fresh cells vs catching
+    /// up on already-known ones vs refreshing stale measurements.
+    ///
+    /// The "Refreshed" row is hidden when the server returns no
+    /// `staleRefresh` key (older deployments pre-migration 0016) — the
+    /// field is decoded as nil and we drop the row rather than showing
+    /// a misleading "0 cells" line.
     @ViewBuilder
     private func breakdownDetails(for breakdown: WebSyncClient.ScoreBreakdown) -> some View {
         VStack(spacing: 4) {
@@ -992,6 +998,13 @@ struct RideView: View {
                 multiplier: 5,
                 count: breakdown.firstForYou
             )
+            if let staleRefresh = breakdown.staleRefresh {
+                breakdownLine(
+                    label: "Refreshed",
+                    multiplier: 3,
+                    count: staleRefresh
+                )
+            }
             breakdownLine(
                 label: "Revisited",
                 multiplier: 1,
