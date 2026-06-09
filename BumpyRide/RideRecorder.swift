@@ -59,6 +59,19 @@ final class RideRecorder {
     /// `logCloseCall()` appends one entry here and to the journal.  Empty
     /// at start; included in the `Ride` returned from `stop()`.
     private(set) var closeCalls: [CloseCall] = []
+    /// v1.7 J2: user-supplied categorizations of brake events that were
+    /// detected and acknowledged during live recording.  Keyed by the
+    /// brake event's `timestamp` (the peak-decel moment) because the
+    /// auto-generated UUIDs on `BrakeEvent` aren't stable across the
+    /// 1 Hz re-runs of `BrakeEventDetector.detect` — but the timestamp
+    /// of the peak doesn't drift across re-runs once enough trailing
+    /// context exists.
+    ///
+    /// Applied to the final brake events at save time via
+    /// `Ride.applyingBrakeCategorizations(_:)` (closest-timestamp
+    /// match within a 5 s tolerance).  Reset on `reset()` along
+    /// with the rest of the per-ride buffers.
+    private(set) var brakeCategorizations: [Date: BrakeEventCategory] = [:]
     private(set) var startedAt: Date?
     private(set) var endedAt: Date?
 
@@ -102,6 +115,7 @@ final class RideRecorder {
         guard state == .idle || state == .finished else { return }
         points = []
         closeCalls = []
+        brakeCategorizations = [:]
         totalDistanceMeters = 0
         maxRecordedBumpiness = 0
         let now = Date()
@@ -181,6 +195,7 @@ final class RideRecorder {
         journal.clear()
         points = []
         closeCalls = []
+        brakeCategorizations = [:]
         totalDistanceMeters = 0
         maxRecordedBumpiness = 0
         startedAt = nil
@@ -208,6 +223,16 @@ final class RideRecorder {
     /// would be `false` (no recording, or no fix yet) — the caller should
     /// gate the button on `canLogCloseCall` to avoid silent no-ops, but
     /// returning nil rather than crashing here is the defensive choice.
+    /// v1.7 J2: stash a user-supplied category for a brake event
+    /// detected during live recording.  `timestamp` is the brake
+    /// event's `timestamp` field (peak-decel moment).  Idempotent —
+    /// re-calling with the same timestamp overwrites the prior
+    /// category.  Applied to final detected events at save time
+    /// via `Ride.applyingBrakeCategorizations`.
+    func setBrakeCategory(_ category: BrakeEventCategory, at timestamp: Date) {
+        brakeCategorizations[timestamp] = category
+    }
+
     @discardableResult
     func logCloseCall() -> CloseCall? {
         guard canLogCloseCall, let loc = location.lastLocation else { return nil }

@@ -194,6 +194,13 @@ final class WatchCoordinator: NSObject {
             ride = ride.reprocessedWithPocketHPF()
         }
         ride = ride.withDetectedBrakeEvents()
+        // v1.7 J2: apply any user-supplied brake categorizations the
+        // rider made during this ride via the live modal on iPhone.
+        // Watch-initiated saves should still honor them — the
+        // categorizations are stored on the recorder, which is the
+        // same instance regardless of which surface triggers the
+        // save.
+        ride = ride.applyingBrakeCategorizations(recorder.brakeCategorizations)
         store.save(ride)
         appState.loadedRide = ride
         recorder.reset()

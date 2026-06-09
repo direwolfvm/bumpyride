@@ -348,4 +348,45 @@ extension Ride {
         copy.brakeEvents = BrakeEventDetector.detect(in: self)
         return copy
     }
+
+    /// v1.7 J2: apply user-supplied brake categorizations gathered
+    /// during live recording.  Each entry in `map` is
+    /// `[liveTimestamp: userCategory]`; we match each saved brake
+    /// event to the closest live timestamp within `maxDelta`
+    /// (default 5 s) and stamp its `category` field.  Brake events
+    /// that don't have a matching live entry are left untouched
+    /// (category stays nil → renders as "Unknown").
+    ///
+    /// Tolerance is because the detector's peak-time can shift by
+    /// a fraction of a second between the live polling and the
+    /// final save-time pass as more trailing context becomes
+    /// available — the centered finite-difference settles as the
+    /// window resolves.  5 s is generous enough to absorb that
+    /// shift while still preventing cross-event matches in typical
+    /// rides where brakes are spaced minutes apart.
+    func applyingBrakeCategorizations(
+        _ map: [Date: BrakeEventCategory],
+        maxDelta: TimeInterval = 5.0
+    ) -> Ride {
+        guard !map.isEmpty, let events = brakeEvents else { return self }
+        var newEvents = events
+        for i in newEvents.indices {
+            let eventTime = newEvents[i].timestamp
+            var bestCategory: BrakeEventCategory?
+            var bestDelta = maxDelta
+            for (liveTime, category) in map {
+                let delta = abs(liveTime.timeIntervalSince(eventTime))
+                if delta <= bestDelta {
+                    bestCategory = category
+                    bestDelta = delta
+                }
+            }
+            if let bestCategory {
+                newEvents[i].category = bestCategory
+            }
+        }
+        var copy = self
+        copy.brakeEvents = newEvents
+        return copy
+    }
 }

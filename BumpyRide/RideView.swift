@@ -100,6 +100,18 @@ struct RideView: View {
     /// ride is single-digit milliseconds.
     @State private var liveBrakeEvents: [BrakeEvent] = []
 
+    /// v1.7 J2: timestamps of brake events whose categorization
+    /// modal has already been shown (or queued) during this live
+    /// recording.  Dedup gate so the 1 Hz detector re-emitting the
+    /// same brake doesn't queue duplicate modals.
+    @State private var seenBrakeTimestamps: Set<Date> = []
+
+    /// v1.7 J2: FIFO of brake events still awaiting categorization.
+    /// Head of the queue drives the modal sheet's item binding —
+    /// when the user picks a category (or the 20 s timeout fires),
+    /// the head is popped and the next brake (if any) presents.
+    @State private var pendingBrakeQueue: [BrakeEvent] = []
+
     /// Pocket-mode value the save sheet will commit.  Primed from
     /// `MountStyleDetector`'s verdict on Stop; user can override via the toggle in
     /// the Sensing section before tapping Save.
@@ -490,12 +502,17 @@ struct RideView: View {
         .task(id: recorder.state) {
             guard recorder.state == .recording else {
                 liveBrakeEvents = []
+                // Don't clear seenBrakeTimestamps here — if the
+                // user pauses then resumes, brakes seen pre-pause
+                // shouldn't re-prompt categorization.  The set is
+                // cleared at next .start() via the recorder's
+                // reset path.
                 return
             }
             // Compute immediately on transition into .recording so
             // the first marker doesn't wait a full second after a
             // resume from pause.
-            liveBrakeEvents = BrakeEventDetector.detect(in: recorder.points)
+            updateLiveBrakes()
             // 1 Hz poll.  Cooperative cancellation via Task.isCancelled
             // when SwiftUI tears the task down (state change, view
             // disappear).  Re-check state every wake so a stale task
@@ -503,9 +520,45 @@ struct RideView: View {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard !Task.isCancelled, recorder.state == .recording else { break }
-                liveBrakeEvents = BrakeEventDetector.detect(in: recorder.points)
+                updateLiveBrakes()
             }
         }
+        // v1.7 J2: brake categorization sheet.  Item-binding drives
+        // off the head of `pendingBrakeQueue`; the sheet's onCommit
+        // pops the head and (if a category was chosen) stashes it on
+        // the recorder for save-time application.  Auto-dismiss is
+        // handled inside the sheet's own 20 s timer.
+        .sheet(item: Binding(
+            get: { pendingBrakeQueue.first },
+            set: { _ in /* removeFirst happens in commit handler */ }
+        )) { brake in
+            BrakeCategorizationSheet(brake: brake) { category in
+                if let category {
+                    recorder.setBrakeCategory(category, at: brake.timestamp)
+                }
+                // Pop regardless of whether a category was committed
+                // — nil means the timer expired, which we treat as
+                // "leave the brake uncategorized."
+                if !pendingBrakeQueue.isEmpty {
+                    pendingBrakeQueue.removeFirst()
+                }
+            }
+        }
+    }
+
+    /// Run the brake detector on the latest points buffer, publish
+    /// the result for the route-map overlay, AND queue any
+    /// previously-unseen brakes for the categorization sheet.
+    /// Dedup is by `timestamp` because the detector's UUID is fresh
+    /// each call but `timestamp` (peak-decel moment) is stable
+    /// across re-runs once the smoothing window resolves.
+    private func updateLiveBrakes() {
+        let detected = BrakeEventDetector.detect(in: recorder.points)
+        for brake in detected where !seenBrakeTimestamps.contains(brake.timestamp) {
+            seenBrakeTimestamps.insert(brake.timestamp)
+            pendingBrakeQueue.append(brake)
+        }
+        liveBrakeEvents = detected
     }
 
     /// Full-width "Log close call" button.  Purple tint matches the
@@ -1629,6 +1682,14 @@ struct RideView: View {
                             // the "detected, no events" signal the reprocessor
                             // distinguishes from nil.
                             ride = ride.withDetectedBrakeEvents()
+                            // v1.7 J2: apply any user-supplied brake
+                            // categorizations gathered during live
+                            // recording.  Each saved brake event gets
+                            // its `category` stamped from the closest-
+                            // timestamp match within 5 s.
+                            ride = ride.applyingBrakeCategorizations(
+                                recorder.brakeCategorizations
+                            )
                             store.save(ride)
                             appState.loadedRide = ride
                         }
