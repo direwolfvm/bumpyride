@@ -95,6 +95,17 @@ enum CloseCallCategory: String, Codable, Equatable, Sendable, CaseIterable {
     case vehicle
     case bike
     case pedestrian
+
+    /// Human-readable label for the saved-ride editor's category
+    /// picker and badge.  Capitalized noun form so it reads as a
+    /// label, not an enum case.
+    var displayLabel: String {
+        switch self {
+        case .vehicle: return "Vehicle"
+        case .bike: return "Bike"
+        case .pedestrian: return "Pedestrian"
+        }
+    }
 }
 
 /// A discrete hard-braking event detected post-hoc on a saved ride.  Sparse
@@ -162,6 +173,20 @@ enum BrakeEventCategory: String, Codable, Equatable, Sendable, CaseIterable {
     /// from `nil` (modal timed out untouched) only in record-
     /// keeping; both render the same in the UI for now.
     case unknown
+
+    /// Human-readable label for the saved-ride editor's category
+    /// picker and badge.  Capitalized noun form so it reads as a
+    /// label, not an enum case.  `error` displays as "False
+    /// trigger" — the underlying enum case name is technical, the
+    /// display label is plain-language.
+    var displayLabel: String {
+        switch self {
+        case .safety: return "Safety"
+        case .other: return "Other"
+        case .error: return "False trigger"
+        case .unknown: return "Unknown"
+        }
+    }
 }
 
 /// A complete saved ride: title, time bounds, ordered points, and the sensing mode

@@ -1258,9 +1258,14 @@ struct RideView: View {
                     Text(elapsedLabel(for: event, in: ride))
                         .font(.callout.monospacedDigit())
                         .foregroundStyle(.primary)
-                    Text(durationLabel(for: event))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        Text(durationLabel(for: event))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if let category = event.category {
+                            brakeCategoryBadge(for: category)
+                        }
+                    }
                 }
 
                 Spacer()
@@ -1276,6 +1281,65 @@ struct RideView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
+        .contextMenu {
+            // v1.7 J4: edit category on long-press.  Mirror of the
+            // live J2 modal but available retroactively for any
+            // saved brake, including legacy events whose category
+            // is nil.
+            Menu {
+                ForEach(BrakeEventCategory.allCases, id: \.self) { cat in
+                    Button {
+                        updateBrakeCategory(event, to: cat)
+                    } label: {
+                        if event.category == cat {
+                            Label(cat.displayLabel, systemImage: "checkmark")
+                        } else {
+                            Text(cat.displayLabel)
+                        }
+                    }
+                }
+                if event.category != nil {
+                    Divider()
+                    Button("Clear category") {
+                        updateBrakeCategory(event, to: nil)
+                    }
+                }
+            } label: {
+                Label("Category", systemImage: "tag")
+            }
+        }
+    }
+
+    /// Small badge view for the brake event's category in the row.
+    /// Tinted by category for at-a-glance scanning.
+    private func brakeCategoryBadge(for category: BrakeEventCategory) -> some View {
+        Text("· \(category.displayLabel)")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(brakeCategoryColor(for: category))
+    }
+
+    private func brakeCategoryColor(for category: BrakeEventCategory) -> Color {
+        switch category {
+        case .safety: return .red
+        case .other: return .blue
+        case .error: return .gray
+        case .unknown: return .secondary
+        }
+    }
+
+    /// v1.7 J4: persist a brake event's category change.  Mutates the
+    /// loaded ride's brakeEvents array and writes back through
+    /// store.save so the change syncs to bumpyride.me on the next
+    /// drain.  Updates appState.loadedRide so the row re-renders with
+    /// the new badge immediately.
+    private func updateBrakeCategory(_ event: BrakeEvent, to category: BrakeEventCategory?) {
+        guard var ride = appState.loadedRide,
+              var events = ride.brakeEvents,
+              let idx = events.firstIndex(where: { $0.id == event.id }) else { return }
+        events[idx].category = category
+        ride.brakeEvents = events
+        store.save(ride)
+        appState.loadedRide = ride
     }
 
     /// "mm:ss into the ride" timestamp display for an event.
@@ -1369,9 +1433,14 @@ struct RideView: View {
                     Text(elapsedLabel(for: call, in: ride))
                         .font(.callout.monospacedDigit())
                         .foregroundStyle(.primary)
-                    Text("close call")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        Text("close call")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if let category = call.category {
+                            closeCallCategoryBadge(for: category)
+                        }
+                    }
                 }
 
                 Spacer()
@@ -1390,6 +1459,29 @@ struct RideView: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
         .contextMenu {
+            // v1.7 J4: edit category on long-press.  Same shape as
+            // brake row's contextMenu.
+            Menu {
+                ForEach(CloseCallCategory.allCases, id: \.self) { cat in
+                    Button {
+                        updateCloseCallCategory(call, to: cat)
+                    } label: {
+                        if call.category == cat {
+                            Label(cat.displayLabel, systemImage: "checkmark")
+                        } else {
+                            Text(cat.displayLabel)
+                        }
+                    }
+                }
+                if call.category != nil {
+                    Divider()
+                    Button("Clear category") {
+                        updateCloseCallCategory(call, to: nil)
+                    }
+                }
+            } label: {
+                Label("Category", systemImage: "tag")
+            }
             Button(role: .destructive) {
                 deleteCloseCall(call)
             } label: {
@@ -1409,6 +1501,34 @@ struct RideView: View {
         guard var ride = appState.loadedRide else { return }
         guard var events = ride.closeCallEvents else { return }
         events.removeAll { $0.id == call.id }
+        ride.closeCallEvents = events
+        store.save(ride)
+        appState.loadedRide = ride
+    }
+
+    /// Small badge view for the close call's category in the row.
+    private func closeCallCategoryBadge(for category: CloseCallCategory) -> some View {
+        Text("· \(category.displayLabel)")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(closeCallCategoryColor(for: category))
+    }
+
+    private func closeCallCategoryColor(for category: CloseCallCategory) -> Color {
+        switch category {
+        case .vehicle: return .red
+        case .bike: return .blue
+        case .pedestrian: return .green
+        }
+    }
+
+    /// v1.7 J4: persist a close call's category change.  Mirrors
+    /// updateBrakeCategory's shape.  store.save fans out to the
+    /// sync queue so the new category reaches bumpyride.me.
+    private func updateCloseCallCategory(_ call: CloseCall, to category: CloseCallCategory?) {
+        guard var ride = appState.loadedRide,
+              var events = ride.closeCallEvents,
+              let idx = events.firstIndex(where: { $0.id == call.id }) else { return }
+        events[idx].category = category
         ride.closeCallEvents = events
         store.save(ride)
         appState.loadedRide = ride
