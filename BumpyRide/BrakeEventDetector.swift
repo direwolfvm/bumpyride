@@ -78,7 +78,7 @@ enum BrakeEventDetector {
     ///   depending on rider habits; the count vs. false-positive
     ///   trade is now firmly on the side of "show more, even if some
     ///   are firm-not-hard."
-    /// - rev 6 (this file): two changes.  First, replace centered
+    /// - rev 6 (afd442f): two changes.  First, replace centered
     ///   finite difference with `max(forward, backward)` per point.
     ///   Centered diff is a weighted average of forward and
     ///   backward; when GPS sampling becomes asymmetric (a fix gap
@@ -94,7 +94,22 @@ enum BrakeEventDetector {
     ///   end peaked at 1.41 m/s² under the new algorithm — needed to
     ///   drop the threshold to catch it.  1.3 leaves a small margin
     ///   without crossing into casual coast-down territory.
-    static let revision: Int = 6
+    /// - rev 7 (this file): adds a GPS-gap brake heuristic.  When a
+    ///   gap >= 4 s has a speed drop >= 4 m/s (≈ 9 mph), emit a
+    ///   brake event at the start of the gap with peakDecel = drop
+    ///   / 2 s — attributes the drop to a typical hard-brake
+    ///   duration rather than averaging over the entire gap.
+    ///   Surfaced from field test ride C89BFE58 (Jun 8): a 7 s
+    ///   tunnel gap saw speed go from 8.0 → 2.3 m/s (5.7 m/s drop)
+    ///   that the rev 6 detector missed entirely (averaged decel
+    ///   was 0.82 m/s², below threshold).  Under rev 7 the rider
+    ///   gets a 2.85 m/s² event at the tunnel entry, which is the
+    ///   useful signal even if the precise braking moment within
+    ///   the gap is unrecoverable.  Regular events still win in
+    ///   collapseAdjacent if both fire at the same location (real
+    ///   brakes typically peak higher than the 2s-attributed gap
+    ///   estimate).
+    static let revision: Int = 7
 
     /// Deceleration must exceed this to start counting toward a brake event.
     /// 1.3 m/s² ≈ 0.13 g.  Below the 2 m/s² typical-firm-stop threshold;
@@ -124,6 +139,27 @@ enum BrakeEventDetector {
     /// inflating the count from "brake → release → brake again" patterns.
     /// Sits between rev 1's overly-eager 3 s and rev 2's 1.5 s.
     static let minSeparationSeconds: TimeInterval = 2.0
+
+    /// rev 7 GPS-gap heuristic: minimum gap between consecutive
+    /// points to trigger the cross-gap brake check.  4 s is long
+    /// enough that the gap is meaningfully a GPS dropout (rather
+    /// than the standard 1–2 Hz cadence), short enough to catch
+    /// real underpass/bridge crossings.
+    private static let gapBrakeMinGapSeconds: TimeInterval = 4.0
+
+    /// rev 7 GPS-gap heuristic: minimum speed drop across the gap
+    /// to trigger an event.  4 m/s ≈ 9 mph — large enough that it
+    /// can't be a coast-down, small enough to catch a moderate
+    /// brake.
+    private static let gapBrakeMinSpeedDropMps: Double = 4.0
+
+    /// rev 7 GPS-gap heuristic: assumed actual brake duration
+    /// within a gap, used to attribute the total speed drop to a
+    /// realistic peak rate.  2 s reflects typical cycling hard-
+    /// brake duration (centered around the rider's reaction +
+    /// 1 s of sustained brake) rather than averaging the drop
+    /// over the entire GPS-silent window.
+    private static let gapBrakeAssumedBrakeSeconds: TimeInterval = 2.0
 
     /// Gain applied to the horizontalAccel signal during peak refinement
     /// (NOT as a trigger).  9.80665 converts g → m/s², 0.8 discounts the
@@ -162,8 +198,51 @@ enum BrakeEventDetector {
         let smoothedSpeeds = smoothSpeeds(in: points)
         let decel = decelerations(from: smoothedSpeeds, points: points)
         let runs = findRuns(decel: decel, points: points)
-        let events = runs.compactMap { emit(run: $0, points: points, decel: decel) }
-        return collapseAdjacent(events)
+        let regular = runs.compactMap { emit(run: $0, points: points, decel: decel) }
+        // rev 7: layer the GPS-gap heuristic on top of the regular
+        // detector.  Sort merged by timestamp before collapsing
+        // adjacent since collapseAdjacent assumes chronological
+        // order.  A regular brake that overlaps a gap-attributed
+        // event typically wins via collapseAdjacent's higher-peak
+        // rule — real brakes outpeak the 2-second attribution.
+        let gap = gapBrakeEvents(in: points)
+        let merged = (regular + gap).sorted { $0.timestamp < $1.timestamp }
+        return collapseAdjacent(merged)
+    }
+
+    /// rev 7 GPS-gap heuristic.  Scan consecutive point pairs for
+    /// gaps that match the (dt >= 4 s, drop >= 4 m/s) shape and
+    /// emit a brake event attributed to the start of the gap.
+    ///
+    /// Field-test motivation: ride C89BFE58 (Jun 8 2026) has a
+    /// 7-second gap from 20:16:29 (s=7.99) to 20:16:36 (s=2.27).
+    /// The rev 6 detector saw an averaged forward-decel of
+    /// (7.99 - 2.27) / 7 = 0.82 m/s², below threshold — false
+    /// negative on what was clearly a real braking event at the
+    /// tunnel exit.  Rev 7 attributes the 5.7 m/s drop to a 2-second
+    /// hard-brake duration, computing 2.85 m/s² which triggers
+    /// the threshold.  Location is the LAST KNOWN good GPS fix
+    /// (start of the gap), since that's where we last saw the
+    /// rider — the actual brake location during the gap is
+    /// unrecoverable without GPS.
+    private static func gapBrakeEvents(in points: [RidePoint]) -> [BrakeEvent] {
+        guard points.count >= 2 else { return [] }
+        var events: [BrakeEvent] = []
+        for i in 0..<(points.count - 1) {
+            let dt = points[i + 1].timestamp.timeIntervalSince(points[i].timestamp)
+            guard dt >= gapBrakeMinGapSeconds else { continue }
+            let drop = points[i].speed - points[i + 1].speed
+            guard drop >= gapBrakeMinSpeedDropMps else { continue }
+            let peakDecel = drop / gapBrakeAssumedBrakeSeconds
+            events.append(BrakeEvent(
+                timestamp: points[i].timestamp,
+                latitude: points[i].latitude,
+                longitude: points[i].longitude,
+                peakDecelerationMPS2: peakDecel,
+                durationSeconds: dt
+            ))
+        }
+        return events
     }
 
     // MARK: - Pipeline steps
