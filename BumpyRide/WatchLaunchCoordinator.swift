@@ -4,6 +4,9 @@ import OSLog
 #if canImport(HealthKit)
 import HealthKit
 #endif
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// iOS side of the v1.7 watch HealthKit handoff.  When the user opts
 /// in via Settings ("Open watch app with this app"), we call
@@ -84,7 +87,28 @@ final class WatchLaunchCoordinator {
         let installed = watchCoordinator.isWatchAppInstalled
         let hkAvailable = healthKitAuth.isAvailable
         let hkCanWrite = healthKitAuth.canWrite
-        Self.log.info("considerLaunchingWatchApp gates: toggle=\(toggleOn) paired=\(paired) installed=\(installed) hkAvailable=\(hkAvailable) hkCanWrite=\(hkCanWrite)")
+        #if canImport(UIKit)
+        let appActive = UIApplication.shared.applicationState == .active
+        #else
+        let appActive = true
+        #endif
+        Self.log.info("considerLaunchingWatchApp gates: toggle=\(toggleOn) paired=\(paired) installed=\(installed) hkAvailable=\(hkAvailable) hkCanWrite=\(hkCanWrite) appActive=\(appActive)")
+
+        // K10: HKHealthStore.startWatchApp throws Code=550
+        // "Cannot start watch app when phone app is in background"
+        // if we call it from anything but the active foreground.
+        // SwiftUI's scenePhase observer races against the
+        // applicationState transition — by the time our async hop
+        // lands, scenePhase can still read .active for a moment
+        // after the system has flipped the underlying state to
+        // .inactive/.background.  Treat applicationState as the
+        // source of truth and skip silently when it isn't .active.
+        // Next foreground will fire scenePhase → .active → retry.
+        guard appActive else {
+            state = .skipped(reason: "iPhone app not active")
+            Self.log.info("Skipped: iPhone app not in active state")
+            return
+        }
 
         // Gate 1: user opted in.  Default state — most users will
         // land here.

@@ -12,6 +12,13 @@ import Observation
 /// bumpiness through the 3 Hz HPF before the ride is persisted.
 @Observable
 final class RideRecorder {
+    /// DebugLog so lifecycle events land in the per-ride sidecar file
+    /// during a recording (and in the daily session file before/after).
+    /// Matches the K9 instrumentation pattern — bracket each
+    /// state-changing API entry/exit so field-diagnosis of "what
+    /// happened during my ride" reads as a clean trace.
+    nonisolated static let log = DebugLog(category: "recorder")
+
     /// Lifecycle states.  Note `paused` is reachable only from `recording` and only
     /// via the explicit `pause()` API — there is no auto-pause on app backgrounding
     /// (the location entitlement covers that) or on motion stillness.
@@ -112,7 +119,11 @@ final class RideRecorder {
         // resume(), not a new ride — silently starting over would discard their
         // in-progress points).  .idle and .finished are the legitimate entry
         // points for a fresh ride.
-        guard state == .idle || state == .finished else { return }
+        guard state == .idle || state == .finished else {
+            Self.log.notice("start() ignored: state=\(state)")
+            return
+        }
+        Self.log.info("start() from state=\(state)")
         points = []
         closeCalls = []
         brakeCategorizations = [:]
@@ -138,6 +149,7 @@ final class RideRecorder {
         state = .recording
         motion.start()
         location.startUpdating()
+        Self.log.info("start() complete: rideId=\(rideId), state=recording, motion+location started")
     }
 
     /// Temporarily halt sampling without ending the ride.  Stops the GPS + motion
@@ -146,10 +158,14 @@ final class RideRecorder {
     /// `resume()` picks up exactly where we left off.  Idempotent — repeated
     /// `pause()` calls from `.paused` are no-ops.
     func pause() {
-        guard state == .recording else { return }
+        guard state == .recording else {
+            Self.log.notice("pause() ignored: state=\(state) (not recording)")
+            return
+        }
         location.stopUpdating()
         motion.stop()
         state = .paused
+        Self.log.info("pause() complete: state=paused")
     }
 
     /// Resume sampling after a `pause()`.  Calling `motion.start()` resets the
@@ -157,17 +173,25 @@ final class RideRecorder {
     /// "empty" for ~1 s after resume while the window refills — that's a feature,
     /// not a bug (the pause discontinuity shouldn't be smeared through the filter).
     func resume() {
-        guard state == .paused else { return }
+        guard state == .paused else {
+            Self.log.notice("resume() ignored: state=\(state) (not paused)")
+            return
+        }
         motion.start()
         location.startUpdating()
         state = .recording
+        Self.log.info("resume() complete: state=recording")
     }
 
     func stop() -> Ride? {
         // Accept stop from either active or paused — users who tap Stop after a
         // pause expect the same save-sheet flow they get from a recording-state
         // stop.  No need to "re-start before stopping."
-        guard state == .recording || state == .paused else { return nil }
+        guard state == .recording || state == .paused else {
+            Self.log.notice("stop() ignored: state=\(state) (neither recording nor paused)")
+            return nil
+        }
+        Self.log.info("stop() from state=\(state): \(points.count) points captured, totalDistance=\(totalDistanceMeters)m")
         location.stopUpdating()
         motion.stop()
         endedAt = Date()
@@ -176,7 +200,10 @@ final class RideRecorder {
         // saves or discards.  If the user kills the app before resolving the
         // save sheet, recovery on next launch picks up where we left off.
         journal.close()
-        guard let start = startedAt, let end = endedAt, !points.isEmpty else { return nil }
+        guard let start = startedAt, let end = endedAt, !points.isEmpty else {
+            Self.log.notice("stop() returning nil: empty points or missing startedAt/endedAt")
+            return nil
+        }
         // pocketMode is left nil here — the save flow runs `MountStyleDetector` and
         // decides.  Per Option C the recording is always raw; the mode label is a
         // post-hoc characterization, not a pre-flight setting.
@@ -192,6 +219,7 @@ final class RideRecorder {
     }
 
     func reset() {
+        Self.log.info("reset() from state=\(state)")
         motion.stop()
         location.stopUpdating()
         motion.reset()

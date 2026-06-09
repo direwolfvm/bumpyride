@@ -27,7 +27,12 @@ final class WatchCoordinator: NSObject {
     // `Logger` is thread-safe; mark nonisolated so the WCSessionDelegate
     // callbacks (which arrive on a background queue) can write logs
     // without an actor hop.
-    nonisolated private static let log = Logger(subsystem: "com.herbertindustries.BumpyRide", category: "watch")
+    // DebugLog so WCSession lifecycle + send/receive events land in
+    // the per-ride sidecar (during a ride) or the daily session log
+    // (outside a ride) — same fan-out used by HealthKitExporter and
+    // WatchLaunchCoordinator.  Critical for field-diagnosis of
+    // "watch app not pairing / not receiving snapshots."
+    nonisolated private static let log = DebugLog(category: "watch")
 
     /// Lifecycle of the WCSession from this app's perspective.  Mirrors
     /// `WCSessionActivationState` but adds an `unavailable` case for
@@ -161,7 +166,7 @@ final class WatchCoordinator: NSObject {
             try session.updateApplicationContext(payload)
             lastSentSnapshot = snapshot
         } catch {
-            Self.log.error("updateApplicationContext failed: \(String(describing: error), privacy: .public)")
+            Self.log.error("updateApplicationContext failed: \(String(describing: error))")
         }
         #endif
     }
@@ -213,7 +218,7 @@ final class WatchCoordinator: NSObject {
         store.save(ride)
         appState.loadedRide = ride
         recorder.reset()
-        Self.log.info("Auto-saved ride \(ride.id, privacy: .public) from watch Stop")
+        Self.log.info("Auto-saved ride \(ride.id) from watch Stop")
     }
 
     // MARK: - Snapshot stream
@@ -375,7 +380,7 @@ extension WatchCoordinator: WCSessionDelegate {
         let pairedNow = session.isPaired
         let installedNow = session.isWatchAppInstalled
         let errorMessage = error.map { String(describing: $0) }
-        Self.log.info("WCSession activation completed: state=\(activationState.rawValue, privacy: .public) paired=\(pairedNow, privacy: .public) installed=\(installedNow, privacy: .public) reachable=\(reachableNow, privacy: .public)")
+        Self.log.info("WCSession activation completed: state=\(activationState.rawValue) paired=\(pairedNow) installed=\(installedNow) reachable=\(reachableNow)")
         Task { @MainActor in
             self.isReachable = reachableNow
             self.isPaired = pairedNow
@@ -410,7 +415,7 @@ extension WatchCoordinator: WCSessionDelegate {
 
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
         let reachableNow = session.isReachable
-        Self.log.info("WCSession reachability changed: \(reachableNow, privacy: .public)")
+        Self.log.info("WCSession reachability changed: \(reachableNow)")
         Task { @MainActor in
             self.isReachable = reachableNow
         }
@@ -419,7 +424,7 @@ extension WatchCoordinator: WCSessionDelegate {
     nonisolated func sessionWatchStateDidChange(_ session: WCSession) {
         let pairedNow = session.isPaired
         let installedNow = session.isWatchAppInstalled
-        Self.log.info("WCSession watch state changed: paired=\(pairedNow, privacy: .public) installed=\(installedNow, privacy: .public)")
+        Self.log.info("WCSession watch state changed: paired=\(pairedNow) installed=\(installedNow)")
         Task { @MainActor in
             self.isPaired = pairedNow
             self.isWatchAppInstalled = installedNow
@@ -444,7 +449,7 @@ extension WatchCoordinator: WCSessionDelegate {
         didReceiveMessage message: [String: Any]
     ) {
         if let command = WatchPayload.decodeCommand(from: message) {
-            Self.log.notice("Received command (no reply): \(String(describing: command), privacy: .public)")
+            Self.log.notice("Received command (no reply): \(String(describing: command))")
             Task { @MainActor in self.handle(command: command) }
         } else {
             Self.log.notice("Received unrecognized message (no reply)")
@@ -466,7 +471,7 @@ extension WatchCoordinator: WCSessionDelegate {
             replyHandler([:])
             return
         }
-        Self.log.notice("Received command (with reply): \(String(describing: command), privacy: .public)")
+        Self.log.notice("Received command (with reply): \(String(describing: command))")
         switch command {
         case .ping:
             // Immediate pong — no main-actor hop needed.
@@ -489,7 +494,7 @@ extension WatchCoordinator: WCSessionDelegate {
         didReceiveUserInfo userInfo: [String: Any] = [:]
     ) {
         if let command = WatchPayload.decodeCommand(from: userInfo) {
-            Self.log.notice("Received queued command: \(String(describing: command), privacy: .public)")
+            Self.log.notice("Received queued command: \(String(describing: command))")
             Task { @MainActor in self.handle(command: command) }
         } else {
             Self.log.notice("Received unrecognized userInfo")
