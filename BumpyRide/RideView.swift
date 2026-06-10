@@ -576,7 +576,38 @@ struct RideView: View {
             seenBrakeTimestamps.insert(brake.timestamp)
             pendingBrakeQueue.append(brake)
         }
-        liveBrakeEvents = detected
+        // Only publish (and thereby force a RouteMapView re-render of
+        // the whole polyline + overlays) when the detected set actually
+        // changed.  `detect()` mints a fresh `id` UUID on every call, so
+        // a plain `detected != liveBrakeEvents` would compare unequal
+        // every second even when nothing moved — which was redrawing the
+        // map at 1 Hz for the entire ride and getting more expensive as
+        // the route grew.  Compare on the stable fields instead so we
+        // keep the existing array (and its annotation identities) until
+        // a brake genuinely appears or its peak refines.
+        if !Self.brakesEquivalent(detected, liveBrakeEvents) {
+            liveBrakeEvents = detected
+        }
+    }
+
+    /// Content-equality for live brake arrays, ignoring the per-call
+    /// `id` UUID that `BrakeEventDetector.detect` regenerates each run.
+    /// Two arrays are equivalent when they have the same brakes in the
+    /// same order with matching timestamp / peak / duration / location.
+    /// Used to suppress no-op `liveBrakeEvents` reassignments that would
+    /// otherwise re-render the route map every second.
+    private static func brakesEquivalent(_ a: [BrakeEvent], _ b: [BrakeEvent]) -> Bool {
+        guard a.count == b.count else { return false }
+        for (x, y) in zip(a, b) {
+            if x.timestamp != y.timestamp
+                || x.peakDecelerationMPS2 != y.peakDecelerationMPS2
+                || x.durationSeconds != y.durationSeconds
+                || x.latitude != y.latitude
+                || x.longitude != y.longitude {
+                return false
+            }
+        }
+        return true
     }
 
     /// Full-width "Log close call" button.  Purple tint matches the
