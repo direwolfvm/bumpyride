@@ -223,6 +223,41 @@ final class AppSettings {
         return UIColor(red: r, green: g, blue: b, alpha: 1)
     }
 
+    /// Index (0...4) of the discrete color band a bumpiness value
+    /// falls into — green / yellow / orange / red / purple, keyed off
+    /// the four user-tunable thresholds.  Distinct from `color(for:)`,
+    /// which interpolates a smooth gradient between stops.
+    ///
+    /// Used by `RouteMapView` to coalesce contiguous same-band route
+    /// segments into a single multi-point polyline: drawing one
+    /// overlay per band-run instead of one per point-pair is what
+    /// keeps the live map performant on long rides (a 4-mile ride is
+    /// ~2,000 point-pairs; banding collapses that to a few dozen
+    /// overlays).  The band boundaries are exactly the legend stops,
+    /// so the banded route matches the color scale the user sees.
+    func colorBand(for bumpiness: Double) -> Int {
+        let v = max(0, bumpiness)
+        if v >= purpleG { return 4 }
+        if v >= redG { return 3 }
+        if v >= orangeG { return 2 }
+        if v >= yellowG { return 1 }
+        return 0
+    }
+
+    /// Representative color for a band index from `colorBand(for:)`.
+    /// Returns the exact legend stop color (not an interpolated
+    /// value), so a banded route reads as discrete bands matching the
+    /// Settings color-scale preview.  Clamps out-of-range indices.
+    func bandColor(_ band: Int) -> Color {
+        switch max(0, min(4, band)) {
+        case 0: return color(for: 0)        // green stop
+        case 1: return color(for: yellowG)  // yellow stop
+        case 2: return color(for: orangeG)  // orange stop
+        case 3: return color(for: redG)     // red stop
+        default: return color(for: purpleG) // purple stop
+        }
+    }
+
     private func rgb(for bumpiness: Double) -> (Double, Double, Double) {
         let sorted = stops
         let v = max(0, bumpiness)

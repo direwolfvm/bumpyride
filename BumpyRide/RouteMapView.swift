@@ -56,9 +56,9 @@ struct RouteMapView: View {
         Map(position: $cameraPosition) {
             UserAnnotation()
 
-            ForEach(segments(), id: \.id) { seg in
-                MapPolyline(coordinates: [seg.start, seg.end])
-                    .stroke(seg.color, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+            ForEach(colorRuns()) { run in
+                MapPolyline(coordinates: run.coordinates)
+                    .stroke(run.color, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
             }
 
             // Brake-event pins.  Rendered before the scrub highlight so the
@@ -144,10 +144,21 @@ struct RouteMapView: View {
         }
     }
 
-    private struct Segment: Identifiable {
-        let id = UUID()
-        let start: CLLocationCoordinate2D
-        let end: CLLocationCoordinate2D
+    /// A contiguous run of route points that all fall in the same
+    /// bumpiness color band, drawn as a single multi-point polyline.
+    ///
+    /// `id` is the index of the run's first point — **stable across
+    /// renders** so SwiftUI/MapKit can diff incrementally.  During
+    /// live recording, every run except the last keeps the same id +
+    /// coordinates + color tick-to-tick, so MapKit leaves those
+    /// overlays untouched and only updates the growing tail run (or
+    /// appends one new run when the band changes).  This is the fix
+    /// for the old per-segment approach, which minted a fresh UUID
+    /// per render and forced a full teardown/rebuild of every overlay
+    /// every frame.
+    private struct ColorRun: Identifiable {
+        let id: Int
+        let coordinates: [CLLocationCoordinate2D]
         let color: Color
     }
 
@@ -163,32 +174,74 @@ struct RouteMapView: View {
     /// dropouts trip the break.
     private static let maxSegmentTimeGapSeconds: TimeInterval = 30
 
-    private func segments() -> [Segment] {
+    /// Build the route as a small set of multi-point polylines —
+    /// one per contiguous run of same-color-band points (bumps mode)
+    /// or one per gap-free stretch (brakes mode).
+    ///
+    /// Why coalesce: drawing one `MapPolyline` per point-pair means
+    /// ~2,000 overlays on a 4-mile ride, and MapKit redraws every
+    /// visible overlay each frame on pan/zoom/camera-follow — the
+    /// route was the dominant cost in the live display and it scaled
+    /// with ride length.  Merging adjacent same-band segments drops
+    /// the overlay count to a few dozen.  In brakes mode (single
+    /// neutral color) it collapses to one polyline per dropout-free
+    /// stretch.
+    ///
+    /// Adjacent runs share their boundary vertex (the new run starts
+    /// at the same point the previous run ended), so the banded route
+    /// is visually continuous — no seams at color transitions.  A
+    /// time gap > `maxSegmentTimeGapSeconds` ends the current run and
+    /// the next point starts a fresh one, preserving the dropout
+    /// break behavior.
+    private func colorRuns() -> [ColorRun] {
         guard points.count > 1 else { return [] }
-        var out: [Segment] = []
-        out.reserveCapacity(points.count - 1)
-        // Pre-compute the brakes-mode neutral once instead of per-segment.
-        // Slightly transparent so the basemap shows the underlying street.
         let neutralColor = Color.gray.opacity(0.75)
-        for i in 1..<points.count {
-            let a = points[i - 1]
-            let b = points[i]
-            // Skip drawing a segment when the gap between fixes is long
-            // enough that the connecting line wouldn't represent the
-            // rider's actual path — typically a mid-ride GPS dropout.
-            // The polyline visually breaks here.
-            let gap = b.timestamp.timeIntervalSince(a.timestamp)
-            if gap > Self.maxSegmentTimeGapSeconds { continue }
-            let color: Color
-            if colorRoute {
-                let avg = (a.bumpiness + b.bumpiness) / 2
-                color = settings.color(for: avg)
-            } else {
-                color = neutralColor
+        var runs: [ColorRun] = []
+
+        var startIdx: Int? = nil
+        var coords: [CLLocationCoordinate2D] = []
+        var curBand: Int = 0
+
+        func flush() {
+            if let s = startIdx, coords.count >= 2 {
+                let color = colorRoute ? settings.bandColor(curBand) : neutralColor
+                runs.append(ColorRun(id: s, coordinates: coords, color: color))
             }
-            out.append(Segment(start: a.coordinate, end: b.coordinate, color: color))
+            startIdx = nil
+            coords = []
         }
-        return out
+
+        for k in 0..<(points.count - 1) {
+            let a = points[k]
+            let b = points[k + 1]
+            // Long gap = GPS dropout; break the polyline rather than
+            // draw a misleading straight line across unmapped terrain.
+            let gap = b.timestamp.timeIntervalSince(a.timestamp)
+            if gap > Self.maxSegmentTimeGapSeconds {
+                flush()
+                continue
+            }
+            // In brakes mode every segment is band 0 (neutral), so the
+            // whole gap-free stretch coalesces into one run.
+            let band = colorRoute ? settings.colorBand(for: (a.bumpiness + b.bumpiness) / 2) : 0
+            if startIdx == nil {
+                startIdx = k
+                coords = [a.coordinate, b.coordinate]
+                curBand = band
+            } else if band == curBand {
+                coords.append(b.coordinate)
+            } else {
+                // Band change: close the current run (ending at `a`),
+                // start a new one beginning at `a` so the two polylines
+                // share the boundary vertex and read as continuous.
+                flush()
+                startIdx = k
+                coords = [a.coordinate, b.coordinate]
+                curBand = band
+            }
+        }
+        flush()
+        return runs
     }
 
     private func updateCamera(initial: Bool) {
