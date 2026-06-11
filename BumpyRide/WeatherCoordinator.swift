@@ -33,10 +33,13 @@ import WeatherKit
 @Observable
 @MainActor
 final class WeatherCoordinator {
-    nonisolated private static let log = Logger(
-        subsystem: "com.herbertindustries.BumpyRide",
-        category: "weather"
-    )
+    // DebugLog so weather fetch outcomes (especially the failure
+    // reason) land in the iCloud sidecar — the only way to see
+    // WeatherKit's actual error on-device during a real ride, which
+    // is exactly what we need to confirm whether the overlay's
+    // not-showing is the WeatherKit auth/JWT propagation or something
+    // else.
+    nonisolated private static let log = DebugLog(category: "weather")
 
     /// Last successfully fetched current weather.  `nil` until the
     /// first fetch lands.  UI binds to this via `@Observable`
@@ -132,14 +135,14 @@ final class WeatherCoordinator {
         fetchTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                Self.log.info("Fetching weather near (\(location.coordinate.latitude, format: .fixed(precision: 4), privacy: .public), \(location.coordinate.longitude, format: .fixed(precision: 4), privacy: .public))")
+                Self.log.info("Fetching weather near (\(String(format: "%.4f", location.coordinate.latitude)), \(String(format: "%.4f", location.coordinate.longitude)))")
                 let weather = try await WeatherService.shared.weather(for: location)
                 self.current = weather.currentWeather
                 self.lastFetchAt = Date()
                 self.lastFetchLocation = location
-                Self.log.info("Weather fetched: \(weather.currentWeather.temperature.formatted(), privacy: .public), wind \(weather.currentWeather.wind.speed.formatted(), privacy: .public) from \(weather.currentWeather.wind.direction.value, format: .fixed(precision: 0), privacy: .public)°")
+                Self.log.info("Weather fetched: \(weather.currentWeather.temperature.formatted()), wind \(weather.currentWeather.wind.speed.formatted()) from \(String(format: "%.0f", weather.currentWeather.wind.direction.value))°")
             } catch {
-                Self.log.error("WeatherKit fetch failed: \(String(describing: error), privacy: .public)")
+                Self.log.error("WeatherKit fetch failed: \(String(describing: error))")
                 // Leave `current` and the success stamps alone — if
                 // we had a previous successful fetch the chip
                 // continues showing it; if not, the chip stays
@@ -151,6 +154,21 @@ final class WeatherCoordinator {
         }
         #else
         Self.log.notice("WeatherKit not available on this platform; skipping refresh")
+        #endif
+    }
+
+    /// Diagnostic snapshot of the coordinator's gate state, logged
+    /// once when RideView starts polling so the sidecar shows whether
+    /// we're even attempting fetches (vs. silently gated by a recent
+    /// failure backoff or a still-fresh cache).  Helps distinguish
+    /// "WeatherKit is erroring" from "we never called it."
+    func logDiagnosticState() {
+        #if canImport(WeatherKit)
+        let hasCache = current != nil
+        let lastAttempt = lastAttemptAt.map { String(format: "%.0fs ago", Date().timeIntervalSince($0)) } ?? "never"
+        Self.log.info("Weather state: hasCache=\(hasCache) lastAttempt=\(lastAttempt)")
+        #else
+        Self.log.notice("Weather: WeatherKit not built into this platform")
         #endif
     }
 

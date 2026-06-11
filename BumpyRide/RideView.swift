@@ -488,6 +488,11 @@ struct RideView: View {
         // for a meaningful break.
         .task(id: recorder.state) {
             guard recorder.state == .recording else { return }
+            // Log the weather gate state once at poll start so the
+            // sidecar shows whether we're attempting fetches at all —
+            // helps tell "WeatherKit is erroring" apart from "gated by
+            // backoff / fresh cache / no GPS fix yet."
+            weatherCoordinator.logDiagnosticState()
             while !Task.isCancelled {
                 if let loc = recorder.location.lastLocation {
                     weatherCoordinator.refresh(near: loc)
