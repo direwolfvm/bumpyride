@@ -23,6 +23,13 @@ struct BumpMapView: UIViewRepresentable {
     /// `BumpMapLocationHint` for the rationale on a separate CLLocationManager.
     @Bindable var locationHint: BumpMapLocationHint
 
+    /// Monotonically-incrementing recenter request from the parent's
+    /// floating recenter button.  When this changes, `updateUIView`
+    /// re-frames the map to the full-data region (the same "initial
+    /// view of everything" the map opens with).  An Int counter rather
+    /// than a Bool so repeated taps each register as a distinct change.
+    var recenterTrigger: Int = 0
+
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> MKMapView {
@@ -80,6 +87,30 @@ struct BumpMapView: UIViewRepresentable {
                 map.setRegion(Self.cityRegion(around: loc.coordinate), animated: true)
             }
         }
+
+        // Explicit recenter request from the parent's floating button.
+        // Overrides the one-shot auto-frame guards above — the user is
+        // deliberately asking to return to the full-data view after
+        // panning/zooming around.  Reframes to the same region the map
+        // opened with (all data → user-hint city → contiguous US).
+        if recenterTrigger != context.coordinator.lastRecenterTrigger {
+            context.coordinator.lastRecenterTrigger = recenterTrigger
+            map.setRegion(recenterRegion(), animated: true)
+        }
+    }
+
+    /// The "show everything" region used by the recenter button —
+    /// mirrors `setInitialCamera`'s priority: full-data bounding box
+    /// first, then the user's location hint at city zoom, then the
+    /// contiguous-US fallback.
+    private func recenterRegion() -> MKCoordinateRegion {
+        if let region = bumpMap.boundingRegion {
+            return region
+        } else if let loc = locationHint.currentLocation {
+            return Self.cityRegion(around: loc.coordinate)
+        } else {
+            return Self.usaRegion
+        }
     }
 
     /// City-sized framing — ~7 mi across.  Tuned to feel like "I just opened
@@ -127,13 +158,16 @@ struct BumpMapView: UIViewRepresentable {
             // shape.  When the hint lands (either automatically because we're
             // already authorized, or because the user taps "Use my location"
             // in the empty state), updateUIView pans to them.
-            let usa = MKCoordinateRegion(
-                center: CLLocationCoordinate2D(latitude: 39.5, longitude: -98.35),
-                span: MKCoordinateSpan(latitudeDelta: 35, longitudeDelta: 60)
-            )
-            map.setRegion(usa, animated: false)
+            map.setRegion(Self.usaRegion, animated: false)
         }
     }
+
+    /// Contiguous-US framing — the final fallback when there's neither
+    /// ride data nor a location fix to center on.
+    private static let usaRegion = MKCoordinateRegion(
+        center: CLLocationCoordinate2D(latitude: 39.5, longitude: -98.35),
+        span: MKCoordinateSpan(latitudeDelta: 35, longitudeDelta: 60)
+    )
 
     @MainActor
     final class Coordinator: NSObject, MKMapViewDelegate {
@@ -157,6 +191,11 @@ struct BumpMapView: UIViewRepresentable {
         /// the eventual "first ride saved" auto-fit still wins over the initial
         /// location-based framing.
         var didPanToUserHint: Bool = false
+        /// Last recenter-trigger value we acted on.  Compared against the
+        /// parent's `recenterTrigger` so a change (button tap) fires exactly
+        /// one reframe.  Starts at 0 to match the parent's initial value —
+        /// no spurious recenter on first render.
+        var lastRecenterTrigger: Int = 0
 
         nonisolated func mapView(_ mapView: MKMapView, rendererFor overlay: any MKOverlay) -> MKOverlayRenderer {
             if let tile = overlay as? MKTileOverlay {

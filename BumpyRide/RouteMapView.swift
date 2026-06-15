@@ -105,9 +105,47 @@ struct RouteMapView: View {
             }
             #endif
         }
+        .overlay(alignment: .bottomTrailing) {
+            recenterButton
+                .padding(12)
+        }
         .onAppear { updateCamera(initial: true) }
         .onChange(of: points.count) { _, _ in updateCamera(initial: false) }
         .onChange(of: highlightIndex) { _, _ in centerOnHighlight() }
+    }
+
+    /// Floating recenter control.  Context-aware:
+    /// - **Live recording** (`followUser`): re-arms user-location
+    ///   tracking, snapping back to where the rider is now after they've
+    ///   panned around the map.  Icon: `location.fill`.
+    /// - **Playback** (`!followUser`): refits the whole route's bounding
+    ///   box — the saved-ride analog of "show everything."  Icon:
+    ///   `arrow.up.left.and.arrow.down.right`.
+    ///
+    /// Sits bottom-trailing so it clears the top-trailing weather chip
+    /// and the system compass/scale controls.
+    private var recenterButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.4)) { recenter() }
+        } label: {
+            Image(systemName: followUser ? "location.fill" : "arrow.up.left.and.arrow.down.right")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 40, height: 40)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().stroke(Color.black.opacity(0.12)))
+        }
+        .accessibilityLabel(followUser ? "Recenter on my location" : "Fit route")
+    }
+
+    /// Apply the recenter action for the current context.  See
+    /// `recenterButton` for the live-vs-playback split.
+    private func recenter() {
+        if followUser {
+            cameraPosition = .userLocation(fallback: .automatic)
+        } else if let region = boundingRegion() {
+            cameraPosition = .region(region)
+        }
     }
 
     /// Visual: white ring + red filled disc + white exclamation glyph.

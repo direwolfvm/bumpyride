@@ -24,6 +24,10 @@ struct BumpMapTabView: View {
     /// `MKMapView` wrapper.  See `BumpMapLocationHint`.
     @State private var locationHint = BumpMapLocationHint()
 
+    /// Incremented by the floating recenter button.  `BumpMapView`
+    /// observes the change and reframes to the full-data region.
+    @State private var recenterTrigger = 0
+
     /// True when the user has no rides at all — drives the empty-state overlay
     /// and the show/hide of the filter chip + footer chrome.  We use rides count
     /// rather than `bumpMap.boundingRegion == nil` because the bump map can
@@ -39,7 +43,8 @@ struct BumpMapTabView: View {
                     closeCallMap: closeCallMap,
                     settings: settings,
                     mode: settings.mapViewMode,
-                    locationHint: locationHint
+                    locationHint: locationHint,
+                    recenterTrigger: recenterTrigger
                 )
                 .ignoresSafeArea(edges: .bottom)
 
@@ -51,6 +56,13 @@ struct BumpMapTabView: View {
                         filterChip
                         viewModeChip
                         Spacer()
+                        // Recenter button floats above the footer, right-
+                        // aligned, clear of the system compass/scale on the
+                        // left.  Reframes to "everything" — the full-data view.
+                        HStack {
+                            Spacer()
+                            recenterButton
+                        }
                         footer
                             .padding(.bottom, 12)
                     }
@@ -112,6 +124,26 @@ struct BumpMapTabView: View {
         case .pocketOnly:
             return store.rides.filter { $0.pocketMode == true }
         }
+    }
+
+    /// Floating recenter control.  Reframes the map to the full-data
+    /// region (the "initial view of everything" it opens with), so a
+    /// user who's panned/zoomed deep into one neighborhood can get back
+    /// to the whole picture in one tap.  Visual treatment matches the
+    /// filter / view-mode chips for consistency.
+    private var recenterButton: some View {
+        Button {
+            recenterTrigger += 1
+        } label: {
+            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 40, height: 40)
+                .background(.ultraThinMaterial)
+                .clipShape(Circle())
+                .overlay(Circle().stroke(Color.black.opacity(0.08)))
+        }
+        .accessibilityLabel("Show all data")
     }
 
     private var filterChip: some View {
