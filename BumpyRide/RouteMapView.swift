@@ -5,10 +5,12 @@ import CoreLocation
 import WeatherKit
 #endif
 
-/// SwiftUI map view used in the Ride tab.  Renders the route as a series of short
-/// `MapPolyline` segments so each segment can be colored independently by the average
-/// bumpiness of its endpoints.  Optionally pins a marker at the scrubber's current
-/// position during playback.
+/// SwiftUI map view used in the Ride tab.  Renders the route as colored
+/// polylines, each segment colored by the **max** bumpiness of its two
+/// endpoints (peak-preserving — averaging washed isolated jolts down into
+/// the lower bands).  Contiguous same-band segments are coalesced into a
+/// single multi-point polyline for performance.  Optionally pins a marker
+/// at the scrubber's current position during playback.
 ///
 /// **Two display modes**, selected by the `colorRoute` flag:
 /// - `colorRoute = true` (default, bumps mode): segments are colored by the
@@ -261,7 +263,17 @@ struct RouteMapView: View {
             }
             // In brakes mode every segment is band 0 (neutral), so the
             // whole gap-free stretch coalesces into one run.
-            let band = colorRoute ? settings.colorBand(for: (a.bumpiness + b.bumpiness) / 2) : 0
+            //
+            // Color by the MAX bumpiness of the segment's two endpoints,
+            // not the average.  Averaging halved every isolated jolt —
+            // a single 2.0 g pothole between two smooth 0.3 g points read
+            // as 1.15 g (orange) instead of 2.0 g (purple), and most of
+            // the route collapsed into green/yellow.  Max preserves the
+            // peak so a rough spot actually shows its true band; the cost
+            // is that a run is only as smooth as its roughest endpoint,
+            // which is the right bias for a map whose whole purpose is
+            // surfacing rough pavement.
+            let band = colorRoute ? settings.colorBand(for: max(a.bumpiness, b.bumpiness)) : 0
             if startIdx == nil {
                 startIdx = k
                 coords = [a.coordinate, b.coordinate]
