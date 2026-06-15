@@ -49,7 +49,7 @@ struct SavedRidesView: View {
                 if webAccount.isConnected {
                     ToolbarItem(placement: .topBarTrailing) {
                         NavigationLink {
-                            ScoreView(account: webAccount)
+                            ScoreView(account: webAccount, store: store)
                         } label: {
                             Image(systemName: "trophy.fill")
                                 .accessibilityLabel("Score")

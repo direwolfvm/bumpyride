@@ -15,13 +15,30 @@ import SwiftUI
 ///   either to retry.
 struct ScoreView: View {
     @Bindable var account: WebAccount
+    /// Local ride store, source of the lifetime distance + time totals
+    /// shown at the top.  These are device-local aggregates over every
+    /// saved ride — independent of score eligibility, so they render
+    /// even when the user isn't sharing or the score fetch is still
+    /// loading.
+    @Bindable var store: RideStore
 
     @State private var data: WebSyncClient.ScoreData?
     @State private var isLoading: Bool = false
     @State private var loadError: String?
 
+    /// Sum of every saved ride's distance, in meters.
+    private var totalDistanceMeters: Double {
+        store.rides.reduce(0) { $0 + $1.distanceMeters }
+    }
+
+    /// Sum of every saved ride's elapsed time, in seconds.
+    private var totalDurationSeconds: TimeInterval {
+        store.rides.reduce(0) { $0 + $1.duration }
+    }
+
     var body: some View {
         Form {
+            lifetimeStatsSection
             if let data {
                 if data.eligible {
                     heroSection(for: data)
@@ -64,6 +81,54 @@ struct ScoreView: View {
     }
 
     // MARK: - Sections
+
+    /// Lifetime totals at the very top — total distance ridden and total
+    /// time in the saddle, summed across every saved ride.  Always
+    /// shown (it's local data), so the sheet has something concrete even
+    /// before the score fetch lands or when the user isn't eligible for
+    /// scoring.
+    private var lifetimeStatsSection: some View {
+        Section {
+            HStack(spacing: 0) {
+                lifetimeStat(
+                    icon: "bicycle",
+                    value: Formatters.distance(totalDistanceMeters),
+                    label: "Total distance"
+                )
+                Divider().frame(height: 44)
+                lifetimeStat(
+                    icon: "clock",
+                    value: Self.formattedTotalTime(totalDurationSeconds),
+                    label: "Total ride time"
+                )
+            }
+        }
+    }
+
+    private func lifetimeStat(icon: String, value: String, label: String) -> some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.title3)
+                .foregroundStyle(.green)
+            Text(value)
+                .font(.title3.monospacedDigit().weight(.bold))
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 4)
+    }
+
+    /// Compact "Xh Ym" formatting for a lifetime total — `Formatters.duration`'s
+    /// "h:mm:ss" form gets unwieldy at tens or hundreds of hours.  Drops the
+    /// hours field entirely for sub-hour totals ("45m").
+    private static func formattedTotalTime(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
+    }
 
     /// Hero card at the top: level name + index, total points, progress
     /// bar toward the next level.  Modeled on the web's hero card but
