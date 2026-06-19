@@ -234,64 +234,19 @@ struct RouteMapView: View {
     /// the next point starts a fresh one, preserving the dropout
     /// break behavior.
     private func colorRuns() -> [ColorRun] {
-        guard points.count > 1 else { return [] }
+        // Shared banding/coalescing logic (see RouteColoring) — same math
+        // the MKMapView live map uses, so playback and live look identical.
+        // Map each band index to a SwiftUI Color here: -1 (neutral/brakes
+        // mode) → translucent gray, 0...4 → legend stop color.
         let neutralColor = Color.gray.opacity(0.75)
-        var runs: [ColorRun] = []
-
-        var startIdx: Int? = nil
-        var coords: [CLLocationCoordinate2D] = []
-        var curBand: Int = 0
-
-        func flush() {
-            if let s = startIdx, coords.count >= 2 {
-                let color = colorRoute ? settings.bandColor(curBand) : neutralColor
-                runs.append(ColorRun(id: s, coordinates: coords, color: color))
+        return RouteColoring.runs(points: points, settings: settings, colorRoute: colorRoute)
+            .map { run in
+                ColorRun(
+                    id: run.startIndex,
+                    coordinates: run.coordinates,
+                    color: run.bandIndex < 0 ? neutralColor : settings.bandColor(run.bandIndex)
+                )
             }
-            startIdx = nil
-            coords = []
-        }
-
-        for k in 0..<(points.count - 1) {
-            let a = points[k]
-            let b = points[k + 1]
-            // Long gap = GPS dropout; break the polyline rather than
-            // draw a misleading straight line across unmapped terrain.
-            let gap = b.timestamp.timeIntervalSince(a.timestamp)
-            if gap > Self.maxSegmentTimeGapSeconds {
-                flush()
-                continue
-            }
-            // In brakes mode every segment is band 0 (neutral), so the
-            // whole gap-free stretch coalesces into one run.
-            //
-            // Color by the MAX bumpiness of the segment's two endpoints,
-            // not the average.  Averaging halved every isolated jolt —
-            // a single 2.0 g pothole between two smooth 0.3 g points read
-            // as 1.15 g (orange) instead of 2.0 g (purple), and most of
-            // the route collapsed into green/yellow.  Max preserves the
-            // peak so a rough spot actually shows its true band; the cost
-            // is that a run is only as smooth as its roughest endpoint,
-            // which is the right bias for a map whose whole purpose is
-            // surfacing rough pavement.
-            let band = colorRoute ? settings.colorBand(for: max(a.bumpiness, b.bumpiness)) : 0
-            if startIdx == nil {
-                startIdx = k
-                coords = [a.coordinate, b.coordinate]
-                curBand = band
-            } else if band == curBand {
-                coords.append(b.coordinate)
-            } else {
-                // Band change: close the current run (ending at `a`),
-                // start a new one beginning at `a` so the two polylines
-                // share the boundary vertex and read as continuous.
-                flush()
-                startIdx = k
-                coords = [a.coordinate, b.coordinate]
-                curBand = band
-            }
-        }
-        flush()
-        return runs
     }
 
     private func updateCamera(initial: Bool) {

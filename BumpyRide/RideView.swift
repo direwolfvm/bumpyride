@@ -37,6 +37,10 @@ struct RideView: View {
     /// quota is sipped not gulped.  RouteMapView reads
     /// `weatherCoordinator.current` for its top-trailing overlay.
     @Bindable var weatherCoordinator: WeatherCoordinator
+    /// Lifetime visited-cells grid, source for the live map's purple
+    /// "visited cells" overlay (v1.7 K21).  Same store the Bump Map tab
+    /// renders; here we only read `grid` + `dataVersion`.
+    @Bindable var bumpMap: BumpMapStore
 
     @State private var showingSaveSheet: Bool = false
     @State private var pendingRide: Ride?
@@ -44,6 +48,14 @@ struct RideView: View {
 
     @State private var scrubIndex: Int = 0
     @State private var zoom: Double = 1.0
+
+    // v1.7 K21 live-map controls.  Default off / north-up; not persisted —
+    // each ride starts clean (per the chosen design).
+    @State private var showVisitedCells: Bool = false
+    @State private var headingUp: Bool = false
+    /// Monotonic recenter counter handed to LiveRouteMapView; each tap
+    /// re-arms user-location tracking after the rider panned away.
+    @State private var liveRecenterTrigger: Int = 0
 
     @State private var showingEditSheet: Bool = false
     @State private var showingRenameAlert: Bool = false
@@ -397,28 +409,80 @@ struct RideView: View {
             .frame(height: 160)
             .padding(.horizontal)
 
-            RouteMapView(
-                points: liveDisplayPoints,
-                followUser: recorder.state == .recording,
-                highlightIndex: nil,
-                settings: settings,
-                // Live markers — red pins for hard brakes (detected
-                // post-hoc at ~1 Hz from the in-progress points, see
-                // `liveBrakeEvents` doc), violet diamonds for
-                // close-calls (already tracked live by RideRecorder).
-                // Both render regardless of bumpiness coloring; the
-                // user wanted to see them appear as they happen.
-                brakeEvents: liveBrakeEvents,
-                closeCalls: recorder.closeCalls,
-                // v1.7 weather overlay.  Hidden when cache empty;
-                // RouteMapView gates internally on whether to render
-                // the chip.  Heading is gated on reliable
-                // course/speed at the call site.
-                weather: weatherCoordinator.current,
-                bikeHeading: reliableBikeHeading
-            )
+            // v1.7 K21: live map is the MKMapView-backed LiveRouteMapView
+            // (not the SwiftUI RouteMapView used in playback) so it can
+            // host the visited-cells tile overlay and heading-up tracking.
+            // Weather chip + the three map buttons are SwiftUI overlays on
+            // top of it here, rather than inside the representable.
+            ZStack {
+                LiveRouteMapView(
+                    points: liveDisplayPoints,
+                    brakeEvents: liveBrakeEvents,
+                    closeCalls: recorder.closeCalls,
+                    settings: settings,
+                    visitedGrid: bumpMap.grid,
+                    visitedVersion: bumpMap.dataVersion,
+                    showVisitedCells: showVisitedCells,
+                    headingUp: headingUp,
+                    recenterTrigger: liveRecenterTrigger
+                )
+
+                // Weather chip, top-trailing (same placement RouteMapView
+                // used).  Hidden until a fetch lands.
+                #if canImport(WeatherKit)
+                if let weather = weatherCoordinator.current {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            WeatherChip(weather: weather, bikeHeading: reliableBikeHeading)
+                                .padding(8)
+                        }
+                        Spacer()
+                    }
+                }
+                #endif
+
+                // Map controls, bottom-trailing: visited-cells toggle,
+                // orientation toggle, recenter — stacked above the system
+                // compass/scale.
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        VStack(spacing: 8) {
+                            mapToggleButton(
+                                systemImage: "square.grid.2x2.fill",
+                                on: showVisitedCells,
+                                onColor: Color(red: 0.55, green: 0.25, blue: 0.85),
+                                label: "Toggle visited cells"
+                            ) { showVisitedCells.toggle() }
+                            mapToggleButton(
+                                systemImage: headingUp ? "location.north.line.fill" : "location.north.fill",
+                                on: headingUp,
+                                onColor: .blue,
+                                label: headingUp ? "Heading up" : "North up"
+                            ) { headingUp.toggle() }
+                            mapToggleButton(
+                                systemImage: "location.fill",
+                                on: false,
+                                onColor: .blue,
+                                label: "Recenter on my location"
+                            ) { liveRecenterTrigger += 1 }
+                        }
+                        .padding(12)
+                    }
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .padding(.horizontal)
+            // Populate the visited-cells grid from all rides when the
+            // overlay is switched on.  rebuildIfNeeded is signature-gated
+            // (no-op if already current) and the overlay only cares which
+            // cells exist, so the default (uncalibrated) gain is fine —
+            // calibration scales bumpiness values, not the cell set.
+            .onChange(of: showVisitedCells) { _, on in
+                if on { bumpMap.rebuildIfNeeded(from: store.rides) }
+            }
 
             // Live recording stats — always in bumps mode regardless of the
             // user's saved-ride view-mode preference.  Brake detection runs
@@ -613,6 +677,29 @@ struct RideView: View {
             }
         }
         return true
+    }
+
+    /// v1.7 K21: one of the three round controls floating over the live
+    /// map (visited-cells toggle, orientation toggle, recenter).  `on`
+    /// tints the glyph with `onColor` when active; the recenter button
+    /// passes `on: false` since it's momentary, not a toggle state.
+    /// Matches the look of RouteMapView's recenter button for continuity.
+    private func mapToggleButton(
+        systemImage: String,
+        on: Bool,
+        onColor: Color,
+        label: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(on ? onColor : Color.primary)
+                .frame(width: 40, height: 40)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().stroke(Color.black.opacity(0.12)))
+        }
+        .accessibilityLabel(label)
     }
 
     /// Full-width "Log close call" button.  Purple tint matches the

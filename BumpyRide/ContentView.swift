@@ -191,7 +191,8 @@ struct ContentView: View {
                 rideScoreCache: rideScoreCache,
                 healthKitAuth: healthKitAuth,
                 healthKitExporter: healthKitExporter,
-                weatherCoordinator: weatherCoordinator
+                weatherCoordinator: weatherCoordinator,
+                bumpMap: bumpMap
             )
             .tabItem { Label("Ride", systemImage: "bicycle") }
             .tag(AppState.Tab.ride)

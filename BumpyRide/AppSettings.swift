@@ -258,6 +258,18 @@ final class AppSettings {
         }
     }
 
+    /// `UIColor` variant of `bandColor(_:)` for UIKit consumers (the
+    /// MKMapView-backed live map colors its `MKPolyline` runs with this).
+    func bandUIColor(_ band: Int) -> UIColor {
+        switch max(0, min(4, band)) {
+        case 0: return uiColor(for: 0)
+        case 1: return uiColor(for: yellowG)
+        case 2: return uiColor(for: orangeG)
+        case 3: return uiColor(for: redG)
+        default: return uiColor(for: purpleG)
+        }
+    }
+
     private func rgb(for bumpiness: Double) -> (Double, Double, Double) {
         let sorted = stops
         let v = max(0, bumpiness)
