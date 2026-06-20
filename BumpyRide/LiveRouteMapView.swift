@@ -52,12 +52,21 @@ struct LiveRouteMapView: UIViewRepresentable {
     func updateUIView(_ map: MKMapView, context: Context) {
         let c = context.coordinator
 
-        // --- Route polylines: rebuild only when the point buffer changed.
-        // The live buffer is a trailing window (bounded), and banding
-        // collapses it to a handful of runs, so a full rebuild here is a
-        // few dozen overlays — cheap, and far below the old per-pair count.
-        if points.count != c.lastPointCount {
+        // --- Route polylines: rebuild when the point buffer changed.
+        // The live buffer is a *trailing window* capped at 1000 points
+        // (RideView.maxLivePolylinePoints), so once the ride passes that
+        // (~16 min ≈ 5 mi) `points.count` saturates at 1000 and never
+        // changes again even though the window keeps sliding.  Triggering
+        // on count alone froze the route at the mile-5 location and let it
+        // scroll off-screen as the map followed the rider — the
+        // "bumpiness disappears after five miles" bug.  Also compare the
+        // newest point's timestamp, which advances on every fix in both
+        // the growth and saturated phases.  Rebuild cadence is unchanged
+        // (~1 Hz with new fixes); this just doesn't stop at the cap.
+        let lastTimestamp = points.last?.timestamp
+        if points.count != c.lastPointCount || lastTimestamp != c.lastPointTimestamp {
             c.lastPointCount = points.count
+            c.lastPointTimestamp = lastTimestamp
             map.removeOverlays(c.routeOverlays)
             c.routeOverlays.removeAll(keepingCapacity: true)
             c.runColors.removeAll(keepingCapacity: true)
@@ -126,6 +135,11 @@ struct LiveRouteMapView: UIViewRepresentable {
         /// in `rendererFor`.  Avoids the MKPolyline-subclassing gotcha.
         var runColors: [ObjectIdentifier: UIColor] = [:]
         var lastPointCount: Int = -1
+        /// Newest point's timestamp at the last route rebuild.  Advances on
+        /// every GPS fix even after the trailing-window cap freezes
+        /// `lastPointCount` at 1000 — the rebuild trigger that the count
+        /// alone misses past ~5 miles.
+        var lastPointTimestamp: Date?
 
         var visitedOverlay: VisitedCellsTileOverlay?
         var showVisited: Bool = false
