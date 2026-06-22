@@ -202,6 +202,47 @@ enum BrakeEventDetector {
     /// bump happened to land in the GPS-decel window.
     private static let accelRefinementMaxRatio: Double = 2.0
 
+    // MARK: - GPS-glitch rejection constants
+    //
+    // A recurring class of false-positive brakes turned out to be GPS
+    // glitches (multipath / Doppler errors) rather than real
+    // deceleration — confirmed against field data where the rider was
+    // demonstrably NOT braking.  Two signatures, validated against the
+    // rider's own "false trigger" categorizations to be high-precision
+    // (zero real *safety* brakes dropped on the labeled set):
+    //
+    //   (b) transient recovery — the speed dipped then bounced back to
+    //       near its pre-dip baseline within a few seconds.  A real
+    //       slowdown stays down; a GPS dip rebounds.
+    //   (c) position instability — the rider's lat/lon implies a speed
+    //       that swings wildly between consecutive fixes while the
+    //       reported (Doppler) speed says they're still moving.  The
+    //       position is jumping around, not decelerating.
+    //
+    // Accelerometer corroboration was tried and discarded: horizontalAccel
+    // is road-vibration-dominated and reads high on every event, so it
+    // can't disconfirm braking.
+
+    /// Minimum apparent speed drop (pre-dip baseline minus the run's
+    /// lowest speed) for a candidate to even be considered a possible
+    /// glitch.  Below this it didn't look like a brake worth vetoing.
+    private static let glitchMinApparentDrop: Double = 1.5
+
+    /// (b) A candidate is a glitch if the speed recovers to at least this
+    /// fraction of its pre-dip baseline within `glitchRecoverWindow`.
+    /// 0.90 = "bounced back to 90 % of where it was" — real brakes don't.
+    private static let glitchRecoverFraction: Double = 0.90
+    private static let glitchRecoverWindowSeconds: TimeInterval = 3.0
+
+    /// (c) A candidate is a glitch if the position-derived speed swings by
+    /// at least this much (m/s) between consecutive in-run fixes while
+    /// both fixes still report Doppler speed above the floor.  6 m/s is
+    /// physically impossible frame-to-frame on a bike — it's the GPS
+    /// position jumping.  Floor excludes genuine near-stops, where
+    /// low-speed position noise naturally swings.
+    private static let glitchPositionSwing: Double = 6.0
+    private static let glitchPositionMinDoppler: Double = 3.0
+
     /// Find every brake event in a ride.  Returns `[]` if the ride is too
     /// short to compute a derivative or has no points above threshold.
     /// Never returns `nil` — `Ride.brakeEvents == nil` means "detection
@@ -231,7 +272,14 @@ enum BrakeEventDetector {
         let smoothedSpeeds = smoothSpeeds(in: points)
         let decel = decelerations(from: smoothedSpeeds, points: points)
         let runs = findRuns(decel: decel, points: points)
-        let regular = runs.compactMap { emit(run: $0, points: points, decel: decel) }
+        // Reject runs that carry a GPS-glitch signature before emitting.
+        // Operates on the actual detected run so it has the real
+        // deceleration context.  No revision bump — this changes only
+        // *new* detections (live + save-time); existing saved rides keep
+        // their events and the rider's categorizations.
+        let regular = runs
+            .filter { !looksLikeGPSGlitch(run: $0, points: points) }
+            .compactMap { emit(run: $0, points: points, decel: decel) }
         // rev 7: layer the GPS-gap heuristic on top of the regular
         // detector.  Sort merged by timestamp before collapsing
         // adjacent since collapseAdjacent assumes chronological
@@ -241,6 +289,79 @@ enum BrakeEventDetector {
         let gap = gapBrakeEvents(in: points)
         let merged = (regular + gap).sorted { $0.timestamp < $1.timestamp }
         return collapseAdjacent(merged)
+    }
+
+    /// Reject a brake candidate that bears a GPS-glitch signature rather
+    /// than a real deceleration.  See the glitch-rejection constants for
+    /// the rationale and the (b)/(c) signatures.  Conservative by design:
+    /// validated against the rider's own categorizations to drop zero
+    /// labeled *safety* brakes.  It does NOT catch every glitch — a
+    /// sustained multi-second GPS degradation (where the speed smoothly
+    /// reads low and the position is internally consistent) is
+    /// indistinguishable from a real slowdown here, and is a candidate
+    /// for the separate location-learning approach.
+    private static func looksLikeGPSGlitch(run: ClosedRange<Int>, points: [RidePoint]) -> Bool {
+        let n = points.count
+        guard n >= 3 else { return false }
+        let s = run.lowerBound
+        let e = run.upperBound
+
+        // Speed entering the run (the sample just before it starts).
+        let preSpeed = points[max(0, s - 1)].speed
+        guard preSpeed > 0 else { return false }
+
+        // Depth of the apparent dip across the run.
+        var minSpeed = points[s].speed
+        for i in s...e { minSpeed = min(minSpeed, points[i].speed) }
+        let drop = preSpeed - minSpeed
+        // Only scrutinize candidates that actually looked like a slowdown.
+        guard drop >= glitchMinApparentDrop else { return false }
+
+        // (b) Transient recovery — speed rebounds toward baseline.
+        let endTime = points[e].timestamp
+        var postSpeed = points[e].speed
+        var j = e + 1
+        while j < n, points[j].timestamp.timeIntervalSince(endTime) <= glitchRecoverWindowSeconds {
+            postSpeed = max(postSpeed, points[j].speed)
+            j += 1
+        }
+        if postSpeed >= preSpeed * glitchRecoverFraction {
+            return true
+        }
+
+        // (c) Position instability — position-derived speed swings hard
+        // between consecutive fixes while Doppler says we're still moving.
+        var prevPosSpeed: Double? = nil
+        let lo = max(1, s - 1)
+        let hi = min(n - 1, e + 1)
+        var prevIdx = lo - 1
+        for i in lo...hi {
+            let dt = points[i].timestamp.timeIntervalSince(points[prevIdx].timestamp)
+            if dt > 0.05 {
+                let posSpeed = haversine(points[prevIdx], points[i]) / dt
+                if let prev = prevPosSpeed,
+                   abs(posSpeed - prev) >= glitchPositionSwing,
+                   points[i].speed >= glitchPositionMinDoppler,
+                   points[prevIdx].speed >= glitchPositionMinDoppler {
+                    return true
+                }
+                prevPosSpeed = posSpeed
+            }
+            prevIdx = i
+        }
+        return false
+    }
+
+    /// Great-circle distance (meters) between two ride points.  Used by
+    /// the GPS-glitch position-instability check.
+    private static func haversine(_ a: RidePoint, _ b: RidePoint) -> Double {
+        let R = 6_371_000.0
+        let p1 = a.latitude * .pi / 180
+        let p2 = b.latitude * .pi / 180
+        let dp = (b.latitude - a.latitude) * .pi / 180
+        let dl = (b.longitude - a.longitude) * .pi / 180
+        let h = sin(dp / 2) * sin(dp / 2) + cos(p1) * cos(p2) * sin(dl / 2) * sin(dl / 2)
+        return R * 2 * atan2(sqrt(h), sqrt(1 - h))
     }
 
     /// rev 7 GPS-gap heuristic.  Scan consecutive point pairs for
