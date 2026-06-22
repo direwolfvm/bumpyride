@@ -416,7 +416,13 @@ struct RideView: View {
             // top of it here, rather than inside the representable.
             ZStack {
                 LiveRouteMapView(
-                    points: liveDisplayPoints,
+                    // Full route, not a trailing window.  The old
+                    // 1000-point cap (~5 mi) was a SwiftUI-Map limitation
+                    // (one MapPolyline *view* per segment); the MKMapView
+                    // live map coalesces into a bounded set of banded
+                    // overlays, so showing the whole route is cheap — and
+                    // necessary, so doubled-back segments don't vanish.
+                    points: recorder.points,
                     brakeEvents: liveBrakeEvents,
                     closeCalls: recorder.closeCalls,
                     settings: settings,
@@ -1850,31 +1856,11 @@ struct RideView: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// Cap on the number of recent `RidePoint`s passed to the live
-    /// `RouteMapView`.  On a long ride the recorder's `points` array can
-    /// grow into the thousands, and the map renders one `MapPolyline`
-    /// view per segment — that view-count grows with the array and
-    /// makes the live view increasingly laggy.  Capping to the most
-    /// recent ~1000 keeps the SwiftUI view hierarchy bounded.
-    ///
-    /// 1000 points ≈ 16 min of riding at ~1 Hz sampling.  The map
-    /// follows the user (`followUser: true` during recording), so older
-    /// portions of the route are off-screen anyway; clipping them from
-    /// the view hierarchy is a no-op visually.  Saved-ride playback
-    /// uses the full points array, so the trim only applies to the
-    /// live recording UI.
-    private static let maxLivePolylinePoints: Int = 1000
-
-    /// Trailing window of points fed to the live `RouteMapView`.  See
-    /// `maxLivePolylinePoints` for why we cap.  Cheap: `Array.suffix` is
-    /// O(min(count, max)).
-    private var liveDisplayPoints: [RidePoint] {
-        let pts = recorder.points
-        if pts.count <= Self.maxLivePolylinePoints {
-            return pts
-        }
-        return Array(pts.suffix(Self.maxLivePolylinePoints))
-    }
+    // (Removed in K24: the live map fed off a 1000-point trailing window
+    // to bound the old SwiftUI Map's per-segment view count.  The
+    // MKMapView live map coalesces into a bounded set of banded overlays
+    // regardless of length, so it now takes the full `recorder.points` —
+    // see the LiveRouteMapView call site.)
 
     // MARK: Save sheet
 

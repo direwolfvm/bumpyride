@@ -31,6 +31,23 @@ struct LiveRouteMapView: UIViewRepresentable {
     /// (snap back after the rider panned the map away).
     var recenterTrigger: Int
 
+    /// K24: compact hard-brake marker — a small red dot with a thin
+    /// white ring (~12 pt), deliberately smaller than the default
+    /// MKMarkerAnnotationView teardrop.  Rendered once and reused for
+    /// every brake annotation.
+    static let brakeMarkerImage: UIImage = {
+        let d: CGFloat = 12
+        return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { ctx in
+            let c = ctx.cgContext
+            let rect = CGRect(x: 1.25, y: 1.25, width: d - 2.5, height: d - 2.5)
+            c.setFillColor(UIColor(red: 0.92, green: 0.20, blue: 0.20, alpha: 1).cgColor)
+            c.fillEllipse(in: rect)
+            c.setLineWidth(1.5)
+            c.setStrokeColor(UIColor.white.cgColor)
+            c.strokeEllipse(in: rect)
+        }
+    }()
+
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> MKMapView {
@@ -177,11 +194,16 @@ struct LiveRouteMapView: UIViewRepresentable {
             MainActor.assumeIsolated {
                 if annotation is MKUserLocation { return nil }
                 if annotation is BrakeAnnotation {
-                    let v = mapView.dequeueReusableAnnotationView(withIdentifier: "brake") as? MKMarkerAnnotationView
-                        ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: "brake")
+                    // K24: small red dot instead of the full
+                    // MKMarkerAnnotationView teardrop.  Hard brakes are
+                    // auto-detected and frequent, so a compact marker
+                    // keeps a brake-heavy ride from cluttering the map.
+                    // (Close calls, which the rider logs deliberately,
+                    // keep the prominent marker below.)
+                    let v = mapView.dequeueReusableAnnotationView(withIdentifier: "brake")
+                        ?? MKAnnotationView(annotation: annotation, reuseIdentifier: "brake")
                     v.annotation = annotation
-                    v.markerTintColor = UIColor(red: 0.92, green: 0.20, blue: 0.20, alpha: 1)
-                    v.glyphImage = UIImage(systemName: "exclamationmark")
+                    v.image = LiveRouteMapView.brakeMarkerImage
                     v.displayPriority = .required
                     return v
                 }
