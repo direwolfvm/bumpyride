@@ -78,12 +78,12 @@
 	<true/>
 
 	<!--
-	  Launch screen: green background (#34C759, iOS system green) with the
-	  app icon centered at ~200pt.  The icon is sourced from a separate
-	  LaunchIcon Image Set (1x/2x/3x) rather than the AppIcon asset, so we
-	  can control its on-screen size — UILaunchScreen renders the image at
-	  its natural point size, and the AppIcon's 1024px source would render
-	  enormous.
+	  Launch screen: white background with the app icon centered at
+	  ~200pt.  The LaunchIcon Image Set (1x/2x/3x) is a rounded-corner,
+	  drop-shadowed rendering of the icon (UILaunchScreen renders the
+	  image as-is with no system icon mask, so the rounding + shadow are
+	  baked into the PNGs), sized in points rather than the AppIcon's
+	  1024px source so it doesn't render enormous.
 	  UIImageRespectsSafeAreaInsets is left false so the icon stays
 	  centered on the whole screen rather than getting nudged below the
 	  notch/Dynamic Island.
