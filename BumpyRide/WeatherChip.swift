@@ -66,8 +66,15 @@ struct WeatherChip: View {
                         ))
                         .foregroundStyle(relationTint)
                 } else {
-                    Image(systemName: "wind")
-                        .font(.caption2)
+                    // No reliable heading (stationary / slow): show the
+                    // ABSOLUTE wind direction instead.  `arrow.up` points
+                    // north at 0°; rotating by the wind's compass bearing
+                    // makes it point toward the direction the wind is
+                    // coming FROM, in the map's north-up frame — matching
+                    // the "From <cardinal>" label below.
+                    Image(systemName: "arrow.up")
+                        .font(.caption2.weight(.bold))
+                        .rotationEffect(.degrees(weather.wind.direction.value))
                         .foregroundStyle(.secondary)
                 }
                 Text(formattedWindSpeed)
@@ -75,8 +82,10 @@ struct WeatherChip: View {
                     .foregroundStyle(.primary)
             }
 
-            // Relation label (headwind / tailwind / crosswind),
-            // only when we have a heading.
+            // Direction label.  With a heading: the head/tail/cross
+            // relation, tinted by favorability.  Without one: the
+            // absolute compass direction the wind is coming from, so a
+            // stopped rider still gets direction info.
             if let bikeHeading {
                 let relation = WindRelation.classify(
                     windDirection: weather.wind.direction.value,
@@ -85,6 +94,10 @@ struct WeatherChip: View {
                 Text(relationLabel(for: relation))
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(relationTint)
+            } else {
+                Text("From \(WindRelation.cardinal(weather.wind.direction.value))")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
 
             // Apple Weather attribution.  Required by WeatherKit

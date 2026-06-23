@@ -552,23 +552,34 @@ struct RideView: View {
         // top-trailing chip on the route map via the
         // `weatherCoordinator.current` binding.
         //
-        // Polls only while .recording — paused / idle / finished
-        // don't move enough to invalidate the cache, and we don't
-        // want to spend WeatherKit quota when the rider has stopped
-        // for a meaningful break.
+        // K25: weather polls in *every* state, not just .recording, so
+        // the chip stays populated and keeps slowly refreshing when the
+        // rider is stopped (a light, a rest, before the ride starts).
+        // Cadence is 1 Hz while recording — responsive as movement
+        // crosses the coordinator's 2-mi freshness gate — and a slow
+        // 60 s heartbeat otherwise.  Actual WeatherKit calls stay capped
+        // by the coordinator's 15-min / 2-mi freshness gate regardless
+        // of poll rate, so the idle heartbeat only sips quota.
+        //
+        // When not recording we poll against the last known fix
+        // (`lastLocation` persists after stopUpdating), so the chip
+        // survives a pause and stays current after a ride.  On a truly
+        // cold start (never moved this session) there's no fix yet; the
+        // chip appears once the first location lands.
         .task(id: recorder.state) {
-            guard recorder.state == .recording else { return }
             // Log the weather gate state once at poll start so the
             // sidecar shows whether we're attempting fetches at all —
             // helps tell "WeatherKit is erroring" apart from "gated by
             // backoff / fresh cache / no GPS fix yet."
             weatherCoordinator.logDiagnosticState()
+            let recording = recorder.state == .recording
+            let interval: UInt64 = recording ? 1_000_000_000 : 60_000_000_000
             while !Task.isCancelled {
                 if let loc = recorder.location.lastLocation {
                     weatherCoordinator.refresh(near: loc)
                 }
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                guard !Task.isCancelled, recorder.state == .recording else { break }
+                try? await Task.sleep(nanoseconds: interval)
+                guard !Task.isCancelled else { break }
             }
         }
         // Live brake-event detection.  Re-runs whenever the recorder

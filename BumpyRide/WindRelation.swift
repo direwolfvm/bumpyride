@@ -60,6 +60,18 @@ enum WindRelation: Equatable, Sendable {
         }
     }
 
+    /// 8-point compass label for a bearing in degrees (0 = N, clockwise
+    /// through NE / E / SE / S / SW / W / NW).  Used by the weather
+    /// chip's *absolute* wind-direction readout when no bike heading is
+    /// available — so a stationary rider still sees which way the wind
+    /// is from, just in compass terms instead of head/tail/cross.
+    static func cardinal(_ degrees: Double) -> String {
+        let dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+        let normalized = (degrees.truncatingRemainder(dividingBy: 360) + 360).truncatingRemainder(dividingBy: 360)
+        let idx = Int((normalized + 22.5).truncatingRemainder(dividingBy: 360) / 45) % 8
+        return dirs[idx]
+    }
+
     /// Signed relative angle in (-180, 180]: positive values mean
     /// the wind is coming from the bike's right-front quadrant,
     /// negative from the left-front quadrant.  Used for the chip's
