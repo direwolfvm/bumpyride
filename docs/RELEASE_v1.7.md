@@ -1,10 +1,15 @@
 # Release v1.7
 
-Build **27**. MARKETING_VERSION bumped at `8e8b99b`.
+Build **29**. MARKETING_VERSION `1.7`.
 
-Headline addition: **heart rate monitoring during rides** via a new "Open watch app with this app" toggle that auto-launches the BumpyRide watch app from the iPhone, runs a `HKWorkoutSession` on the watch to engage the watch's heart-rate sensor at workout sampling rate, and embeds those heart-rate samples into the saved ride's Apple Health workout.
+v1.7 is a large release. Its headline is **heart rate monitoring during rides** via a new "Open watch app with this app" toggle that auto-launches the BumpyRide watch app from the iPhone, runs a `HKWorkoutSession` on the watch to engage the watch's heart-rate sensor at workout sampling rate, and embeds those heart-rate samples into the saved ride's Apple Health workout. Alongside it ship four more substantial additions:
 
-Also includes a sharper hard-brake detector (rev 6 catches brakes-into-stops that earlier revisions missed when GPS sampling went irregular at the moment of stopping), and a polish pass on the watch UI (solid orange Pause button for direct-sunlight readability, smaller Close Call label).
+- **Live weather + wind** overlay on the recording map (WeatherKit) — temperature, wind speed, and a headwind/tailwind/crosswind readout that becomes an absolute compass direction when you're stopped.
+- **Categorizing safety events** — hard brakes can be tagged safety / other / false-trigger; close calls as vehicle / bike / pedestrian, live or after the fact.
+- **A revamped live map** — a translucent purple overlay of every 20-ft cell you've ever ridden, a north-up / heading-up toggle, recenter buttons, max-per-segment bumpiness coloring, and the full route on long rides.
+- **Smarter hard-brake detection** — GPS-gap handling for tunnels/underpasses, an accelerometer-spike magnitude cap, and rejection of GPS-glitch false positives.
+
+Plus: the Score moved to the Saved tab with lifetime distance/time and a new "Refreshed" scoring tier; the Apple-Health heart-rate enrichment bug fixed; an optional debug-log file written alongside rides; and a refreshed white launch screen with a rounded, shadowed icon.
 
 > **Note on the doc itself**: the three sections below mirror what gets pasted into App Store Connect at submission time — release notes ("What's New"), the full product description, and the App Review Information notes. The description and review notes are *cumulative* — they reflect the complete text as of v1.7, not just deltas from v1.6.
 
@@ -19,15 +24,27 @@ Also includes a sharper hard-brake detector (rev 6 catches brakes-into-stops tha
   monitoring through the watch's sensor.  Heart rate is added to
   your ride's Apple Health workout, so you'll see the trace in
   the Fitness app alongside the route and distance.
-• Improved hard-brake detection — sharper brakes into stops are
-  now reliably caught.  Previous versions could miss them when
-  GPS sampling went irregular at the moment of stopping; the new
-  detector handles that asymmetry correctly.  All existing rides
-  are re-analyzed on first launch to surface any previously-
-  missed events.
-• Watch polish: solid orange Pause button (was washing out in
-  direct sunlight), and the on-watch app name now reads
-  "BumpyRide" to match the iPhone app.
+• Live weather while you ride — temperature and wind now show on
+  the recording map, including whether you're fighting a headwind,
+  riding a tailwind, or catching a crosswind.  Stopped at a light?
+  It shows the wind's compass direction instead.
+• Tag your safety events — when a hard brake is detected you can
+  mark it Safety, Other, or False trigger; close calls can be
+  tagged Vehicle, Bike, or Pedestrian.  Edit any of them later
+  from the saved ride.
+• See where you've been — the recording map can now show a
+  translucent layer of every cell you've ever ridden, and rotate
+  to face your direction of travel (heading-up) instead of north.
+• Smarter brake detection — handles tunnels and underpasses where
+  GPS drops out, no longer over-states brakes from road bumps, and
+  ignores GPS glitches that used to register as phantom braking.
+• Your score, front and center — moved to a trophy button on the
+  Saved tab, now with your lifetime distance and ride time at the
+  top and a new "Refreshed" tier for revisiting roads you haven't
+  ridden in a while.
+• Fixed: adding a ride to Apple Health now reliably includes your
+  heart-rate trace (a permissions bug previously blocked it).
+• Refreshed launch screen and a few map polish touches.
 ```
 
 ---
@@ -52,7 +69,14 @@ Features:
 • Live recording with route + bumpiness overlay
 • Elapsed time, current speed, and average speed displayed during
   recording
-• Live hard-brake and close-call markers on the recording map
+• Live weather and wind — temperature, wind speed, and whether
+  you're riding into a headwind, with a tailwind, or across a
+  crosswind (absolute compass direction when stopped)
+• Live hard-brake and close-call markers on the recording map,
+  each taggable (brakes: safety / other / false trigger; close
+  calls: vehicle / bike / pedestrian)
+• A live map that can show every cell you've ridden as a
+  translucent overlay and rotate to face your direction of travel
 • Apple Watch app — start/pause/resume/stop your ride from the
   wrist; log close calls with one tap; see live time, distance,
   and bumpiness on three swipeable pages
@@ -187,6 +211,41 @@ session ends when the iPhone's snapshot.state transitions to
 .idle or .finished (i.e. ride stops), via SwiftUI .onChange on
 the watch side.
 
+WEATHERKIT (LIVE WEATHER)
+
+The recording map shows a small weather chip (temperature + wind)
+sourced from Apple WeatherKit. WeatherKit is queried at most once
+per ~15 minutes or ~2 miles of movement (whichever first) via a
+freshness gate, so a long ride makes only a handful of calls. The
+chip is hidden until the first fetch lands; "Apple Weather"
+attribution is shown at all times per WeatherKit's terms. The chip
+also derives a headwind/tailwind/crosswind label from the wind
+direction relative to the rider's GPS course, falling back to an
+absolute compass direction when the course is unreliable (stopped
+or below ~3 m/s). No location beyond the ride's own GPS fixes is
+used for the query.
+
+CATEGORIZING SAFETY EVENTS
+
+When a hard brake is detected during recording, a brief sheet lets
+the rider tag it Safety, Other, or False trigger (auto-dismisses
+to "unknown" after 20 s, so it never blocks riding). Logged close
+calls can be tagged Vehicle, Bike, or Pedestrian. Both categories
+are editable later from the saved ride. These tags are descriptive
+metadata only — stored alongside the event's timestamp + location,
+they never trigger automated behavior.
+
+DIAGNOSTICS (OPTIONAL DEBUG LOG)
+
+Settings → Diagnostics has an off-by-default "Write Debug Log"
+toggle. When on, the app writes a plain-text log of its own
+internal events to a file alongside the ride JSON in the app's
+iCloud/Documents folder — used for troubleshooting field issues
+(e.g. GPS behavior, watch handoff, HealthKit export). It contains
+no personal data beyond the rider's own ride identifiers and is
+fully under the user's control; files older than 14 days are
+deleted automatically.
+
 APPLE HEALTH
 
 HealthKit integration is opt-in. Settings → Apple Health → "Add
@@ -243,9 +302,12 @@ can cancel mid-restore.
 RIDE SCORING
 
 Once a ride is synced to bumpyride.me, the server scores it based
-on distance, smoothness, and consistency, and returns a per-ride
-point total. The iOS app displays this score in the Saved tab and
-the playback view. Scoring is server-side and is informational
+on which map cells the ride covered, and returns a per-ride point
+total plus a breakdown by tier (first-ever cell / first-for-you /
+refreshed-after-10-days / repeat). The iOS app surfaces this via a
+trophy button on the Saved tab, which opens a Score view showing
+the rider's lifetime distance and ride time, level, total points,
+and the tier breakdown. Scoring is server-side and informational
 only — it does not affect ride storage or any on-device behavior.
 
 CLOSE CALLS
@@ -266,10 +328,17 @@ deceleration location. Brake events are descriptive metadata only;
 they never trigger automated behavior. The same detector runs at
 1 Hz during recording so brake pins appear on the live map ~1.5 s
 after the brake (the finite-difference detector needs trailing
-context to resolve).  v1.7 sharpens the algorithm to catch sharper
-brakes-into-stops that earlier revisions missed when GPS sampling
-became irregular at the moment of stopping; the launch-time
-reprocessor re-analyzes existing rides on first run after upgrade.
+context to resolve).  v1.7 hardens the algorithm in several ways:
+it catches brakes-into-stops that earlier revisions missed when
+GPS sampling became irregular at the moment of stopping; it
+attributes a brake to a GPS dropout when speed falls sharply
+across a multi-second gap (tunnels, underpasses); it caps how much
+a single accelerometer spike from a road bump can inflate a
+brake's reported magnitude; and it rejects candidates that carry a
+GPS-glitch signature (a phantom speed dip that rebounds, or a
+position that jumps inconsistently) rather than a real
+deceleration.  A launch-time reprocessor re-analyzes existing
+rides on first run after upgrade.
 
 TEST ACCOUNT
 
