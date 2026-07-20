@@ -274,6 +274,9 @@ struct ContentView: View {
             // user-facing states.  Has to run before any UI reads the
             // state — cheap and synchronous so it's fine here.
             healthKitAuth.checkOnLaunch()
+            // v1.8 L3: apply the persisted screen-wake mode at launch
+            // (the onChange hooks only fire on subsequent changes).
+            applyScreenWakePolicy()
             // Activate the WatchConnectivity session.  Cheap to call on
             // devices without a paired watch — the session resolves to
             // `.unavailable` and downstream code (Phase B+) gates on
@@ -469,6 +472,10 @@ struct ContentView: View {
             // SwiftUI's .onChange doesn't fire on the initial value, so cold-start
             // is covered by the same call in the existing .task block above.  Both
             // paths route through the same idempotent coordinator method.
+            // v1.8 L3: re-assert the wake policy on every phase change
+            // (before the .active guard — reapplying is harmless and
+            // keeps the flag correct after any system reset).
+            applyScreenWakePolicy()
             guard newPhase == .active else { return }
             Task { @MainActor in
                 await watchLaunchCoordinator.considerLaunchingWatchApp()
@@ -501,6 +508,31 @@ struct ContentView: View {
                 await watchLaunchCoordinator.considerLaunchingWatchApp()
             }
         }
+        // v1.8 L3: centralized screen-wake (idle-timer) policy.  One
+        // owner, re-evaluated on every input that can change the
+        // answer: tab switches, recorder state transitions, and the
+        // Settings picker itself.  scenePhase re-application lives in
+        // the scenePhase onChange above; launch-time application in
+        // the startup .task.
+        .onChange(of: appState.selectedTab) { _, _ in applyScreenWakePolicy() }
+        .onChange(of: recorder.state) { _, _ in applyScreenWakePolicy() }
+        .onChange(of: settings.screenWakeMode) { _, _ in applyScreenWakePolicy() }
+    }
+
+    /// v1.8 L3: apply the user's screen-wake mode to the system idle
+    /// timer.  `whileRecording` reproduces the pre-v1.8 behavior;
+    /// `rideTab` and `always` are the field-testing asks ("keep the
+    /// screen active on the ride page or whenever the app is open").
+    /// iOS ignores the flag while the app is backgrounded, so `always`
+    /// can't burn the screen from the background.
+    private func applyScreenWakePolicy() {
+        let disabled: Bool
+        switch settings.screenWakeMode {
+        case .always: disabled = true
+        case .rideTab: disabled = appState.selectedTab == .ride
+        case .whileRecording: disabled = recorder.state == .recording
+        }
+        UIApplication.shared.isIdleTimerDisabled = disabled
     }
 
     /// GET the server's calibration, adopt if it has more overlap data than us, then

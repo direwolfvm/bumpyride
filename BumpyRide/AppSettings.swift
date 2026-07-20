@@ -47,6 +47,30 @@ enum MapViewMode: String, CaseIterable, Hashable {
     }
 }
 
+/// When the app should keep the screen from auto-locking (the idle
+/// timer).  v1.8 L3 — from field testing: the rider wanted the screen
+/// to stay on while watching the live map, and during a long sync
+/// drain, without touching the phone.
+///
+/// `whileRecording` is the pre-v1.8 behavior and the default —
+/// wake-lock costs battery, so anything broader is opt-in.
+enum ScreenWakeMode: String, CaseIterable, Hashable {
+    /// Screen stays awake only during an active recording.
+    case whileRecording
+    /// Screen stays awake whenever the Ride tab is frontmost.
+    case rideTab
+    /// Screen stays awake the whole time the app is open.
+    case always
+
+    var displayName: String {
+        switch self {
+        case .whileRecording: return "While recording"
+        case .rideTab: return "On the Ride tab"
+        case .always: return "Whenever open"
+        }
+    }
+}
+
 /// User-tunable settings persisted in `UserDefaults`: the bumpiness color thresholds
 /// (yellow / orange / red / purple breakpoints in g) and the Bump Map mode filter.
 /// Provides `color(for:)` / `uiColor(for:)` helpers used everywhere bumpiness is shown.
@@ -65,6 +89,7 @@ final class AppSettings {
     private static let keyAutoExportToAppleHealth = "autoExportToAppleHealth"
     private static let keyOpenWatchAppOnLaunch = "openWatchAppOnLaunch"
     private static let keyDebugLogEnabled = "debugLogEnabled"
+    private static let keyScreenWakeMode = "screenWakeMode"
 
     var yellowG: Double = 0.5 {
         didSet { UserDefaults.standard.set(yellowG, forKey: Self.keyYellow) }
@@ -151,6 +176,14 @@ final class AppSettings {
         }
     }
 
+    /// v1.8 L3: idle-timer (auto-lock) policy.  Applied centrally by
+    /// `ContentView.applyScreenWakePolicy()` on every relevant state
+    /// change — tab switches, recorder transitions, and edits to this
+    /// setting itself.
+    var screenWakeMode: ScreenWakeMode = .whileRecording {
+        didSet { UserDefaults.standard.set(screenWakeMode.rawValue, forKey: Self.keyScreenWakeMode) }
+    }
+
     init() {
         let d = UserDefaults.standard
         if let v = d.object(forKey: Self.keyYellow) as? Double { yellowG = v }
@@ -180,6 +213,10 @@ final class AppSettings {
             // property in init doesn't fire didSet (per Swift semantics).
             DebugLogSink.enabled = v
         }
+        if let raw = d.string(forKey: Self.keyScreenWakeMode),
+           let m = ScreenWakeMode(rawValue: raw) {
+            screenWakeMode = m
+        }
     }
 
     func resetToDefaults() {
@@ -192,6 +229,7 @@ final class AppSettings {
         autoExportToAppleHealth = false
         openWatchAppOnLaunch = false
         debugLogEnabled = false
+        screenWakeMode = .whileRecording
     }
 
     private struct Stop {

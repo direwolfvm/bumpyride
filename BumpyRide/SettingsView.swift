@@ -118,6 +118,20 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Picker(selection: $settings.screenWakeMode) {
+                        ForEach(ScreenWakeMode.allCases, id: \.self) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    } label: {
+                        Label("Keep screen awake", systemImage: "sun.max")
+                    }
+                } header: {
+                    Text("Display")
+                } footer: {
+                    Text("Prevents auto-lock. \"While recording\" is the default; the broader options keep the screen on for watching the live map or waiting out a long sync, at a battery cost. The screen always locks normally once you leave the app.")
+                }
+
+                Section {
                     Toggle(isOn: $settings.debugLogEnabled) {
                         Label("Write Debug Log", systemImage: "doc.text.magnifyingglass")
                     }

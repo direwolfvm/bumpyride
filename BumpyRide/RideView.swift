@@ -176,9 +176,12 @@ struct RideView: View {
     /// leaving the second tap's banner visible for its full window.
     @State private var closeCallTapGeneration: Int = 0
 
-    private func setIdleTimer(disabled: Bool) {
-        UIApplication.shared.isIdleTimerDisabled = disabled
-    }
+    // v1.8 L3: idle-timer control moved to ContentView's centralized
+    // applyScreenWakePolicy() — a single owner watching tab, recorder
+    // state, and the Settings screen-wake mode.  RideView no longer
+    // touches UIApplication.isIdleTimerDisabled (the old per-view
+    // toggling would have fought the "On the Ride tab" / "Whenever
+    // open" policies).
 
     var body: some View {
         NavigationStack {
@@ -189,17 +192,10 @@ struct RideView: View {
                     loadedId: appState.loadedRide?.id,
                     onAppearAction: {
                         recorder.requestPermissions()
-                        setIdleTimer(disabled: recorder.state == .recording)
                     },
-                    onStateChange: { newState in
-                        setIdleTimer(disabled: newState == .recording)
-                    },
+                    onStateChange: { _ in },
                     onLoadedChange: { scrubIndex = 0; zoom = 1.0 },
-                    onDisappearAction: {
-                        if recorder.state != .recording {
-                            setIdleTimer(disabled: false)
-                        }
-                    }
+                    onDisappearAction: { }
                 ))
                 .sheet(isPresented: $showingSaveSheet, onDismiss: { pendingRide = nil }) { saveSheet }
                 .sheet(isPresented: $showingEditSheet) { editSheet }
