@@ -78,6 +78,12 @@ struct ContentView: View {
     /// `considerLaunchingWatchApp()`.
     @State private var watchLaunchCoordinator: WatchLaunchCoordinator
 
+    /// v2.0 N4: post-sync achievement toast.  Non-nil while showing;
+    /// the generation counter invalidates a replaced toast's dismiss
+    /// task (banner pattern).
+    @State private var achievementToast: AchievementToastPayload?
+    @State private var achievementToastGeneration: Int = 0
+
     /// Drives the scenePhase → foreground watch-app launch trigger.
     /// `.onChange(of: scenePhase)` only fires on changes, so we
     /// also call `considerLaunchingWatchApp()` from the existing
@@ -334,6 +340,14 @@ struct ContentView: View {
                 rideScoreCache.requestScoreWithRetry(for: rideId)
                 Task { await levelMonitor.checkAfterRideUpload() }
             }
+            // v2.0 N4: post-sync achievement toast.  The coordinator
+            // already gates to fresh inserts (updated != true), so this
+            // fires once per genuinely-new upload.  During a long
+            // first-time backfill, successive drains replace the toast
+            // (latest wins) rather than queueing a parade.
+            syncCoordinator.onAchievementsAwarded = { awards in
+                showAchievementToast(awards)
+            }
             // Connect RideStore save/delete to the sync queue + calibration recompute.
             // Idempotent — re-running just overwrites the same closure references.
             store.onRideSaved = { ride in
@@ -517,6 +531,32 @@ struct ContentView: View {
         .onChange(of: appState.selectedTab) { _, _ in applyScreenWakePolicy() }
         .onChange(of: recorder.state) { _, _ in applyScreenWakePolicy() }
         .onChange(of: settings.screenWakeMode) { _, _ in applyScreenWakePolicy() }
+        // v2.0 N4: achievement toast floats over whatever tab is up.
+        .overlay(alignment: .top) {
+            if let toast = achievementToast {
+                AchievementToastView(payload: toast) {
+                    achievementToast = nil
+                }
+                .padding(.horizontal)
+                .padding(.top, 4)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(duration: 0.35), value: achievementToast?.id)
+    }
+
+    /// v2.0 N4: show the achievement toast for 6 s, replacing any
+    /// toast currently up (the generation counter invalidates the old
+    /// toast's dismiss task, same pattern as the ride banners).
+    private func showAchievementToast(_ awards: [WebSyncClient.AwardedAchievement]) {
+        achievementToast = AchievementToastPayload(awards: awards)
+        achievementToastGeneration += 1
+        let generation = achievementToastGeneration
+        Task {
+            try? await Task.sleep(for: .seconds(6))
+            guard generation == achievementToastGeneration else { return }
+            achievementToast = nil
+        }
     }
 
     /// v1.8 L3: apply the user's screen-wake mode to the system idle
