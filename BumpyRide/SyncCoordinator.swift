@@ -312,7 +312,12 @@ final class SyncCoordinator {
             }
 
             do {
-                try await client.uploadRide(jsonBody: body, token: stored.token)
+                // v1.8 L2: uploads go through the background URLSession
+                // so a drain keeps advancing after the user locks the
+                // screen or backgrounds the app.  Same status-code →
+                // ClientError mapping as uploadRide, so the catch
+                // clauses below are unchanged.
+                try await uploadViaBackgroundSession(body: body, rideId: next.id, token: stored.token)
                 queue.remove(next.id)
                 attempt = 0  // reset backoff on success
                 // .debug per upload — see WebSyncClient.uploadRide comment.
@@ -355,6 +360,43 @@ final class SyncCoordinator {
         }
         state = .idle
         log.info("Drain complete")
+    }
+
+    /// v1.8 L2: write the ride body to a temp file and hand it to the
+    /// background session (background configurations require file-based
+    /// uploads).  Maps HTTP status onto the same `ClientError` cases
+    /// `uploadRide` threw, so `drain`'s error handling is untouched.
+    /// The temp file is deleted by `BackgroundUploadClient`'s
+    /// completion delegate in all outcomes — including completions
+    /// that arrive after a process relaunch.
+    private func uploadViaBackgroundSession(body: Data, rideId: UUID, token: String) async throws {
+        let request = await client.rideUploadRequest(token: token)
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("BumpyRideUploads", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let fileURL = dir.appendingPathComponent("\(rideId.uuidString).json")
+        do {
+            try body.write(to: fileURL)
+        } catch {
+            // Local I/O failure — treat as retryable, same as a
+            // transport blip (disk-full clears, etc.).
+            log.error("Couldn't stage upload body for \(rideId, privacy: .public): \(String(describing: error), privacy: .public)")
+            throw WebSyncClient.ClientError.transport
+        }
+
+        let status = try await BackgroundUploadClient.shared.upload(request: request, bodyFile: fileURL)
+        switch status {
+        case 200..<300:
+            return
+        case 400:
+            throw WebSyncClient.ClientError.validationFailed
+        case 401:
+            throw WebSyncClient.ClientError.unauthorized
+        case 409:
+            throw WebSyncClient.ClientError.conflict
+        default:
+            throw WebSyncClient.ClientError.http(status: status)
+        }
     }
 
     private func schedulePause(reason: String) {

@@ -867,6 +867,20 @@ actor WebSyncClient {
         }
     }
 
+    /// v1.8 L2: request template for a ride upload, used by the
+    /// background-session path (`BackgroundUploadClient`) — same URL,
+    /// headers, and timeout as `uploadRide`, but with the body left to
+    /// the file-based upload task (background sessions can't use
+    /// `httpBody`).
+    func rideUploadRequest(token: String) -> URLRequest {
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/sync/ride"))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 60
+        return request
+    }
+
     func uploadRide(jsonBody: Data, token: String) async throws {
         // .debug (not .info) — during a backlog catch-up this fires for every
         // queued ride in rapid succession, and we recently learned that
