@@ -66,6 +66,12 @@ final class RideRecorder {
     /// `logCloseCall()` appends one entry here and to the journal.  Empty
     /// at start; included in the `Ride` returned from `stop()`.
     private(set) var closeCalls: [CloseCall] = []
+    /// v2.0 M1: user-reported "other" events (Blocked Lane + custom
+    /// kinds) captured during this recording.  In-memory only until
+    /// save — unlike close calls these are NOT crash-journaled yet
+    /// (known follow-up; the sidecar-ndjson pattern from closeCalls
+    /// extends naturally when we get there).
+    private(set) var otherEvents: [OtherEvent] = []
     /// v1.7 J2: user-supplied categorizations of brake events that were
     /// detected and acknowledged during live recording.  Keyed by the
     /// brake event's `timestamp` (the peak-decel moment) because the
@@ -126,6 +132,7 @@ final class RideRecorder {
         Self.log.info("start() from state=\(state)")
         points = []
         closeCalls = []
+        otherEvents = []
         brakeCategorizations = [:]
         totalDistanceMeters = 0
         maxRecordedBumpiness = 0
@@ -214,7 +221,8 @@ final class RideRecorder {
             endedAt: end,
             points: points,
             pocketMode: nil,
-            closeCallEvents: closeCalls
+            closeCallEvents: closeCalls,
+            otherEvents: otherEvents
         )
     }
 
@@ -236,6 +244,7 @@ final class RideRecorder {
         journal.clear()
         points = []
         closeCalls = []
+        otherEvents = []
         brakeCategorizations = [:]
         totalDistanceMeters = 0
         maxRecordedBumpiness = 0
@@ -311,6 +320,37 @@ final class RideRecorder {
     func undoCloseCall(id: UUID) -> Bool {
         guard let idx = closeCalls.firstIndex(where: { $0.id == id }) else { return false }
         closeCalls.remove(at: idx)
+        return true
+    }
+
+    // MARK: - Other events (v2.0 M1)
+
+    /// Capture an "other" event (Blocked Lane or a custom kind) at the
+    /// current GPS location.  Same gate as close calls
+    /// (`canLogCloseCall`: recording-or-paused + a GPS fix) — the two
+    /// features are siblings and the preconditions are identical.
+    /// Returns the created event for the UI's undo banner, or `nil`
+    /// when the gate fails.
+    func logOtherEvent(kind: String, isCustom: Bool) -> OtherEvent? {
+        guard canLogCloseCall, let loc = location.lastLocation else { return nil }
+        let event = OtherEvent(
+            timestamp: Date(),
+            latitude: loc.coordinate.latitude,
+            longitude: loc.coordinate.longitude,
+            kind: kind,
+            isCustom: isCustom
+        )
+        otherEvents.append(event)
+        Self.log.info("logOtherEvent: \(kind) (custom=\(isCustom))")
+        return event
+    }
+
+    /// Undo a specific other-event by id — same contract as
+    /// `undoCloseCall`.
+    @discardableResult
+    func undoOtherEvent(id: UUID) -> Bool {
+        guard let idx = otherEvents.firstIndex(where: { $0.id == id }) else { return false }
+        otherEvents.remove(at: idx)
         return true
     }
 

@@ -53,6 +53,7 @@ Non-breaking additions (adding a new optional field, adding a new enum case) do 
 - `Ride.healthKitWorkoutUUID` (optional UUID string, iOS v1.5): the local HKWorkout UUID for the ride if it has been exported to Apple Health. Device-local; not meaningful to a server or any other device. Server should store opaquely and round-trip on restore without interpreting.
 - `BrakeEvent.category` (optional string, iOS v1.7): user-supplied classification of the brake event. One of `safety`, `other`, `error`, `unknown`. See the BrakeEvent table for null semantics.
 - `CloseCall.category` (optional string, iOS v1.7): user-supplied classification of the close call. One of `vehicle`, `bike`, `pedestrian`. See the CloseCall table for null semantics.
+- `Ride.otherEvents` (optional array of `OtherEvent`, iOS v2.0): sparse list of user-reported "other" events (Blocked Lane + rider-defined custom kinds). `null` = ride predates the feature; `[]` = feature available, nothing logged. See the OtherEvent table — **note the `isCustom` privacy rule**.
 
 ## `Ride` object
 
@@ -69,6 +70,7 @@ The top-level object.
 | `pocketMode` | boolean | no² | `true` = phone was on the rider's body; `false` = phone was on a fixed bike mount; `null`/missing = mode not determined (legacy or undecided). Set at save time by `MountStyleDetector`, user-overridable. See the "Versioning" section for what this affects in `accelWindow` and `bumpiness`. |
 | `brakeEvents` | array of `BrakeEvent` | no³ | Sparse list of hard-braking events detected post-hoc on this ride. Added in v3. `null`/missing = detection hasn't run yet (legacy rides queued for auto-reprocessing); `[]` = ran and found nothing. |
 | `closeCallEvents` | array of `CloseCall` | no⁵ | Sparse list of user-reported close calls captured by tapping the "Log close call" button during recording. Added in v3. `null`/missing = ride predates the feature (no backfill possible); `[]` = feature available but nothing logged. |
+| `otherEvents` | array of `OtherEvent` | no⁵ | Added in iOS v2.0. Sparse list of user-reported "other" events (built-in kinds like `blocked-lane`, plus rider-defined custom kinds). Same null semantics as `closeCallEvents`. |
 | `healthKitWorkoutUUID` | UUID string | no⁶ | Added in iOS v1.5. **Device-local**: the UUID of the `HKWorkout` we wrote to Apple Health on the iOS device that exported this ride. Only meaningful to the HealthKit store on that specific device; a server or a different device should treat it as opaque (round-trip it on storage but do not interpret). Used by the iOS app as a fast-path hint for the "✓ In Apple Health" badge; ground truth is always re-checked via `HKMetadataKeyExternalUUID == Ride.id` on the local HealthKit store. |
 
 ¹ Default: `1` for records lacking the field. ² Default: `null` (unknown). ³ Default: `null` (not detected). ⁵ Default: `null` (predates feature). ⁶ Default: `null` (not exported on this device).
@@ -127,6 +129,19 @@ Sparse — captured live when the rider taps the "Log close call" button during 
 | `category` | string | no⁸ | Added in v1.7. User-supplied classification. One of `vehicle`, `bike`, `pedestrian`. Default at tap-time is `vehicle` if the user dismisses the categorization modal. `null`/missing on legacy close calls recorded before v1.7.
 
 No severity or notes fields in the v1.0 of this feature. The design goal is one-handed, no-look tap-to-log while riding; richer metadata can be added later if the in-ride interaction model evolves.
+
+## `OtherEvent` object
+
+Sparse — captured live when the rider taps "Log Event" during recording and picks a kind. Added as an additive field in iOS v2.0. Full server-side contract in `OTHER_EVENTS_WEB_HANDOFF.md`.
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `id` | UUID string | yes | Stable per-event id. |
+| `timestamp` | ISO-8601 date | yes | Time of the tap. |
+| `latitude` | number | yes | Location at the moment of the tap. WGS-84. |
+| `longitude` | number | yes | Location at the moment of the tap. WGS-84. |
+| `kind` | string | yes | For built-in events: a stable registry identifier (`blocked-lane` is the only one at launch; the registry is append-only, identifiers never renamed). For custom events: the rider's label verbatim. |
+| `isCustom` | boolean | yes | **Privacy switch.** `false` = built-in registry kind → community data, eligible for public map layers (same as close calls). `true` = rider-defined → private to the owning account; must NEVER appear in public tiles or any cross-account surface. Servers key on this flag, not on registry membership, so they don't need to track the registry to enforce privacy. |
 
 ### `accelWindow` encoding
 

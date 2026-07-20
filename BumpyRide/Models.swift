@@ -59,6 +59,65 @@ struct RidePoint: Codable, Identifiable, Hashable {
 ///
 /// Wire format additive — old clients ignore unknown fields, and `Ride`'s
 /// `closeCallEvents` is itself optional, so legacy rides decode unchanged.
+/// v2.0 M1: a user-reported point event that isn't a close call —
+/// "something noteworthy happened here."  Two flavors, split by
+/// `isCustom`:
+///
+///   • **Built-in kinds** (`isCustom == false`): drawn from
+///     `OtherEvent.builtinKinds`, a stable registry shared with the web
+///     app.  One kind at launch — `"blocked-lane"`.  These are
+///     community data: eligible for the public maps, same as close
+///     calls.
+///
+///   • **Custom kinds** (`isCustom == true`): free-text labels the
+///     rider defines in Settings → Reportable Events.  Private to the
+///     rider's own account — the server must never surface them in
+///     public tiles (see `docs/OTHER_EVENTS_WEB_HANDOFF.md`).
+///
+/// `kind` holds the registry identifier for built-ins and the rider's
+/// label verbatim for customs.  The `isCustom` flag (rather than a
+/// registry lookup) is what the server keys privacy on, so it doesn't
+/// need to track our registry to make the right call.
+struct OtherEvent: Codable, Identifiable, Hashable, Sendable {
+    var id: UUID = UUID()
+    var timestamp: Date
+    var latitude: Double
+    var longitude: Double
+    /// Registry identifier ("blocked-lane") or custom label verbatim.
+    var kind: String
+    /// `true` → rider-defined, account-private.  `false` → built-in
+    /// registry kind, eligible for public maps.
+    var isCustom: Bool
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    /// Human-facing name: registry display name for built-ins, the
+    /// label itself for customs (it IS the display name).
+    var displayName: String {
+        if !isCustom, let builtin = Self.builtinKinds.first(where: { $0.kind == kind }) {
+            return builtin.displayName
+        }
+        return kind
+    }
+
+    /// The built-in event registry.  Append-only and shared with the
+    /// web app — identifiers are wire format, never rename one.
+    static let builtinKinds: [(kind: String, displayName: String)] = [
+        ("blocked-lane", "Blocked Lane"),
+    ]
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case timestamp
+        case latitude
+        case longitude
+        case kind
+        case isCustom
+    }
+}
+
 struct CloseCall: Codable, Identifiable, Hashable, Sendable {
     var id: UUID = UUID()
     var timestamp: Date
@@ -244,6 +303,12 @@ struct Ride: Codable, Identifiable, Hashable {
     /// available but no calls logged.  Both render as "no close calls" — no
     /// background reprocessor backfills these since the data is user-initiated.
     var closeCallEvents: [CloseCall]?
+    /// v2.0 M1: user-reported "other" events (Blocked Lane + custom
+    /// kinds).  Same additive-optional lifecycle as `closeCallEvents`:
+    /// `nil` predates the feature, `[]` means feature present but
+    /// nothing logged, and no reprocessor backfills user-initiated
+    /// data.
+    var otherEvents: [OtherEvent]?
     /// UUID of the `HKWorkout` we wrote to Apple Health for this ride, if
     /// any.  `nil` for rides never exported (the steady state for most
     /// rides until v1.5+) and for rides recorded before the integration
@@ -276,6 +341,7 @@ struct Ride: Codable, Identifiable, Hashable {
         schemaVersion: Int = 3,
         brakeEvents: [BrakeEvent]? = nil,
         closeCallEvents: [CloseCall]? = nil,
+        otherEvents: [OtherEvent]? = nil,
         healthKitWorkoutUUID: UUID? = nil
     ) {
         self.id = id
@@ -287,6 +353,7 @@ struct Ride: Codable, Identifiable, Hashable {
         self.schemaVersion = schemaVersion
         self.brakeEvents = brakeEvents
         self.closeCallEvents = closeCallEvents
+        self.otherEvents = otherEvents
         self.healthKitWorkoutUUID = healthKitWorkoutUUID
     }
 
@@ -300,6 +367,7 @@ struct Ride: Codable, Identifiable, Hashable {
         case schemaVersion
         case brakeEvents
         case closeCallEvents
+        case otherEvents
         case healthKitWorkoutUUID
     }
 
@@ -320,6 +388,9 @@ struct Ride: Codable, Identifiable, Hashable {
         // closeCallEvents missing → nil → ride predates the feature; treat as
         // empty for rendering.  No reprocessor backfills this.
         self.closeCallEvents = try c.decodeIfPresent([CloseCall].self, forKey: .closeCallEvents)
+        // otherEvents missing → nil → ride predates the feature (v2.0).
+        // User-initiated data; no backfill.
+        self.otherEvents = try c.decodeIfPresent([OtherEvent].self, forKey: .otherEvents)
         // healthKitWorkoutUUID missing → nil → ride hasn't been exported on
         // this device (the common case for any ride from a build that
         // predates v1.5, or any v1.5+ ride with auto-export off).
