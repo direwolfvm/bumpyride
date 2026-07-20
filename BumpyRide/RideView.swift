@@ -68,6 +68,12 @@ struct RideView: View {
     @State private var exportAlertMessage: String = ""
     @State private var isExporting: Bool = false
 
+    /// v2.0 M5: the freshly-rendered ride photo, presented in the
+    /// system share sheet when non-nil.  Save-to-Photos is one of the
+    /// sheet's built-in activities, so the old save-only flow is a
+    /// strict subset of this one.
+    @State private var sharePayload: RidePhotoSharePayload?
+
     /// Local "currently writing this ride to HealthKit" flag for the
     /// per-ride Apple Health row's spinner.  Persists across the
     /// auth-then-export sequence so the row stays in "Adding…" state
@@ -206,6 +212,11 @@ struct RideView: View {
                 ))
                 .sheet(isPresented: $showingSaveSheet, onDismiss: { pendingRide = nil }) { saveSheet }
                 .sheet(isPresented: $showingEditSheet) { editSheet }
+                // v2.0 M5: system share sheet for the ride photo.
+                .sheet(item: $sharePayload) { payload in
+                    ActivityShareSheet(items: [payload.image])
+                        .presentationDetents([.medium, .large])
+                }
                 .task {
                     // ContentView.task sets recoveredRide on launch (before this view
                     // first renders, usually).  .onChange won't fire for already-set
@@ -392,8 +403,8 @@ struct RideView: View {
                     } label: { Label("Trim or Split", systemImage: "scissors") }
 
                     Button {
-                        exportCurrentRide()
-                    } label: { Label(isExporting ? "Exporting…" : "Export to Photos", systemImage: "square.and.arrow.up") }
+                        shareCurrentRide()
+                    } label: { Label(isExporting ? "Preparing…" : "Share Ride Photo", systemImage: "square.and.arrow.up") }
                         .disabled(isExporting)
 
                     Divider()
@@ -2140,23 +2151,28 @@ struct RideView: View {
         }
     }
 
-    // MARK: Export
+    // MARK: Share ride photo
 
-    private func exportCurrentRide() {
+    /// v2.0 M5: render the ride summary photo and hand it to the
+    /// system share sheet.  Replaces the v1.x save-only flow —
+    /// Save Image is one of the sheet's built-in activities, so
+    /// saving is still one tap away, alongside Messages / Mail /
+    /// AirDrop / social apps.  The success alert is gone (the sheet
+    /// is its own confirmation); the failure alert stays for render
+    /// errors.
+    private func shareCurrentRide() {
         guard let ride = appState.loadedRide else { return }
         isExporting = true
         Task {
             do {
                 let image = try await RideImageExporter.export(ride: ride, settings: settings)
-                RideImageExporter.saveToPhotos(image)
-                exportAlertTitle = "Saved to Photos"
-                exportAlertMessage = "Your ride image was saved to your photo library."
+                sharePayload = RidePhotoSharePayload(image: image)
             } catch {
-                exportAlertTitle = "Export Failed"
+                exportAlertTitle = "Share Failed"
                 exportAlertMessage = "Couldn't build the ride image: \(error.localizedDescription)"
+                showExportAlert = true
             }
             isExporting = false
-            showExportAlert = true
         }
     }
 }

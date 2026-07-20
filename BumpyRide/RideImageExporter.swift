@@ -33,9 +33,8 @@ enum RideImageExporter {
         return flattenedOpaque(image)
     }
 
-    static func saveToPhotos(_ image: UIImage) {
-        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
-    }
+    // (v2.0 M5: the old saveToPhotos helper is gone — the share sheet's
+    // built-in "Save Image" activity took over the save path.)
 
     private static func flattenedOpaque(_ image: UIImage) -> UIImage {
         let format = UIGraphicsImageRendererFormat()
@@ -78,10 +77,20 @@ enum RideImageExporter {
             let pts = ride.points
             guard pts.count > 1 else { return }
             for i in 1..<pts.count {
+                // v2.0 M5: match the in-app maps.  Color by the MAX
+                // bumpiness of the segment's endpoints, banded to the
+                // legend stops (K19 — averaging washed isolated jolts
+                // into green/yellow, and the shared photo shouldn't
+                // tell a smoother story than the app does).  And skip
+                // segments spanning a GPS dropout so the photo doesn't
+                // draw a misleading straight line through a tunnel
+                // (same 30 s break the live/playback maps use).
+                let gap = pts[i].timestamp.timeIntervalSince(pts[i - 1].timestamp)
+                if gap > RouteColoring.maxSegmentTimeGapSeconds { continue }
                 let a = snapshot.point(for: pts[i - 1].coordinate)
                 let b = snapshot.point(for: pts[i].coordinate)
-                let avg = (pts[i - 1].bumpiness + pts[i].bumpiness) / 2
-                ctx.setStrokeColor(settings.uiColor(for: avg).cgColor)
+                let band = settings.colorBand(for: max(pts[i - 1].bumpiness, pts[i].bumpiness))
+                ctx.setStrokeColor(settings.bandUIColor(band).cgColor)
                 ctx.move(to: a)
                 ctx.addLine(to: b)
                 ctx.strokePath()
