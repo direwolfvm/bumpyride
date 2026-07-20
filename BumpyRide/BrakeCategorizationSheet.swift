@@ -81,11 +81,18 @@ struct BrakeCategorizationSheet: View {
             // Subtle dismiss-without-categorizing.  Records as
             // .unknown so we can tell intentional dismissal from
             // the timer running out.
-            Button("Skip") {
+            // v1.8 L5: full 44 pt minimum tap height so the skip
+            // affordance is reachable mid-ride too, while staying
+            // visually subordinate to the category buttons.
+            Button {
                 commit(.unknown)
+            } label: {
+                Text("Skip")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 44)
             }
-            .font(.callout)
-            .foregroundStyle(.secondary)
+            .buttonStyle(.plain)
 
             Spacer(minLength: 8)
 
@@ -131,12 +138,16 @@ struct BrakeCategorizationSheet: View {
         Button {
             commit(category)
         } label: {
+            // v1.8 L5: taller tap target + heavier type.  These get
+            // pressed mid-ride, often gloved or with the phone on a
+            // mount — 60 pt rows and title3 text are far easier to
+            // hit than the default large-control height.
             Label(title, systemImage: systemImage)
-                .frame(maxWidth: .infinity)
+                .font(.title3.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 60)
         }
         .buttonStyle(.borderedProminent)
         .tint(tint)
-        .controlSize(.large)
     }
 
     /// Single-shot commit gate.  Either the timer or a button

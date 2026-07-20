@@ -124,6 +124,25 @@ struct RideView: View {
     /// the head is popped and the next brake (if any) presents.
     @State private var pendingBrakeQueue: [BrakeEvent] = []
 
+    /// v1.8 L5: the brake currently being categorized — the ONLY brake
+    /// bound to the sheet.  Presentation is a strict one-at-a-time
+    /// state machine: `presentNextBrakeIfIdle()` promotes the queue
+    /// head into this slot only when no sheet is up, and the next
+    /// promotion happens in the sheet's `onDismiss` (after the
+    /// previous sheet has fully left the screen).
+    ///
+    /// Why not bind the sheet to `pendingBrakeQueue.first` (the old
+    /// design): when several brakes were detected in short
+    /// succession, committing the head popped the queue and swapped
+    /// the sheet's item identity WHILE PRESENTED.  SwiftUI glitches
+    /// on rapid item swaps — the stale sheet content stayed on
+    /// screen with its internal `committed` flag already true, so
+    /// every subsequent button tap no-opped and the sheet could
+    /// never be dismissed.  (Field bug: "popover stays up no matter
+    /// what button I press, when several hard brakes fire close
+    /// together.")
+    @State private var activeBrakeCategorization: BrakeEvent?
+
     /// v1.7 J3: close call awaiting categorization from the live
     /// tap path.  Drives the close-call categorization sheet's
     /// item binding.  Single-slot rather than a queue because the
@@ -616,25 +635,29 @@ struct RideView: View {
                 updateLiveBrakes()
             }
         }
-        // v1.7 J2: brake categorization sheet.  Item-binding drives
-        // off the head of `pendingBrakeQueue`; the sheet's onCommit
-        // pops the head and (if a category was chosen) stashes it on
-        // the recorder for save-time application.  Auto-dismiss is
-        // handled inside the sheet's own 20 s timer.
-        .sheet(item: Binding(
-            get: { pendingBrakeQueue.first },
-            set: { _ in /* removeFirst happens in commit handler */ }
-        )) { brake in
+        // v1.7 J2 / v1.8 L5: brake categorization sheet.  One brake at
+        // a time via `activeBrakeCategorization`; the next queued brake
+        // is promoted only in onDismiss, after the previous sheet has
+        // fully dismissed.  See the state var's doc for why the old
+        // queue-head item binding got stuck.
+        .sheet(item: $activeBrakeCategorization, onDismiss: {
+            // Give the dismissal animation a beat to settle before
+            // presenting the next sheet — presenting during the
+            // teardown is exactly the identity-swap glitch we're
+            // avoiding.
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                presentNextBrakeIfIdle()
+            }
+        }) { brake in
             BrakeCategorizationSheet(brake: brake) { category in
                 if let category {
                     recorder.setBrakeCategory(category, at: brake.timestamp)
                 }
-                // Pop regardless of whether a category was committed
-                // — nil means the timer expired, which we treat as
-                // "leave the brake uncategorized."
-                if !pendingBrakeQueue.isEmpty {
-                    pendingBrakeQueue.removeFirst()
-                }
+                // nil (timer expired) leaves the brake uncategorized.
+                // Clearing the item dismisses; onDismiss promotes the
+                // next queued brake, if any.
+                activeBrakeCategorization = nil
             }
         }
         // v1.7 J3: close-call categorization sheet.  Single-slot
@@ -662,6 +685,7 @@ struct RideView: View {
             seenBrakeTimestamps.insert(brake.timestamp)
             pendingBrakeQueue.append(brake)
         }
+        presentNextBrakeIfIdle()
         // Only publish (and thereby force a RouteMapView re-render of
         // the whole polyline + overlays) when the detected set actually
         // changed.  `detect()` mints a fresh `id` UUID on every call, so
@@ -674,6 +698,17 @@ struct RideView: View {
         if !Self.brakesEquivalent(detected, liveBrakeEvents) {
             liveBrakeEvents = detected
         }
+    }
+
+    /// v1.8 L5: promote the queue head into the active-sheet slot,
+    /// but only when no sheet is currently up.  Called from
+    /// `updateLiveBrakes` (new brake arrived) and from the sheet's
+    /// onDismiss (previous brake resolved).  The one-at-a-time
+    /// discipline is what prevents the stuck-sheet identity-swap
+    /// glitch — see `activeBrakeCategorization`'s doc.
+    private func presentNextBrakeIfIdle() {
+        guard activeBrakeCategorization == nil, !pendingBrakeQueue.isEmpty else { return }
+        activeBrakeCategorization = pendingBrakeQueue.removeFirst()
     }
 
     /// Content-equality for live brake arrays, ignoring the per-call
@@ -982,7 +1017,13 @@ struct RideView: View {
         let mode = settings.mapViewMode
         let brakeEvents = ride.brakeEvents ?? []
         let closeCalls = ride.closeCallEvents ?? []
-        return VStack(spacing: 12) {
+        // v1.8 L4: the viewer scrolls.  The fixed VStack was squeezing
+        // every section — most visibly the map — as rows accumulated
+        // (score breakdown, Apple Health, event lists).  Inside a
+        // ScrollView each section gets its natural height and the map
+        // holds a generous fixed height instead of being crushed.
+        return ScrollView {
+            VStack(spacing: 12) {
             // Bumpiness / Brakes / Calls toggle.  Reuses the same
             // AppSettings flag as the Bump Map tab — toggling on one
             // surface follows through to the other.
@@ -1008,6 +1049,10 @@ struct RideView: View {
                 // the pins / diamonds carry the visual weight.
                 colorRoute: mode == .bumps
             )
+            // Fixed height inside the ScrollView — a Map with no
+            // frame collapses in a scroll context, and this is the
+            // "don't squish the map" guarantee the L4 change is for.
+            .frame(height: 340)
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .padding(.horizontal)
 
@@ -1049,6 +1094,7 @@ struct RideView: View {
             .controlSize(.large)
             .padding(.horizontal)
             .padding(.bottom, 8)
+            }
         }
         // Kick off the score fetch when the viewer opens / the loaded
         // ride changes.  Idempotent — `requestScore` is a no-op when an
