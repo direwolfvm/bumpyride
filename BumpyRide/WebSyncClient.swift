@@ -134,12 +134,15 @@ actor WebSyncClient {
         /// Count of cells where this user was the first of their rides but
         /// others had already mapped them.  Each contributes 5 points.
         let firstForYou: Int
-        /// Count of cells the user has been to before, but whose previous
-        /// visit was more than 10 days ago (server-defined window
-        /// `STALE_REFRESH_DAYS`).  Each contributes 3 points.  Server-side
-        /// migration 0016 added this tier between `firstForYou` and
-        /// `repeats`; older server deployments don't return it, so it's
-        /// optional and defaults to 0 at the call site.
+        /// Count of cells the user has been to before whose most recent
+        /// data — from ANY rider, not just this user — was more than 10
+        /// days old at ride time (server-defined window
+        /// `STALE_REFRESH_DAYS`; the definition changed from "your own
+        /// last visit" to "anyone's last update" post-1.7).  Each
+        /// contributes 3 points.  Server-side migration 0016 added this
+        /// tier between `firstForYou` and `repeats`; older server
+        /// deployments don't return it, so it's optional and defaults to
+        /// 0 at the call site.
         let staleRefresh: Int?
         /// Count of subsequent visits to cells this user already mapped
         /// within the freshness window.  Each contributes 1 point.

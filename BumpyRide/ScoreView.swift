@@ -215,7 +215,7 @@ struct ScoreView: View {
                     count: staleRefresh,
                     pointsPerEvent: 3,
                     color: .orange,
-                    detail: "Cells you last rode more than 10 days ago"
+                    detail: "Cells whose data was over 10 days old"
                 )
             }
             tierRow(
@@ -260,7 +260,7 @@ struct ScoreView: View {
         Section {
             ruleRow(symbol: "10", color: .purple, title: "First ever", body: "When you're the first person in the world to record bump data in a 20-ft cell, you earn 10 points.")
             ruleRow(symbol: "5", color: .blue, title: "First for you", body: "When you ride through a cell that other riders have already mapped, you earn 5 points the first time.")
-            ruleRow(symbol: "3", color: .orange, title: "Refreshed", body: "When you re-ride a cell you've already mapped but haven't visited in over 10 days, you earn 3 points — rewards keeping your coverage current.")
+            ruleRow(symbol: "3", color: .orange, title: "Refreshed", body: "When you ride a cell you've mapped before and its most recent data — from any rider — is more than 10 days old, you earn 3 points for bringing the map up to date.")
             ruleRow(symbol: "1", color: .gray, title: "Repeat visits", body: "Every other ride through a cell you've already mapped earns 1 more point.")
         } header: {
             Text("How scoring works")
