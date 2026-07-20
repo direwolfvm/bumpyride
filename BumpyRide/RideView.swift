@@ -176,6 +176,13 @@ struct RideView: View {
     /// leaving the second tap's banner visible for its full window.
     @State private var closeCallTapGeneration: Int = 0
 
+    // v2.0 M2: Log Event flow — kind-picker sheet + undo banner,
+    // mirroring the close-call pattern (generation counter invalidates
+    // stale 5 s dismiss tasks when events are logged in succession).
+    @State private var showingLogEventSheet: Bool = false
+    @State private var pendingOtherEvent: OtherEvent?
+    @State private var otherEventTapGeneration: Int = 0
+
     // v1.8 L3: idle-timer control moved to ContentView's centralized
     // applyScreenWakePolicy() — a single owner watching tab, recorder
     // state, and the Settings screen-wake mode.  RideView no longer
@@ -540,21 +547,30 @@ struct RideView: View {
                     .padding(.horizontal)
             }
 
-            // Close-call logging — visible only during recording or pause.
-            // Sits above the primary controls so the user can find it
-            // by feel without looking away from the road.  Banner +
-            // button stack together so the layout doesn't jump as the
-            // banner shows/hides.
+            // Event logging — visible only during recording or pause.
+            // v2.0 M2: two buttons side by side — Log Event on the
+            // LEFT (opens the kind picker), Log Close Call on the
+            // RIGHT (unchanged one-tap behavior; muscle memory from
+            // v1.x carries over since it keeps the trailing position
+            // under the thumb).  Banners stack under the row so the
+            // layout doesn't jump as they show/hide.
             if recorder.state == .recording || recorder.state == .paused {
                 VStack(spacing: 8) {
-                    logCloseCallButton
+                    HStack(spacing: 8) {
+                        logEventButton
+                        logCloseCallButton
+                    }
                     if let pending = pendingCloseCall {
                         closeCallUndoBanner(for: pending)
                     }
+                    if let pendingEvent = pendingOtherEvent {
+                        otherEventUndoBanner(for: pendingEvent)
+                    }
                 }
                 .padding(.horizontal)
-                // Smooth slide-in/out for the banner.
+                // Smooth slide-in/out for the banners.
                 .animation(.easeInOut(duration: 0.2), value: pendingCloseCall?.id)
+                .animation(.easeInOut(duration: 0.2), value: pendingOtherEvent?.id)
             }
 
             controlButtons
@@ -678,6 +694,18 @@ struct RideView: View {
                 pendingCloseCallCategorization = nil
             }
         }
+        // v2.0 M2: Log Event kind picker.  Rider-initiated (no
+        // timeout); selection logs immediately and dismisses.
+        .sheet(isPresented: $showingLogEventSheet) {
+            LogEventSheet(
+                customKinds: settings.customEventKinds,
+                onSelect: { kind, isCustom in
+                    showingLogEventSheet = false
+                    handleEventSelection(kind: kind, isCustom: isCustom)
+                },
+                onCancel: { showingLogEventSheet = false }
+            )
+        }
     }
 
     /// Run the brake detector on the latest points buffer, publish
@@ -781,12 +809,85 @@ struct RideView: View {
             handleCloseCallTap()
         } label: {
             Label("Log Close Call", systemImage: "exclamationmark.triangle.fill")
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(.borderedProminent)
         .tint(.purple)
         .controlSize(.large)
         .disabled(!recorder.canLogCloseCall)
+    }
+
+    /// v2.0 M2: opens the kind picker for "other" events (Blocked Lane
+    /// + custom kinds).  Orange flag — visually distinct from the
+    /// purple close-call and the green/red ride controls.  Same
+    /// enablement gate as close calls (recording-or-paused + GPS fix).
+    private var logEventButton: some View {
+        Button {
+            showingLogEventSheet = true
+        } label: {
+            Label("Log Event", systemImage: "flag.fill")
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(.orange)
+        .controlSize(.large)
+        .disabled(!recorder.canLogCloseCall)
+    }
+
+    /// v2.0 M2: 5 s confirmation + undo for a just-logged event —
+    /// same glanceable design as the close-call banner, orange flavor,
+    /// names the kind so the rider can confirm the right one landed.
+    private func otherEventUndoBanner(for event: OtherEvent) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.orange)
+            Text("\(event.displayName) logged")
+                .font(.callout.weight(.medium))
+                .lineLimit(1)
+            Spacer()
+            Button("Undo") {
+                undoPendingOtherEvent(event)
+            }
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(.orange)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.orange.opacity(0.4), lineWidth: 1)
+        )
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    /// v2.0 M2: rider picked a kind in the Log Event sheet.  Log at
+    /// the current fix, haptic, show the undo banner for 5 s.
+    private func handleEventSelection(kind: String, isCustom: Bool) {
+        guard let event = recorder.logOtherEvent(kind: kind, isCustom: isCustom) else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        pendingOtherEvent = event
+        otherEventTapGeneration += 1
+        scheduleOtherEventBannerDismiss(generation: otherEventTapGeneration)
+    }
+
+    private func undoPendingOtherEvent(_ event: OtherEvent) {
+        recorder.undoOtherEvent(id: event.id)
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        pendingOtherEvent = nil
+    }
+
+    private func scheduleOtherEventBannerDismiss(generation: Int) {
+        Task {
+            try? await Task.sleep(for: .seconds(5))
+            guard generation == otherEventTapGeneration else { return }
+            pendingOtherEvent = nil
+        }
     }
 
     /// Brief confirmation + undo affordance shown for 5 s after a tap.
