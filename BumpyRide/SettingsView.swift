@@ -27,6 +27,10 @@ struct SettingsView: View {
     /// a deny — a deny just leaves the toggle off silently.
     @State private var healthAuthErrored: Bool = false
 
+    /// v2.0 M3: in-progress text for the "New event type" field in the
+    /// Reportable Events section.  Cleared on successful add.
+    @State private var newEventKind: String = ""
+
     /// Drives the presentation of the Apple Health backfill sheet.
     @State private var showingHealthBackfillSheet: Bool = false
 
@@ -152,6 +156,39 @@ struct SettingsView: View {
                     Text("Ride Map")
                 } footer: {
                     Text("Defaults applied when a ride starts — the buttons on the live map still override them per ride. Opacity tunes the purple ridden-cells layer's contrast against the basemap; raise it if the layer washes out in sunlight.")
+                }
+
+                Section {
+                    // Built-in kinds shown read-only so the rider sees
+                    // the full Log Event menu in one place.
+                    ForEach(OtherEvent.builtinKinds, id: \.kind) { builtin in
+                        HStack {
+                            Label(builtin.displayName, systemImage: "flag.fill")
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Text("Built-in")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    ForEach(settings.customEventKinds, id: \.self) { kind in
+                        Label(kind, systemImage: "flag")
+                    }
+                    .onDelete { settings.removeCustomEventKinds(at: $0) }
+                    HStack {
+                        TextField("New event type", text: $newEventKind)
+                            .textInputAutocapitalization(.words)
+                        Button("Add") {
+                            if settings.addCustomEventKind(newEventKind) {
+                                newEventKind = ""
+                            }
+                        }
+                        .disabled(newEventKind.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                } header: {
+                    Text("Reportable Events")
+                } footer: {
+                    Text("Event types you can log during a ride with the Log Event button. Built-in types contribute to the public maps on bumpyride.me (like close calls). Types you add here are private — they stay in your own account and never appear on public maps. Swipe to delete.")
                 }
 
                 Section {

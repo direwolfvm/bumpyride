@@ -93,6 +93,7 @@ final class AppSettings {
     private static let keyDefaultHeadingUp = "defaultHeadingUp"
     private static let keyDefaultShowVisitedCells = "defaultShowVisitedCells"
     private static let keyVisitedCellsOpacity = "visitedCellsOpacity"
+    private static let keyCustomEventKinds = "customEventKinds"
 
     var yellowG: Double = 0.5 {
         didSet { UserDefaults.standard.set(yellowG, forKey: Self.keyYellow) }
@@ -206,6 +207,47 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(visitedCellsOpacity, forKey: Self.keyVisitedCellsOpacity) }
     }
 
+    /// v2.0 M3: rider-defined reportable event kinds, shown in the Log
+    /// Event sheet below the built-in registry.  These are **private to
+    /// the rider's account** — logged with `isCustom: true`, which the
+    /// server keys on to keep them out of public maps (see
+    /// `OTHER_EVENTS_WEB_HANDOFF.md`).  Order is the rider's insertion
+    /// order.  Deliberately NOT reset by `resetToDefaults()` — this is
+    /// user content, not a tuning preference.
+    var customEventKinds: [String] = [] {
+        didSet { UserDefaults.standard.set(customEventKinds, forKey: Self.keyCustomEventKinds) }
+    }
+
+    /// Maximum custom event kinds a rider can define, and the per-label
+    /// length cap.  Generous for real use, tight enough to keep the Log
+    /// Event sheet scannable mid-ride and the wire format bounded.
+    static let maxCustomEventKinds = 20
+    static let maxCustomEventKindLength = 40
+
+    /// Validate + append a custom event kind.  Trims whitespace,
+    /// rejects empties, over-length labels, duplicates
+    /// (case-insensitive, including collisions with built-in display
+    /// names — "blocked lane" as a custom would just confuse the
+    /// privacy split), and the count cap.  Returns `true` on append.
+    @discardableResult
+    func addCustomEventKind(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed.count <= Self.maxCustomEventKindLength,
+              customEventKinds.count < Self.maxCustomEventKinds else { return false }
+        let lowered = trimmed.lowercased()
+        guard !customEventKinds.contains(where: { $0.lowercased() == lowered }),
+              !OtherEvent.builtinKinds.contains(where: {
+                  $0.displayName.lowercased() == lowered || $0.kind.lowercased() == lowered
+              }) else { return false }
+        customEventKinds.append(trimmed)
+        return true
+    }
+
+    func removeCustomEventKinds(at offsets: IndexSet) {
+        customEventKinds.remove(atOffsets: offsets)
+    }
+
     init() {
         let d = UserDefaults.standard
         if let v = d.object(forKey: Self.keyYellow) as? Double { yellowG = v }
@@ -247,6 +289,9 @@ final class AppSettings {
         }
         if let v = d.object(forKey: Self.keyVisitedCellsOpacity) as? Double {
             visitedCellsOpacity = min(0.60, max(0.10, v))
+        }
+        if let v = d.stringArray(forKey: Self.keyCustomEventKinds) {
+            customEventKinds = v
         }
     }
 
