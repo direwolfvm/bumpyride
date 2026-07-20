@@ -80,6 +80,14 @@ final class SyncCoordinator {
     /// open them) and they don't trigger level-up celebrations.
     var onUserRideUploaded: ((UUID) -> Void)?
 
+    /// v2.0 N1/N4 (ACHIEVEMENTS_IOS_HANDOFF): fired when an upload's
+    /// sync response reports newly-earned achievements.  Only fired for
+    /// fresh inserts (`updated != true`) per the handoff's dedupe
+    /// guidance — re-uploads re-report their per-ride awards and would
+    /// otherwise re-toast on every detector-revision backfill.
+    /// ContentView presents the toast.
+    var onAchievementsAwarded: (([WebSyncClient.AwardedAchievement]) -> Void)?
+
     private var drainTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
     private var attempt: Int = 0
@@ -317,8 +325,15 @@ final class SyncCoordinator {
                 // screen or backgrounds the app.  Same status-code →
                 // ClientError mapping as uploadRide, so the catch
                 // clauses below are unchanged.
-                try await uploadViaBackgroundSession(body: body, rideId: next.id, token: stored.token)
+                let syncResponse = try await uploadViaBackgroundSession(body: body, rideId: next.id, token: stored.token)
                 queue.remove(next.id)
+                // v2.0 N1/N4: surface newly-earned achievements.  Fresh
+                // inserts only (updated != true) — see the callback doc.
+                if let awards = syncResponse?.achievementsAwarded,
+                   !awards.isEmpty,
+                   syncResponse?.updated != true {
+                    onAchievementsAwarded?(awards)
+                }
                 attempt = 0  // reset backoff on success
                 // .debug per upload — see WebSyncClient.uploadRide comment.
                 // The "Drain complete" .info at the end still gives one
@@ -369,7 +384,13 @@ final class SyncCoordinator {
     /// The temp file is deleted by `BackgroundUploadClient`'s
     /// completion delegate in all outcomes — including completions
     /// that arrive after a process relaunch.
-    private func uploadViaBackgroundSession(body: Data, rideId: UUID, token: String) async throws {
+    ///
+    /// v2.0 N1: returns the decoded sync response on success (nil when
+    /// the body doesn't parse — old servers, or a relaunch-orphaned
+    /// completion with an empty buffer; never a failure, the upload
+    /// itself succeeded).
+    @discardableResult
+    private func uploadViaBackgroundSession(body: Data, rideId: UUID, token: String) async throws -> WebSyncClient.RideSyncResponse? {
         let request = await client.rideUploadRequest(token: token)
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("BumpyRideUploads", isDirectory: true)
@@ -384,10 +405,10 @@ final class SyncCoordinator {
             throw WebSyncClient.ClientError.transport
         }
 
-        let status = try await BackgroundUploadClient.shared.upload(request: request, bodyFile: fileURL)
+        let (status, responseBody) = try await BackgroundUploadClient.shared.upload(request: request, bodyFile: fileURL)
         switch status {
         case 200..<300:
-            return
+            return try? JSONDecoder().decode(WebSyncClient.RideSyncResponse.self, from: responseBody)
         case 400:
             throw WebSyncClient.ClientError.validationFailed
         case 401:

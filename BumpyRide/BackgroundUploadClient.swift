@@ -50,9 +50,14 @@ final class BackgroundUploadClient: NSObject {
     private var session: URLSession!
 
     /// Awaiting continuations keyed by `taskIdentifier`.  Resumed with
-    /// the HTTP status code on completion, or thrown
+    /// the HTTP status code + response body on completion, or thrown
     /// `WebSyncClient.ClientError.transport` on a transport error.
-    private var continuations: [Int: CheckedContinuation<Int, Error>] = [:]
+    private var continuations: [Int: CheckedContinuation<(status: Int, body: Data), Error>] = [:]
+
+    /// v2.0 N1: response bodies accumulated per task.  The sync
+    /// response now carries `achievementsAwarded`, so bodies are worth
+    /// keeping.  Entries are removed in `finish` (all paths).
+    private var responseBuffers: [Int: Data] = [:]
 
     override private init() {
         super.init()
@@ -68,10 +73,10 @@ final class BackgroundUploadClient: NSObject {
     }
 
     /// Upload `bodyFile` with `request` through the background session.
-    /// Returns the HTTP status code; throws
+    /// Returns the HTTP status code + response body; throws
     /// `WebSyncClient.ClientError.transport` on transport failure.  The
     /// temp file is deleted by the completion delegate in all cases.
-    func upload(request: URLRequest, bodyFile: URL) async throws -> Int {
+    func upload(request: URLRequest, bodyFile: URL) async throws -> (status: Int, body: Data) {
         try await withCheckedThrowingContinuation { continuation in
             let task = session.uploadTask(with: request, fromFile: bodyFile)
             // Stash the file path on the task so the completion
@@ -85,10 +90,16 @@ final class BackgroundUploadClient: NSObject {
 
     /// Delegate completions hop here (MainActor) with pre-extracted
     /// Sendable values.
+    /// v2.0 N1: append a chunk of response body for a task.
+    private func bufferResponse(taskIdentifier: Int, chunk: Data) {
+        responseBuffers[taskIdentifier, default: Data()].append(chunk)
+    }
+
     private func finish(taskIdentifier: Int, status: Int?, transportFailed: Bool, bodyFilePath: String?) {
         if let path = bodyFilePath {
             try? FileManager.default.removeItem(atPath: path)
         }
+        let body = responseBuffers.removeValue(forKey: taskIdentifier) ?? Data()
         guard let continuation = continuations.removeValue(forKey: taskIdentifier) else {
             // Process was relaunched after the awaiting drain died —
             // the queue entry reconciles via the next drain's batch
@@ -100,12 +111,25 @@ final class BackgroundUploadClient: NSObject {
         if transportFailed || status == nil {
             continuation.resume(throwing: WebSyncClient.ClientError.transport)
         } else {
-            continuation.resume(returning: status!)
+            continuation.resume(returning: (status: status!, body: body))
         }
     }
 }
 
-extension BackgroundUploadClient: URLSessionTaskDelegate, URLSessionDelegate {
+extension BackgroundUploadClient: URLSessionTaskDelegate, URLSessionDataDelegate, URLSessionDelegate {
+    nonisolated func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive data: Data
+    ) {
+        // v2.0 N1: upload tasks deliver their response body here.
+        // Extract Sendable values, hop, accumulate.
+        let id = dataTask.taskIdentifier
+        Task { @MainActor in
+            self.bufferResponse(taskIdentifier: id, chunk: data)
+        }
+    }
+
     nonisolated func urlSession(
         _ session: URLSession,
         task: URLSessionTask,

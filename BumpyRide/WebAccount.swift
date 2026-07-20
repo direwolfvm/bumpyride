@@ -230,6 +230,21 @@ final class WebAccount {
         }
     }
 
+    /// v2.0 N1: read the achievements registry + recent feed from
+    /// `/api/me/achievements`.  Same 401-then-invalidate semantics as
+    /// `fetchScore`.
+    func fetchAchievements() async throws -> WebSyncClient.AchievementsData {
+        guard let stored = storage.load() else {
+            throw WebSyncClient.ClientError.unauthorized
+        }
+        do {
+            return try await client.getAchievements(token: stored.token)
+        } catch WebSyncClient.ClientError.unauthorized {
+            invalidate()
+            throw WebSyncClient.ClientError.unauthorized
+        }
+    }
+
     /// Read the per-ride score breakdown for a single ride from
     /// `/api/rides/{id}/score`.  Returns `RideScoreData` with the same
     /// 401-then-invalidate semantics as `fetchScore`.  404 (ride doesn't

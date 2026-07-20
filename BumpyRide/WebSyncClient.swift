@@ -111,6 +111,14 @@ actor WebSyncClient {
     /// view rather than showing a misleadingly-low score.
     struct ScoreData: Codable, Equatable, Sendable {
         let totalPoints: Int
+        /// v2.0 N1 (ACHIEVEMENTS_IOS_HANDOFF): points from achievements
+        /// only.  Optional — old servers omit it.
+        let achievementPoints: Int?
+        /// v2.0 N1: `totalPoints + achievementPoints`.  This is what the
+        /// server computes `level` from now, so the score screen's big
+        /// number and "X to next" math should use it (falling back to
+        /// `totalPoints` on old servers).
+        let combinedPoints: Int?
         let breakdown: ScoreBreakdown
         let level: CurrentLevel
         /// All 20 levels in ascending order.  Server side stores them in
@@ -453,6 +461,125 @@ actor WebSyncClient {
     /// responds 200 with `eligible: false` and zeroed-out counts — the UI
     /// uses the flag to switch to an empty state rather than displaying
     /// a misleading "0 points" hero card.
+    // MARK: - Achievements (v2.0 N1, ACHIEVEMENTS_IOS_HANDOFF.md)
+
+    /// One award as reported inline in the `POST /api/sync/ride`
+    /// response — the material for the post-sync toast.
+    struct AwardedAchievement: Codable, Equatable, Sendable {
+        let achievementId: String
+        let name: String
+        /// 100 / 200 / 400 per the fixed tier scheme.
+        let points: Int
+        /// The tier threshold met (Double: silk-road's are fractional g).
+        let threshold: Double
+        /// `true` for lifetime-ladder rungs (one-time), `false` for
+        /// repeatable per-ride awards.
+        let milestone: Bool
+    }
+
+    /// Decoded `POST /api/sync/ride` response body.  All fields are
+    /// optional-tolerant — old servers return only id/updated/stats,
+    /// and the upload path must never fail on a body it can't parse
+    /// (the upload itself succeeded).
+    struct RideSyncResponse: Codable, Sendable {
+        let updated: Bool?
+        let achievementsAwarded: [AwardedAchievement]?
+    }
+
+    struct AchievementTier: Codable, Equatable, Sendable {
+        let threshold: Double
+        let points: Int
+    }
+
+    /// One registry entry from `GET /api/me/achievements` — includes
+    /// UNEARNED achievements (`earnedCount == 0`) so the screen can
+    /// render locked states.
+    struct AchievementRegistryEntry: Codable, Equatable, Sendable, Identifiable {
+        let id: String
+        let name: String
+        /// ride / exploration / surface / safety, or "milestone" for
+        /// ladder entries.
+        let category: String
+        /// "per-ride" or "milestone".
+        let kind: String
+        let description: String
+        let tiers: [AchievementTier]
+        let earnedCount: Int
+        let earnedPoints: Int
+    }
+
+    /// Recent-awards feed entry.  `rideId` is null for milestone rungs.
+    struct RecentAward: Codable, Equatable, Sendable {
+        let achievementId: String
+        let points: Int
+        let threshold: Double
+        let rideId: UUID?
+        let earnedAt: Date
+    }
+
+    struct AchievementsData: Codable, Sendable {
+        let totalPoints: Int
+        let totalAwards: Int
+        let registry: [AchievementRegistryEntry]
+        let recent: [RecentAward]
+    }
+
+    /// The server emits ISO-8601 with fractional seconds
+    /// ("…T14:31:02.000Z"); Foundation's `.iso8601` strategy rejects
+    /// the fraction.  Try fractional first, plain second.
+    nonisolated private static func tolerantISO8601Decoder() -> JSONDecoder {
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { d in
+            let s = try d.singleValueContainer().decode(String.self)
+            if let date = withFraction.date(from: s) ?? plain.date(from: s) {
+                return date
+            }
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: d.codingPath,
+                debugDescription: "Unparseable ISO-8601 date: \(s)"
+            ))
+        }
+        return decoder
+    }
+
+    /// Fetch the full achievements state: registry with the caller's
+    /// earned rollups + the recent-awards feed.  Same auth/error shape
+    /// as `getScore`.
+    func getAchievements(token: String) async throws -> AchievementsData {
+        log.info("GET /api/me/achievements")
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/me/achievements"))
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 10
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw ClientError.transport
+        }
+        guard let http = response as? HTTPURLResponse else { throw ClientError.transport }
+
+        switch http.statusCode {
+        case 200..<300:
+            do {
+                return try Self.tolerantISO8601Decoder().decode(AchievementsData.self, from: data)
+            } catch {
+                throw ClientError.decoding
+            }
+        case 401:
+            throw ClientError.unauthorized
+        default:
+            throw ClientError.http(status: http.statusCode)
+        }
+    }
+
     func getScore(token: String) async throws -> ScoreData {
         log.info("GET /api/me/score")
         var request = URLRequest(url: baseURL.appendingPathComponent("api/me/score"))
