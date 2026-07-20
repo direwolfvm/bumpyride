@@ -444,6 +444,7 @@ struct RideView: View {
                     visitedGrid: bumpMap.grid,
                     visitedVersion: bumpMap.dataVersion,
                     showVisitedCells: showVisitedCells,
+                    visitedOpacity: settings.visitedCellsOpacity,
                     headingUp: headingUp,
                     recenterTrigger: liveRecenterTrigger
                 )
@@ -567,6 +568,16 @@ struct RideView: View {
         // top-trailing chip on the route map via the
         // `weatherCoordinator.current` binding.
         //
+        // v1.8 L7: apply the rider's saved map defaults when a FRESH
+        // ride starts.  `oldState != .paused` excludes resume-from-
+        // pause — a paused ride is still in flight and must keep any
+        // mid-ride overrides the rider made with the on-map buttons.
+        .onChange(of: recorder.state) { oldState, newState in
+            if newState == .recording && oldState != .paused {
+                showVisitedCells = settings.defaultShowVisitedCells
+                headingUp = settings.defaultHeadingUp
+            }
+        }
         // K25: weather polls in *every* state, not just .recording, so
         // the chip stays populated and keeps slowly refreshing when the
         // rider is stopped (a light, a rest, before the ride starts).

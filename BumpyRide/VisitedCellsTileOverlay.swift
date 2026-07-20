@@ -17,13 +17,19 @@ import UniformTypeIdentifiers
 final class VisitedCellsTileOverlay: MKTileOverlay {
     let grid: BumpGrid
 
-    /// Translucent purple matching the bump map's glow family, low enough
-    /// alpha that the muted basemap and the colored route both read
-    /// through it.
-    private static let fillColor = UIColor(red: 0.55, green: 0.25, blue: 0.85, alpha: 0.30)
+    /// Translucent purple matching the bump map's glow family.  Alpha is
+    /// user-tunable (v1.8 L7, `AppSettings.visitedCellsOpacity`) — the
+    /// fixed 0.30 washed out against some basemaps in sunlight, so the
+    /// rider gets a contrast knob.  The overlay is immutable once
+    /// created; an opacity change swaps in a fresh overlay upstream.
+    private let fillColor: UIColor
 
-    init(grid: BumpGrid) {
+    init(grid: BumpGrid, opacity: Double) {
         self.grid = grid
+        self.fillColor = UIColor(
+            red: 0.55, green: 0.25, blue: 0.85,
+            alpha: CGFloat(min(0.60, max(0.10, opacity)))
+        )
         super.init(urlTemplate: nil)
         self.tileSize = CGSize(width: 256, height: 256)
         self.canReplaceMapContent = false
@@ -34,14 +40,15 @@ final class VisitedCellsTileOverlay: MKTileOverlay {
 
     override func loadTile(at path: MKTileOverlayPath, result: @escaping (Data?, (any Error)?) -> Void) {
         let grid = self.grid
+        let fill = self.fillColor
         DispatchQueue.global(qos: .userInitiated).async {
-            result(Self.render(path: path, grid: grid), nil)
+            result(Self.render(path: path, grid: grid, fill: fill), nil)
         }
     }
 
     // MARK: - Rendering
 
-    private static func render(path: MKTileOverlayPath, grid: BumpGrid) -> Data? {
+    private static func render(path: MKTileOverlayPath, grid: BumpGrid, fill: UIColor) -> Data? {
         let tilePx = 256
         let (latMin, latMax, lonMin, lonMax) = tileBounds(z: path.z, x: path.x, y: path.y)
 
@@ -72,7 +79,7 @@ final class VisitedCellsTileOverlay: MKTileOverlay {
         // Keep sparse cells visible at low zoom.
         let minPx = max(1.0, min(3.0, approxPixPerCell))
 
-        ctx.setFillColor(Self.fillColor.cgColor)
+        ctx.setFillColor(fill.cgColor)
         for (ix, iy, _) in entries {
             let (cellLat, cellLon) = BumpGrid.cellOrigin(ix: ix, iy: iy)
             let x0 = (cellLon - lonMin) / lonSpan * Double(tilePx)

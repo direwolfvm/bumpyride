@@ -132,6 +132,29 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Toggle(isOn: $settings.defaultHeadingUp) {
+                        Label("Start in heading-up", systemImage: "location.north.line.fill")
+                    }
+                    Toggle(isOn: $settings.defaultShowVisitedCells) {
+                        Label("Show ridden-cells overlay", systemImage: "square.grid.2x2.fill")
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Label("Overlay opacity", systemImage: "circle.lefthalf.filled")
+                            Spacer()
+                            Text("\(Int((settings.visitedCellsOpacity * 100).rounded()))%")
+                                .font(.callout.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: $settings.visitedCellsOpacity, in: 0.10...0.60, step: 0.05)
+                    }
+                } header: {
+                    Text("Ride Map")
+                } footer: {
+                    Text("Defaults applied when a ride starts — the buttons on the live map still override them per ride. Opacity tunes the purple ridden-cells layer's contrast against the basemap; raise it if the layer washes out in sunlight.")
+                }
+
+                Section {
                     Toggle(isOn: $settings.debugLogEnabled) {
                         Label("Write Debug Log", systemImage: "doc.text.magnifyingglass")
                     }

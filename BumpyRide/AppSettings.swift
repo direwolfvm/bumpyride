@@ -90,6 +90,9 @@ final class AppSettings {
     private static let keyOpenWatchAppOnLaunch = "openWatchAppOnLaunch"
     private static let keyDebugLogEnabled = "debugLogEnabled"
     private static let keyScreenWakeMode = "screenWakeMode"
+    private static let keyDefaultHeadingUp = "defaultHeadingUp"
+    private static let keyDefaultShowVisitedCells = "defaultShowVisitedCells"
+    private static let keyVisitedCellsOpacity = "visitedCellsOpacity"
 
     var yellowG: Double = 0.5 {
         didSet { UserDefaults.standard.set(yellowG, forKey: Self.keyYellow) }
@@ -184,6 +187,25 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(screenWakeMode.rawValue, forKey: Self.keyScreenWakeMode) }
     }
 
+    /// v1.8 L7: live-map defaults, applied when a fresh ride starts.
+    /// The on-map buttons still override per ride — these only choose
+    /// each ride's starting position, so a rider who always wants
+    /// heading-up + coverage doesn't tap two buttons every ride.
+    var defaultHeadingUp: Bool = false {
+        didSet { UserDefaults.standard.set(defaultHeadingUp, forKey: Self.keyDefaultHeadingUp) }
+    }
+    var defaultShowVisitedCells: Bool = false {
+        didSet { UserDefaults.standard.set(defaultShowVisitedCells, forKey: Self.keyDefaultShowVisitedCells) }
+    }
+
+    /// v1.8 L7: alpha of the purple ridden-cells overlay (0.10–0.60).
+    /// Exposed because the fixed 0.30 washed out against some basemaps
+    /// in sunlight — a contrast knob, not a decoration.  Applied live:
+    /// the tile overlay rebuilds when this changes.
+    var visitedCellsOpacity: Double = 0.30 {
+        didSet { UserDefaults.standard.set(visitedCellsOpacity, forKey: Self.keyVisitedCellsOpacity) }
+    }
+
     init() {
         let d = UserDefaults.standard
         if let v = d.object(forKey: Self.keyYellow) as? Double { yellowG = v }
@@ -217,6 +239,15 @@ final class AppSettings {
            let m = ScreenWakeMode(rawValue: raw) {
             screenWakeMode = m
         }
+        if let v = d.object(forKey: Self.keyDefaultHeadingUp) as? Bool {
+            defaultHeadingUp = v
+        }
+        if let v = d.object(forKey: Self.keyDefaultShowVisitedCells) as? Bool {
+            defaultShowVisitedCells = v
+        }
+        if let v = d.object(forKey: Self.keyVisitedCellsOpacity) as? Double {
+            visitedCellsOpacity = min(0.60, max(0.10, v))
+        }
     }
 
     func resetToDefaults() {
@@ -230,6 +261,9 @@ final class AppSettings {
         openWatchAppOnLaunch = false
         debugLogEnabled = false
         screenWakeMode = .whileRecording
+        defaultHeadingUp = false
+        defaultShowVisitedCells = false
+        visitedCellsOpacity = 0.30
     }
 
     private struct Stop {

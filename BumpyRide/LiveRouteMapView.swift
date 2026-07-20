@@ -25,6 +25,11 @@ struct LiveRouteMapView: UIViewRepresentable {
     /// changes (e.g. a ride just saved mid-session).
     var visitedVersion: Int
     var showVisitedCells: Bool
+    /// v1.8 L7: alpha for the visited-cells overlay
+    /// (`AppSettings.visitedCellsOpacity`).  A change swaps in a fresh
+    /// overlay — MKTileOverlay tiles are rendered once and cached, so
+    /// opacity can't be mutated in place.
+    var visitedOpacity: Double
     /// `false` → north-up; `true` → map rotates so the rider's heading is up.
     var headingUp: Bool
     /// Monotonic counter; each increment re-arms user-location tracking
@@ -99,17 +104,21 @@ struct LiveRouteMapView: UIViewRepresentable {
             }
         }
 
-        // --- Visited-cells overlay: toggle on/off, rebuild on grid change.
+        // --- Visited-cells overlay: toggle on/off, rebuild on grid or
+        // opacity change (L7 — opacity is baked into the rendered
+        // tiles, so a slider change means a fresh overlay).
         if showVisitedCells != c.showVisited
-            || (showVisitedCells && visitedVersion != c.lastVisitedVersion) {
+            || (showVisitedCells && (visitedVersion != c.lastVisitedVersion
+                                     || visitedOpacity != c.lastVisitedOpacity)) {
             if let old = c.visitedOverlay {
                 map.removeOverlay(old)
                 c.visitedOverlay = nil
             }
             if showVisitedCells {
-                let ov = VisitedCellsTileOverlay(grid: visitedGrid)
+                let ov = VisitedCellsTileOverlay(grid: visitedGrid, opacity: visitedOpacity)
                 c.visitedOverlay = ov
                 c.lastVisitedVersion = visitedVersion
+                c.lastVisitedOpacity = visitedOpacity
                 map.addOverlay(ov, level: .aboveRoads)
             }
             c.showVisited = showVisitedCells
@@ -161,6 +170,7 @@ struct LiveRouteMapView: UIViewRepresentable {
         var visitedOverlay: VisitedCellsTileOverlay?
         var showVisited: Bool = false
         var lastVisitedVersion: Int = -1
+        var lastVisitedOpacity: Double = -1
 
         var brakeAnnos: [BrakeAnnotation] = []
         var closeCallAnnos: [CloseCallAnnotation] = []
