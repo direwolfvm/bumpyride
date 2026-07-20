@@ -43,6 +43,12 @@ struct ScoreView: View {
                 if data.eligible {
                     heroSection(for: data)
                     breakdownSection(for: data.breakdown)
+                    // v2.0 N2: achievements entry — only when the server
+                    // reports achievement support (old servers omit the
+                    // field, and the screen behind the link would 404).
+                    if data.achievementPoints != nil {
+                        achievementsSection(for: data)
+                    }
                     rulesSection
                     ladderSection(for: data)
                 } else {
@@ -146,12 +152,22 @@ struct ScoreView: View {
                     }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(Self.formattedPoints(data.totalPoints))
+                        // v2.0 N2: the big number is the COMBINED total
+                        // (discovery + achievements) — that's what the
+                        // server computes the level from now.  Falls
+                        // back to discovery-only on old servers.
+                        Text(Self.formattedPoints(data.combinedPoints ?? data.totalPoints))
                             .font(.title.monospacedDigit().weight(.bold))
                             .foregroundStyle(.green)
-                        Text("points")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        if let ach = data.achievementPoints, ach > 0 {
+                            Text("\(Self.formattedPoints(data.totalPoints)) discovery + \(Self.formattedPoints(ach)) achievements")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("points")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
 
@@ -164,7 +180,10 @@ struct ScoreView: View {
                             .progressViewStyle(.linear)
                             .tint(.green)
                         HStack {
-                            Text(Self.formattedPoints(data.totalPoints))
+                            // v2.0 N2: compare combined against the next
+                            // threshold — level thresholds are on the
+                            // combined scale now.
+                            Text(Self.formattedPoints(data.combinedPoints ?? data.totalPoints))
                                 .font(.caption2.monospacedDigit())
                                 .foregroundStyle(.secondary)
                             Spacer()
@@ -251,6 +270,35 @@ struct ScoreView: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    /// v2.0 N2: tap-through to the achievements screen, with the
+    /// achievement-points rollup inline.  Only rendered when the server
+    /// reports achievement support (see the call site's gate).
+    private func achievementsSection(for data: WebSyncClient.ScoreData) -> some View {
+        Section {
+            NavigationLink {
+                AchievementsView(account: account)
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "rosette")
+                        .font(.title3)
+                        .foregroundStyle(.orange)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Achievements")
+                            .font(.body)
+                        Text("Bonus points for standout rides and lifetime milestones")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text("\(Self.formattedPoints(data.achievementPoints ?? 0)) pts")
+                        .font(.callout.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(.orange)
+                }
+            }
+        }
     }
 
     /// Plain-language explanation of the scoring system.  Mirrors the
