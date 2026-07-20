@@ -130,12 +130,16 @@ struct RouteMapView: View {
         Button {
             withAnimation(.easeInOut(duration: 0.4)) { recenter() }
         } label: {
+            // v1.8 L6: solid background — see RideView.mapToggleButton
+            // for the sunlight-contrast rationale; kept identical so
+            // the live and playback map controls match.
             Image(systemName: followUser ? "location.fill" : "arrow.up.left.and.arrow.down.right")
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 17, weight: .bold))
                 .foregroundStyle(.primary)
-                .frame(width: 40, height: 40)
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay(Circle().stroke(Color.black.opacity(0.12)))
+                .frame(width: 42, height: 42)
+                .background(Color(.systemBackground), in: Circle())
+                .overlay(Circle().stroke(Color.black.opacity(0.15)))
+                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
         }
         .accessibilityLabel(followUser ? "Recenter on my location" : "Fit route")
     }

@@ -109,8 +109,13 @@ struct WeatherChip: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+        // v1.8 L6: solid background instead of regularMaterial — the
+        // translucent chip washed out over bright basemaps in direct
+        // sun.  Opaque systemBackground keeps the temp/wind readouts
+        // legible in glare (and stays correct in dark mode).
+        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.12)))
+        .shadow(color: .black.opacity(0.22), radius: 6, y: 2)
         #else
         EmptyView()
         #endif

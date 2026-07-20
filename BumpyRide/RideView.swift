@@ -751,12 +751,18 @@ struct RideView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
+            // v1.8 L6: solid background instead of ultraThinMaterial.
+            // Translucent materials were the #1 contrast killer in
+            // direct sunlight — the basemap bled through and the
+            // glyphs washed out.  An opaque systemBackground disc
+            // with a bolder glyph + shadow stays legible in glare.
             Image(systemName: systemImage)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 17, weight: .bold))
                 .foregroundStyle(on ? onColor : Color.primary)
-                .frame(width: 40, height: 40)
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay(Circle().stroke(Color.black.opacity(0.12)))
+                .frame(width: 42, height: 42)
+                .background(Color(.systemBackground), in: Circle())
+                .overlay(Circle().stroke(Color.black.opacity(0.15)))
+                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
         }
         .accessibilityLabel(label)
     }
