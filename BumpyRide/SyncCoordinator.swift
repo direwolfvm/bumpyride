@@ -161,6 +161,54 @@ final class SyncCoordinator {
 
     private func drain() async {
         log.info("Starting drain — queued: \(self.queue.count, privacy: .public)")
+
+        // v1.8 L1: prune the backfill queue with ONE batch check
+        // round-trip instead of a per-ride check inside the loop.
+        // With ~75 queued rides and nothing changed, the old path made
+        // 75 sequential HTTP checks before concluding there was
+        // nothing to do; the batch endpoint answers all of them at
+        // once.  Encoding+hashing here is the same work the per-ride
+        // path did — just front-loaded.
+        //
+        // On success, remaining queued backfill rides genuinely need
+        // upload, so the in-loop per-ride check is skipped for this
+        // drain (`batchPruned`).  On any failure — including 404 from
+        // a server that hasn't deployed the endpoint yet — we fall
+        // back silently to the per-ride path.  User-initiated rides
+        // are excluded: they always upload (local copy is truth).
+        var batchPruned = false
+        if let stored = storage.load(), let store = rideStore {
+            let backfillIds = queue.all().filter { !queue.userInitiatedIds.contains($0) }
+            if backfillIds.count >= 2 {
+                let encoder = JSONEncoder()
+                encoder.dateEncodingStrategy = .iso8601
+                var entries: [(id: UUID, hash: String)] = []
+                for id in backfillIds {
+                    guard let ride = store.rides.first(where: { $0.id == id }),
+                          let body = try? encoder.encode(ride) else { continue }
+                    let hash = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+                    entries.append((id: id, hash: hash))
+                }
+                if !entries.isEmpty {
+                    do {
+                        let needed = try await client.checkRidesBatch(entries: entries, token: stored.token)
+                        for entry in entries where !needed.contains(entry.id) {
+                            queue.remove(entry.id)
+                        }
+                        batchPruned = true
+                        log.info("Batch check pruned \(entries.count - needed.count, privacy: .public)/\(entries.count, privacy: .public) backfill ride(s); \(self.queue.count, privacy: .public) still queued")
+                    } catch WebSyncClient.ClientError.unauthorized {
+                        log.error("401 from /api/sync/ride/check-batch — invalidating account")
+                        webAccount?.invalidate()
+                        state = .waitingForAuth
+                        return
+                    } catch {
+                        log.debug("Batch check unavailable, falling back to per-ride checks: \(String(describing: error), privacy: .public)")
+                    }
+                }
+            }
+        }
+
         while !queue.isEmpty {
             guard let stored = storage.load() else {
                 state = .waitingForAuth
@@ -234,7 +282,11 @@ final class SyncCoordinator {
             //
             // Check failures (transport, 5xx) silently fall through
             // to the upload path — never the wrong-answer scenario.
-            if !isUserInitiated {
+            //
+            // v1.8 L1: skipped entirely when the batch check already
+            // pruned this drain's backfill set — whatever survived
+            // the prune genuinely needs upload.
+            if !isUserInitiated && !batchPruned {
                 let hash = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
                 do {
                     let result = try await client.checkRide(id: next.id, hash: hash, token: stored.token)

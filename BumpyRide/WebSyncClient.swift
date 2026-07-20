@@ -800,6 +800,73 @@ actor WebSyncClient {
         }
     }
 
+    /// v1.8 L1: batch form of `checkRide` — one round-trip for the whole
+    /// backfill queue instead of one per ride.  Motivation: a drain pass
+    /// over ~75 queued rides previously made 75 sequential check
+    /// requests before discovering most needed no upload; the batch
+    /// endpoint answers all of them at once.  Contract in
+    /// `docs/SYNC_BATCH_CHECK_WEB_HANDOFF.md`.
+    ///
+    /// Returns the set of ride ids the client MUST upload — ids missing
+    /// on the server or stored with a different content hash.  Ids not
+    /// in the returned set are present-and-matching, safe to prune from
+    /// the queue.
+    ///
+    /// Callers must treat `ClientError.http(status: 404)` as "endpoint
+    /// not deployed yet" and fall back to per-ride checks — the iOS
+    /// release can precede the web release.
+    func checkRidesBatch(entries: [(id: UUID, hash: String)], token: String) async throws -> Set<UUID> {
+        log.info("POST /api/sync/ride/check-batch — \(entries.count, privacy: .public) ride(s)")
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/sync/ride/check-batch"))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 20
+
+        struct Entry: Encodable {
+            let rideId: UUID
+            let hash: String
+        }
+        struct BatchRequest: Encodable {
+            let rides: [Entry]
+        }
+        struct BatchResponse: Decodable {
+            let needed: [UUID]
+        }
+        do {
+            request.httpBody = try JSONEncoder().encode(
+                BatchRequest(rides: entries.map { Entry(rideId: $0.id, hash: $0.hash) })
+            )
+        } catch {
+            throw ClientError.validationFailed
+        }
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw ClientError.transport
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw ClientError.transport
+        }
+        switch http.statusCode {
+        case 200..<300:
+            do {
+                return Set(try JSONDecoder().decode(BatchResponse.self, from: data).needed)
+            } catch {
+                throw ClientError.decoding
+            }
+        case 400:
+            throw ClientError.validationFailed
+        case 401:
+            throw ClientError.unauthorized
+        default:
+            throw ClientError.http(status: http.statusCode)
+        }
+    }
+
     func uploadRide(jsonBody: Data, token: String) async throws {
         // .debug (not .info) — during a backlog catch-up this fires for every
         // queued ride in rapid succession, and we recently learned that
