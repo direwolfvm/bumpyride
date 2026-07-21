@@ -189,6 +189,18 @@ struct RideView: View {
     @State private var pendingOtherEvent: OtherEvent?
     @State private var otherEventTapGeneration: Int = 0
 
+    /// v2.0 N6: reporting mode.  While recording/paused, a long-press
+    /// on the seismograph or the stats bar collapses the map + the
+    /// seismograph and blows the two report buttons up into large
+    /// slabs — a no-look surface for logging events mid-ride.  A
+    /// long-press on the stats bar (still visible) switches back.
+    /// Auto-exits when the recording ends.  Not persisted.
+    ///
+    /// The map can't host the toggle gesture — MKMapView owns its
+    /// gesture recognizers (pan/zoom would fight a long-press), which
+    /// is why the seismograph and stats bar are the gesture surfaces.
+    @State private var reportingMode: Bool = false
+
     // v1.8 L3: idle-timer control moved to ContentView's centralized
     // applyScreenWakePolicy() — a single owner watching tab, recorder
     // state, and the Settings screen-wake mode.  RideView no longer
@@ -432,6 +444,12 @@ struct RideView: View {
 
     private var liveContent: some View {
         VStack(spacing: 12) {
+            // v2.0 N6: the seismograph + map collapse entirely in
+            // reporting mode; the freed vertical space goes to the
+            // report buttons.  (Tearing the MKMapView down while in
+            // reporting mode also stops its rendering — a small
+            // battery bonus during heads-down riding.)
+            if !reportingMode {
             SeismographView(
                 samples: recorder.liveSamples,
                 bumpiness: recorder.currentBumpiness,
@@ -441,6 +459,11 @@ struct RideView: View {
             )
             .frame(height: 160)
             .padding(.horizontal)
+            // N6: entry gesture into reporting mode.
+            .contentShape(Rectangle())
+            .onLongPressGesture(minimumDuration: 0.6) {
+                toggleReportingMode()
+            }
 
             // v1.7 K21: live map is the MKMapView-backed LiveRouteMapView
             // (not the SwiftUI RouteMapView used in playback) so it can
@@ -523,6 +546,7 @@ struct RideView: View {
             .onChange(of: showVisitedCells) { _, on in
                 if on { bumpMap.rebuildIfNeeded(from: store.rides) }
             }
+            } // end if !reportingMode (N6)
 
             // Live recording stats — always in bumps mode regardless of the
             // user's saved-ride view-mode preference.  Brake detection runs
@@ -552,6 +576,13 @@ struct RideView: View {
                 )
             }
             .padding(.horizontal)
+            // N6: the stats bar is the reliable toggle surface in BOTH
+            // modes (it stays visible when the map/seismograph are
+            // collapsed) — long-press to switch views.
+            .contentShape(Rectangle())
+            .onLongPressGesture(minimumDuration: 0.6) {
+                toggleReportingMode()
+            }
 
             if let banner = permissionBanner() {
                 banner
@@ -567,9 +598,16 @@ struct RideView: View {
             // layout doesn't jump as they show/hide.
             if recorder.state == .recording || recorder.state == .paused {
                 VStack(spacing: 8) {
-                    HStack(spacing: 8) {
-                        logEventButton
-                        logCloseCallButton
+                    if reportingMode {
+                        // N6: huge stacked slabs filling the space the
+                        // map/seismograph vacated.
+                        reportingModeHint
+                        bigReportButtons
+                    } else {
+                        HStack(spacing: 8) {
+                            logEventButton
+                            logCloseCallButton
+                        }
                     }
                     if let pending = pendingCloseCall {
                         closeCallUndoBanner(for: pending)
@@ -579,6 +617,9 @@ struct RideView: View {
                     }
                 }
                 .padding(.horizontal)
+                // N6: let the block absorb the freed space in
+                // reporting mode; natural height otherwise.
+                .frame(maxHeight: reportingMode ? .infinity : nil)
                 // Smooth slide-in/out for the banners.
                 .animation(.easeInOut(duration: 0.2), value: pendingCloseCall?.id)
                 .animation(.easeInOut(duration: 0.2), value: pendingOtherEvent?.id)
@@ -603,6 +644,12 @@ struct RideView: View {
             if newState == .recording && oldState != .paused {
                 showVisitedCells = settings.defaultShowVisitedCells
                 headingUp = settings.defaultHeadingUp
+            }
+            // v2.0 N6: reporting mode is a mid-ride posture — restore
+            // the full layout when the recording ends so the save flow
+            // and the next idle screen are never entered collapsed.
+            if newState == .idle || newState == .finished {
+                reportingMode = false
             }
         }
         // K25: weather polls in *every* state, not just .recording, so
@@ -830,8 +877,8 @@ struct RideView: View {
         .disabled(!recorder.canLogCloseCall)
     }
 
-    /// v2.0 M2: opens the kind picker for "other" events (Blocked Lane
-    /// + custom kinds).  Orange flag — visually distinct from the
+    /// v2.0 M2/N5: opens the kind picker for "other" events (Blocked
+    /// Lane + custom kinds).  Blue flag — visually distinct from the
     /// purple close-call and the green/red ride controls.  Same
     /// enablement gate as close calls (recording-or-paused + GPS fix).
     private var logEventButton: some View {
@@ -844,8 +891,72 @@ struct RideView: View {
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(.borderedProminent)
-        .tint(.orange)
+        .tint(.blue)
         .controlSize(.large)
+        .disabled(!recorder.canLogCloseCall)
+    }
+
+    // MARK: Reporting mode (v2.0 N6)
+
+    /// Toggle in/out of reporting mode with a haptic.  Only meaningful
+    /// mid-ride — the gesture no-ops from idle/finished so a long-press
+    /// on the stats bar before starting can't strand the UI in a mode
+    /// with nothing to report into.
+    private func toggleReportingMode() {
+        guard recorder.state == .recording || recorder.state == .paused else { return }
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+        withAnimation(.easeInOut(duration: 0.25)) {
+            reportingMode.toggle()
+        }
+    }
+
+    /// One-line reminder of the exit gesture — the collapsed layout
+    /// gives no other clue that the full view still exists.
+    private var reportingModeHint: some View {
+        Label("Hold the stats bar to switch view", systemImage: "hand.tap.fill")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+    }
+
+    /// The two report actions as large stacked slabs — each takes half
+    /// the freed vertical space, with oversized glyphs + titles so
+    /// they're hittable without looking.  Same actions and enablement
+    /// gate as the compact buttons.
+    private var bigReportButtons: some View {
+        VStack(spacing: 12) {
+            bigReportButton(
+                title: "Log Event",
+                systemImage: "flag.fill",
+                tint: .blue
+            ) { showingLogEventSheet = true }
+            bigReportButton(
+                title: "Log Close Call",
+                systemImage: "exclamationmark.triangle.fill",
+                tint: .purple
+            ) { handleCloseCallTap() }
+        }
+    }
+
+    private func bigReportButton(
+        title: String,
+        systemImage: String,
+        tint: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 48, weight: .bold))
+                Text(title)
+                    .font(.title2.weight(.bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(tint)
         .disabled(!recorder.canLogCloseCall)
     }
 
@@ -855,7 +966,7 @@ struct RideView: View {
     private func otherEventUndoBanner(for event: OtherEvent) -> some View {
         HStack(spacing: 12) {
             Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.orange)
+                .foregroundStyle(.blue)
             Text("\(event.displayName) logged")
                 .font(.callout.weight(.medium))
                 .lineLimit(1)
@@ -864,7 +975,7 @@ struct RideView: View {
                 undoPendingOtherEvent(event)
             }
             .font(.callout.weight(.semibold))
-            .foregroundStyle(.orange)
+            .foregroundStyle(.blue)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -872,7 +983,7 @@ struct RideView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.orange.opacity(0.4), lineWidth: 1)
+                .stroke(Color.blue.opacity(0.4), lineWidth: 1)
         )
         .transition(.move(edge: .bottom).combined(with: .opacity))
     }

@@ -1,12 +1,12 @@
 import SwiftUI
 
-/// v2.0 M2: kind picker presented by the live-recording "Log Event"
-/// button.  Lists the built-in registry (Blocked Lane, prominent
-/// orange) followed by the rider's custom kinds from Settings →
-/// Reportable Events (bordered blue — visually "yours" vs the shared
-/// built-ins).  Tapping a kind logs immediately at the current GPS
-/// location and dismisses; there's no timeout — unlike the brake
-/// categorization sheet this is rider-initiated, so it waits.
+/// v2.0 M2/N5: kind picker presented by the live-recording "Log Event"
+/// button.  Lists the built-in registry (Blocked Lane, filled blue)
+/// followed by the rider's custom kinds from Settings → Reportable
+/// Events (outlined blue — hierarchy via fill weight, one hue for the
+/// whole event feature).  Tapping a kind logs immediately at the
+/// current GPS location and dismisses; there's no timeout — unlike the
+/// brake categorization sheet this is rider-initiated, so it waits.
 ///
 /// Button sizing follows the L5 conventions (60 pt rows, title3
 /// semibold) — these get tapped mid-ride, often gloved.
@@ -19,7 +19,7 @@ struct LogEventSheet: View {
         VStack(spacing: 22) {
             Image(systemName: "flag.fill")
                 .font(.system(size: 56, weight: .bold))
-                .foregroundStyle(.orange)
+                .foregroundStyle(.blue)
 
             VStack(spacing: 6) {
                 Text("Log an Event")
@@ -64,14 +64,28 @@ struct LogEventSheet: View {
 
     @ViewBuilder
     private func eventButton(title: String, prominent: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.title3.weight(.semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .frame(maxWidth: .infinity, minHeight: 60)
+        // N5: single blue hue for the event feature; built-ins get the
+        // filled style, custom kinds the outlined one.
+        if prominent {
+            Button(action: action) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .frame(maxWidth: .infinity, minHeight: 60)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.blue)
+        } else {
+            Button(action: action) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .frame(maxWidth: .infinity, minHeight: 60)
+            }
+            .buttonStyle(.bordered)
+            .tint(.blue)
         }
-        .buttonStyle(.borderedProminent)
-        .tint(prominent ? .orange : .blue)
     }
 }
