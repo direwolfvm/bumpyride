@@ -33,7 +33,7 @@ final class CloseCallMapStore {
     /// Rebuild the grid from the given rides unless the input hasn't
     /// changed.  No calibration parameter — close calls are point events,
     /// not intensity measurements; nothing to correct for.
-    func rebuildIfNeeded(from rides: [Ride]) {
+    func rebuildIfNeeded(from rides: [RideSummary]) {
         let sig = Self.signature(rides)
         guard sig != lastSignature else { return }
         lastSignature = sig
@@ -49,7 +49,7 @@ final class CloseCallMapStore {
         dataVersion &+= 1
     }
 
-    private static func signature(_ rides: [Ride]) -> String {
+    private static func signature(_ rides: [RideSummary]) -> String {
         var parts: [String] = []
         parts.reserveCapacity(rides.count)
         for r in rides {

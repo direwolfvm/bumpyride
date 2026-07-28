@@ -33,10 +33,16 @@ final class BumpMapStore {
     /// enter the grid.  Untagged and explicitly-mounted samples flow through
     /// unchanged.  The calibration value is included in the cache-busting signature
     /// so a recalibration after new overlapping data triggers a rebuild.
+    /// v2.0 P1: summaries in, points streamed.  The grid needs every
+    /// ride's points, but holding them all resident is what the lazy
+    /// store exists to avoid — so the rebuild folds full rides one at
+    /// a time off-main via `store.foldRides` (peak memory: one ride).
+    /// The signature short-circuit is computed from summaries alone.
     func rebuildIfNeeded(
-        from rides: [Ride],
-        calibration: CalibrationStore.PocketCalibration = .init()
-    ) {
+        from rides: [RideSummary],
+        calibration: CalibrationStore.PocketCalibration = .init(),
+        store: RideStore
+    ) async {
         let sig = Self.signature(rides, calibration: calibration)
         guard sig != lastSignature else { return }
         lastSignature = sig
@@ -44,24 +50,23 @@ final class BumpMapStore {
         let pocketGain = calibration.pocketGain
         let useCalibration = calibration.confidence >= CalibrationStore.minOverlappingCells
 
-        var g = BumpGrid()
-        for r in rides {
-            let gain = (useCalibration && r.pocketMode == true) ? pocketGain : 1.0
-            for p in r.points {
-                g.add(lat: p.latitude, lon: p.longitude, bumpiness: p.bumpiness * gain)
+        let g = await store.foldRides(ids: rides.map(\.id), initial: BumpGrid()) { grid, ride in
+            let gain = (useCalibration && ride.pocketMode == true) ? pocketGain : 1.0
+            for p in ride.points {
+                grid.add(lat: p.latitude, lon: p.longitude, bumpiness: p.bumpiness * gain)
             }
         }
         grid = g
         dataVersion &+= 1
     }
 
-    private static func signature(_ rides: [Ride], calibration: CalibrationStore.PocketCalibration) -> String {
+    private static func signature(_ rides: [RideSummary], calibration: CalibrationStore.PocketCalibration) -> String {
         // Ride id + point count is enough — editing trims points, which changes count.
         // Calibration gain rounded to 4 decimals so trivial recomputes don't churn.
         var parts: [String] = []
         parts.reserveCapacity(rides.count + 1)
         for r in rides {
-            parts.append("\(r.id.uuidString):\(r.points.count)")
+            parts.append("\(r.id.uuidString):\(r.pointCount)")
         }
         parts.sort()
         let k = (calibration.confidence >= CalibrationStore.minOverlappingCells)

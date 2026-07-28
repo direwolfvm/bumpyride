@@ -65,17 +65,20 @@ enum BrakeReprocessor {
 
         for id in candidateIds {
             // Re-look-up; ride may have been deleted or edited.
-            guard let ride = store.rides.first(where: { $0.id == id }) else { continue }
+            guard let summary = store.rides.first(where: { $0.id == id }) else { continue }
             // In force-re-detect mode we process unconditionally.  In the
             // default mode we still respect the "nil means needs work"
             // predicate so a ride that got processed by another concurrent
             // path (the edit-save hook) doesn't get a redundant detection
             // pass here.
-            if !forceReDetect && ride.brakeEvents != nil { continue }
+            if !forceReDetect && summary.brakeEvents != nil { continue }
 
+            // v2.0 P1: full ride on demand — the store only holds
+            // summaries now.  One ride resident at a time.
+            guard let ride = await store.fullRide(id: id) else { continue }
             let detected = BrakeEventDetector.detect(in: ride)
 
-            if store.updateBrakeEvents(detected, forRideId: id) {
+            if await store.updateBrakeEvents(detected, forRideId: id) {
                 updated.append(id)
                 if !detected.isEmpty { withEvents += 1 }
             }

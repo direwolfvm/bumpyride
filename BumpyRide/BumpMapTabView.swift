@@ -86,7 +86,9 @@ struct BumpMapTabView: View {
             .onChange(of: calibration.calibration) { _, _ in
                 // Calibration only affects the bump map's per-cell averages —
                 // brake counts are unaffected.  Just rebuild bumps.
-                bumpMap.rebuildIfNeeded(from: filteredRides, calibration: calibration.calibration)
+                Task {
+                    await bumpMap.rebuildIfNeeded(from: filteredRides, calibration: calibration.calibration, store: store)
+                }
             }
         }
     }
@@ -99,9 +101,14 @@ struct BumpMapTabView: View {
     /// only at mounted rides sees their bumps, brakes, AND close calls
     /// filtered the same way.
     private func rebuildBothMaps() {
-        bumpMap.rebuildIfNeeded(from: filteredRides, calibration: calibration.calibration)
+        // Brake + close-call grids build from summaries synchronously
+        // (events ride along in RideSummary).  The bump grid needs
+        // points, which stream off-main per ride (v2.0 P1).
         brakeMap.rebuildIfNeeded(from: filteredRides)
         closeCallMap.rebuildIfNeeded(from: filteredRides)
+        Task {
+            await bumpMap.rebuildIfNeeded(from: filteredRides, calibration: calibration.calibration, store: store)
+        }
     }
 
     /// Navigation title adapts to the current view mode so the chrome
@@ -115,7 +122,7 @@ struct BumpMapTabView: View {
     }
 
     /// Rides filtered by the user's current mode preference.  See `BumpMapModeFilter`.
-    private var filteredRides: [Ride] {
+    private var filteredRides: [RideSummary] {
         switch settings.bumpMapFilter {
         case .all:
             return store.rides

@@ -6,7 +6,7 @@ import CoreLocation
 /// The longitude cell size is pinned to the DC reference latitude so indices are stable
 /// across the app's working region (DC metro, ≤ ~20 mi span).  Near-zero error in
 /// that envelope: cos(lat) varies <1% between 38.6° and 39.2°.
-struct BumpGrid {
+nonisolated struct BumpGrid {
     /// Reference latitude used to size longitude cells (constant across the region).
     static let referenceLatitude: Double = 38.9
 

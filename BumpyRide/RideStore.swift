@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import OSLog
+import CryptoKit
 
 /// On-disk persistence for saved rides: one ISO-8601 JSON file per ride at
 /// `<directoryURL>/<UUID>.json`.  The directory is supplied at init time by
@@ -8,14 +9,24 @@ import OSLog
 /// to the local app sandbox's `Documents/Rides/` otherwise.  RideStore itself
 /// is storage-mode-agnostic — it sees a URL and writes to it.
 ///
-/// v2.0 O1: rides load **asynchronously off the main thread** via
-/// `reload()` — the app renders immediately and the library fills in
-/// when the decode finishes (`initialLoadComplete` tells the UI which
-/// state it's in).  The original synchronous load-at-init design froze
-/// startup for 10+ seconds once the corpus grew to hundreds of MB of
-/// JSON.  ContentView's startup task owns the one `reload()` call,
-/// sequenced after the iCloud migration so a single pass sees
-/// everything.
+/// v2.0 P1: **metadata-eager, points-lazy.**  `rides` is now
+/// `[RideSummary]` — everything the list / score / map-event surfaces
+/// need, without the `points` arrays that made a 168-ride library
+/// occupy ~1 GB resident.  Full `Ride`s load on demand:
+///
+///   • `fullRide(id:)` — decode one ride off-main (small LRU cache for
+///     the viewer/edit flows).
+///   • `foldRides(ids:initial:_:)` — stream rides one at a time
+///     through an accumulator off-main (bump-grid rebuilds,
+///     calibration).  Peak memory: one ride.
+///   • `encodedBody(id:)` / `contentHashes(ids:)` — sync-path
+///     encode/hash without retaining anything.
+///
+/// Summaries are cached in a **local** (Caches, never iCloud) sidecar
+/// keyed by ride-file size + mtime, so a relaunch skips full decodes
+/// entirely; only new/changed files pay a one-ride decode.  The first
+/// launch after this change performs one full background pass to seed
+/// the cache.
 ///
 /// Writes to iCloud Documents are wrapped in `NSFileCoordinator` because the
 /// ubiquity container can be touched concurrently by the iCloud sync engine
@@ -25,7 +36,8 @@ import OSLog
 /// skipped this launch and reloaded next time.
 @Observable
 final class RideStore {
-    private(set) var rides: [Ride] = []
+    /// v2.0 P1: summaries, not full rides.  Sorted newest-first.
+    private(set) var rides: [RideSummary] = []
 
     /// Fired after every successful `save(_:)` write — whether for a brand-new ride or
     /// an in-place update from rename / trim / split.  `ContentView` wires this to
@@ -44,16 +56,47 @@ final class RideStore {
     /// permission revoked) but historically silent; this hook makes it actionable.
     var onSaveFailed: ((Ride, any Error) -> Void)?
 
-    private static let log = Logger(subsystem: "com.herbertindustries.BumpyRide", category: "ridestore")
+    nonisolated private static let log = Logger(subsystem: "com.herbertindustries.BumpyRide", category: "ridestore")
 
     private let directoryURL: URL
     private let encoder: JSONEncoder
+
     /// v2.0 O1: `false` until the first `reload()` publishes.  UI uses
     /// this to distinguish "library is empty" from "library hasn't
     /// loaded yet"; SyncCoordinator uses it to defer drains (its
     /// missing-ride-means-deleted heuristic would wipe the queue
     /// against an unloaded store).
     private(set) var initialLoadComplete: Bool = false
+
+    // MARK: - Summary cache (P1)
+
+    /// One persisted cache row: the summary plus the file signature it
+    /// was computed from.  mtime is stored as epoch seconds (not a
+    /// Codable Date) so the ISO-8601 round-trip can't shave fractional
+    /// seconds and silently invalidate every entry each launch.
+    nonisolated private struct SummaryCacheEntry: Codable {
+        let summary: RideSummary
+        let fileSize: Int
+        let fileModifiedEpoch: TimeInterval
+    }
+
+    /// Device-local on purpose: file mtimes differ across devices, so
+    /// a cache that synced through iCloud would be wrong everywhere
+    /// but its birthplace.
+    nonisolated private static var summaryCacheURL: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ride-summaries.json")
+    }
+
+    /// In-memory mirror of the persisted cache, mutated on save/delete
+    /// and flushed via `persistSummaryCacheSoon`.
+    private var summaryCache: [UUID: SummaryCacheEntry] = [:]
+
+    // MARK: - Full-ride LRU (P1)
+
+    private var fullRideCache: [UUID: Ride] = [:]
+    private var fullRideOrder: [UUID] = []
+    private static let fullRideCacheCap = 3
 
     init(directoryURL: URL) {
         self.directoryURL = directoryURL
@@ -65,51 +108,190 @@ final class RideStore {
         encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         // v2.0 O1: no load here — ContentView's startup task calls
-        // reload() (after the iCloud migration).  A synchronous load at
-        // init blocked the first frame behind hundreds of MB of JSON.
+        // reload() (after the iCloud migration).
     }
 
-    /// v2.0 O1: read + decode the whole library on a detached
-    /// background task, then publish on the main actor.  Callable
-    /// repeatedly (each call is a full rescan).
+    // MARK: - Loading
+
+    /// v2.0 O1/P1: scan the directory off-main, serving summaries from
+    /// the cache where the file signature matches and decoding only
+    /// new/changed rides.  Publishes on the main actor.
     func reload() async {
         let dir = directoryURL
-        let loaded = await Task.detached(priority: .userInitiated) {
-            Self.readAllRides(in: dir)
+        let (summaries, cache, decoded) = await Task.detached(priority: .userInitiated) {
+            Self.loadSummaries(in: dir)
         }.value
-        rides = loaded.sorted { $0.startedAt > $1.startedAt }
+        rides = summaries.sorted { $0.startedAt > $1.startedAt }
+        summaryCache = cache
         initialLoadComplete = true
-        Self.log.info("Loaded \(self.rides.count, privacy: .public) ride(s)")
+        fullRideCache = [:]
+        fullRideOrder = []
+        Self.log.info("Loaded \(summaries.count, privacy: .public) ride summaries (\(decoded, privacy: .public) required full decode)")
     }
 
-    /// The heavy part, deliberately `nonisolated` so it runs off-main
-    /// (model Codable is nonisolated as of O1).
-    nonisolated private static func readAllRides(in directoryURL: URL) -> [Ride] {
+    nonisolated private static func loadSummaries(
+        in dir: URL
+    ) -> ([RideSummary], [UUID: SummaryCacheEntry], Int) {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let files = (try? FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil))
-            ?? []
-        var loaded: [Ride] = []
+        let priorCache: [UUID: SummaryCacheEntry] = {
+            guard let data = try? Data(contentsOf: summaryCacheURL) else { return [:] }
+            return (try? decoder.decode([UUID: SummaryCacheEntry].self, from: data)) ?? [:]
+        }()
+
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey]
+        )) ?? []
+
+        var summaries: [RideSummary] = []
+        var cache: [UUID: SummaryCacheEntry] = [:]
+        var decodedCount = 0
+
         for url in files where url.pathExtension == "json" {
-            if let data = try? Data(contentsOf: url),
-               let ride = try? decoder.decode(Ride.self, from: data) {
-                loaded.append(ride)
+            guard let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else { continue }
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let size = values?.fileSize ?? -1
+            let mtime = values?.contentModificationDate?.timeIntervalSince1970 ?? -1
+
+            if let hit = priorCache[id],
+               hit.fileSize == size,
+               abs(hit.fileModifiedEpoch - mtime) < 0.001 {
+                summaries.append(hit.summary)
+                cache[id] = hit
+                continue
             }
+            guard let data = try? Data(contentsOf: url),
+                  let ride = try? decoder.decode(Ride.self, from: data) else { continue }
+            let summary = ride.summary
+            summaries.append(summary)
+            cache[id] = SummaryCacheEntry(summary: summary, fileSize: size, fileModifiedEpoch: mtime)
+            decodedCount += 1
         }
-        return loaded
+
+        persistSummaryCache(cache)
+        return (summaries, cache, decodedCount)
     }
+
+    nonisolated private static func persistSummaryCache(_ cache: [UUID: SummaryCacheEntry]) {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(cache) else { return }
+        try? data.write(to: summaryCacheURL, options: .atomic)
+    }
+
+    /// Flush the in-memory cache mirror to disk off-main.  Fire-and-
+    /// forget; the cache is an optimization, and a lost write just
+    /// means one extra decode next launch.
+    private func persistSummaryCacheSoon() {
+        let snapshot = summaryCache
+        Task.detached(priority: .utility) {
+            Self.persistSummaryCache(snapshot)
+        }
+    }
+
+    // MARK: - On-demand full rides (P1)
+
+    /// Load one full ride, decoding off-main.  Small LRU keeps the
+    /// viewer/edit flows snappy without re-accumulating the library.
+    func fullRide(id: UUID) async -> Ride? {
+        if let cached = fullRideCache[id] {
+            fullRideOrder.removeAll { $0 == id }
+            fullRideOrder.append(id)
+            return cached
+        }
+        let dir = directoryURL
+        guard let ride = await Task.detached(priority: .userInitiated, operation: {
+            Self.loadFullRide(id: id, in: dir)
+        }).value else { return nil }
+        cacheFullRide(ride)
+        return ride
+    }
+
+    nonisolated private static func loadFullRide(id: UUID, in dir: URL) -> Ride? {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let url = dir.appendingPathComponent("\(id.uuidString).json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? decoder.decode(Ride.self, from: data)
+    }
+
+    private func cacheFullRide(_ ride: Ride) {
+        fullRideCache[ride.id] = ride
+        fullRideOrder.removeAll { $0 == ride.id }
+        fullRideOrder.append(ride.id)
+        while fullRideOrder.count > Self.fullRideCacheCap {
+            let evicted = fullRideOrder.removeFirst()
+            fullRideCache.removeValue(forKey: evicted)
+        }
+    }
+
+    private func invalidateFullRide(id: UUID) {
+        fullRideCache.removeValue(forKey: id)
+        fullRideOrder.removeAll { $0 == id }
+    }
+
+    /// Stream full rides one at a time through `body` off-main —
+    /// the aggregator primitive (bump grid, calibration).  Peak
+    /// memory is a single decoded ride.  Missing/undecodable ids are
+    /// skipped, matching reload()'s tolerance.
+    func foldRides<T: Sendable>(
+        ids: [UUID],
+        initial: T,
+        _ body: @escaping @Sendable (inout T, Ride) -> Void
+    ) async -> T {
+        let dir = directoryURL
+        return await Task.detached(priority: .utility) {
+            var acc = initial
+            for id in ids {
+                guard let ride = Self.loadFullRide(id: id, in: dir) else { continue }
+                body(&acc, ride)
+            }
+            return acc
+        }.value
+    }
+
+    /// v2.0 P1: sync-path helper — the wire-format encode of one ride,
+    /// produced off-main and not retained.  nil = ride file is gone
+    /// (deleted) or undecodable.
+    func encodedBody(id: UUID) async -> Data? {
+        let dir = directoryURL
+        return await Task.detached(priority: .userInitiated) { () -> Data? in
+            guard let ride = Self.loadFullRide(id: id, in: dir) else { return nil }
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            return try? encoder.encode(ride)
+        }.value
+    }
+
+    /// v2.0 P1: content hashes for the L1 batch check, streamed
+    /// off-main one ride at a time.  Ids whose file is gone are
+    /// omitted from the result.
+    func contentHashes(ids: [UUID]) async -> [(id: UUID, hash: String)] {
+        let dir = directoryURL
+        return await Task.detached(priority: .utility) {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            var out: [(id: UUID, hash: String)] = []
+            for id in ids {
+                guard let ride = Self.loadFullRide(id: id, in: dir),
+                      let body = try? encoder.encode(ride) else { continue }
+                let hash = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+                out.append((id: id, hash: hash))
+            }
+            return out
+        }.value
+    }
+
+    // MARK: - Mutations
 
     func save(_ ride: Ride) {
         let url = directoryURL.appendingPathComponent("\(ride.id.uuidString).json")
         do {
             let data = try encoder.encode(ride)
             try coordinatedWrite(data, to: url)
-            if let idx = rides.firstIndex(where: { $0.id == ride.id }) {
-                rides[idx] = ride
-            } else {
-                rides.insert(ride, at: 0)
-                rides.sort { $0.startedAt > $1.startedAt }
-            }
+            upsertSummary(for: ride, at: url)
+            cacheFullRide(ride)
             onRideSaved?(ride)
         } catch {
             // Silent save failure has historically been the worst failure mode of
@@ -123,11 +305,37 @@ final class RideStore {
         }
     }
 
-    func delete(_ ride: Ride) {
-        let url = directoryURL.appendingPathComponent("\(ride.id.uuidString).json")
+    /// Update the summaries array + persisted cache after a successful
+    /// file write.
+    private func upsertSummary(for ride: Ride, at url: URL) {
+        let summary = ride.summary
+        if let idx = rides.firstIndex(where: { $0.id == summary.id }) {
+            rides[idx] = summary
+        } else {
+            rides.insert(summary, at: 0)
+            rides.sort { $0.startedAt > $1.startedAt }
+        }
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        summaryCache[summary.id] = SummaryCacheEntry(
+            summary: summary,
+            fileSize: values?.fileSize ?? -1,
+            fileModifiedEpoch: values?.contentModificationDate?.timeIntervalSince1970 ?? -1
+        )
+        persistSummaryCacheSoon()
+    }
+
+    func delete(_ summary: RideSummary) {
+        delete(id: summary.id)
+    }
+
+    func delete(id: UUID) {
+        let url = directoryURL.appendingPathComponent("\(id.uuidString).json")
         coordinatedRemove(at: url)
-        rides.removeAll { $0.id == ride.id }
-        onRideDeleted?(ride.id)
+        rides.removeAll { $0.id == id }
+        summaryCache.removeValue(forKey: id)
+        invalidateFullRide(id: id)
+        persistSummaryCacheSoon()
+        onRideDeleted?(id)
     }
 
     /// Remove every ride from disk and from the in-memory list.  Fires
@@ -150,6 +358,10 @@ final class RideStore {
             coordinatedRemove(at: url)
         }
         rides = []
+        summaryCache = [:]
+        fullRideCache = [:]
+        fullRideOrder = []
+        persistSummaryCacheSoon()
         for id in snapshot {
             onRideDeleted?(id)
         }
@@ -165,60 +377,52 @@ final class RideStore {
     /// effectively backfill — the call site is responsible for enqueueing
     /// touched IDs as backfill on the sync coordinator after the batch.
     ///
-    /// Returns `true` on successful persist.  Does nothing and returns
-    /// `false` if the ride isn't in the store (e.g., user deleted it
-    /// between the reprocessor reading the ride and persisting the result).
+    /// v2.0 P1: async — loads the full ride on demand first.  Returns
+    /// `false` when the ride file is gone (deleted between snapshot
+    /// and processing) or the write fails.
     @discardableResult
-    func updateBrakeEvents(_ events: [BrakeEvent], forRideId id: UUID) -> Bool {
-        guard let idx = rides.firstIndex(where: { $0.id == id }) else { return false }
-        var ride = rides[idx]
+    func updateBrakeEvents(_ events: [BrakeEvent], forRideId id: UUID) async -> Bool {
+        guard var ride = await fullRide(id: id) else { return false }
         ride.brakeEvents = events
+        return persistQuietly(ride)
+    }
+
+    /// Update only the `healthKitWorkoutUUID` field of an existing ride
+    /// in place, without firing `onRideSaved` — see the pre-P1 doc
+    /// history for why the quiet path exists (loud saves cascaded
+    /// multi-MB POSTs + calibration PUTs per stamped ride).
+    ///
+    /// v2.0 P1: async — loads the full ride on demand first.
+    @discardableResult
+    func updateHealthKitWorkoutUUID(_ uuid: UUID, forRideId id: UUID) async -> Bool {
+        guard var ride = await fullRide(id: id) else { return false }
+        ride.healthKitWorkoutUUID = uuid
+        return persistQuietly(ride)
+    }
+
+    /// Shared quiet-persist: write the file and refresh summary +
+    /// caches WITHOUT firing onRideSaved.
+    private func persistQuietly(_ ride: Ride) -> Bool {
         let url = directoryURL.appendingPathComponent("\(ride.id.uuidString).json")
         do {
             let data = try encoder.encode(ride)
             try coordinatedWrite(data, to: url)
-            rides[idx] = ride
+            upsertSummary(for: ride, at: url)
+            cacheFullRide(ride)
             return true
         } catch {
-            Self.log.error("Failed to update brakeEvents for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Self.log.error("Quiet persist failed for \(ride.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return false
         }
     }
 
-    /// Update only the `healthKitWorkoutUUID` field of an existing ride
-    /// in place, without firing `onRideSaved`.
-    ///
-    /// Used by all three HealthKit write paths (auto-export in
-    /// `ContentView.onRideSaved`, manual button in `RideView`, backfill
-    /// coordinator) after a successful export to stamp the local Ride
-    /// with the resulting HKWorkout UUID.  Going through `save(_:)`
-    /// here would cascade — every stamp would re-enqueue the ride for
-    /// upload to bumpyride.me (re-sending the full multi-MB payload to
-    /// land a device-local 36-byte field the server doesn't interpret)
-    /// and re-recompute calibration unnecessarily.  Worst case on a
-    /// 50-ride backfill: 50 spurious POSTs and 50 spurious calibration
-    /// PUTs, observed in field testing to hit timeouts and the OSLog
-    /// quarantine on the device.
-    ///
-    /// Returns `true` on successful persist.  Does nothing and returns
-    /// `false` if the ride isn't in the store (e.g., user deleted it
-    /// between the exporter's call and persistence).
-    @discardableResult
-    func updateHealthKitWorkoutUUID(_ uuid: UUID, forRideId id: UUID) -> Bool {
-        guard let idx = rides.firstIndex(where: { $0.id == id }) else { return false }
-        var ride = rides[idx]
-        ride.healthKitWorkoutUUID = uuid
-        let url = directoryURL.appendingPathComponent("\(ride.id.uuidString).json")
-        do {
-            let data = try encoder.encode(ride)
-            try coordinatedWrite(data, to: url)
-            rides[idx] = ride
-            return true
-        } catch {
-            Self.log.error("Failed to update healthKitWorkoutUUID for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            return false
-        }
+    func rename(_ ride: Ride, to title: String) {
+        var updated = ride
+        updated.title = title
+        save(updated)
     }
+
+    // MARK: - Coordinated IO
 
     /// Atomic write wrapped in `NSFileCoordinator` so the iCloud sync engine
     /// (or another device touching the same file) sees a consistent snapshot.
@@ -253,11 +457,5 @@ final class RideStore {
         coordinator.coordinate(writingItemAt: url, options: [.forDeleting], error: &coordinationError) { deleteURL in
             try? FileManager.default.removeItem(at: deleteURL)
         }
-    }
-
-    func rename(_ ride: Ride, to title: String) {
-        var updated = ride
-        updated.title = title
-        save(updated)
     }
 }

@@ -198,22 +198,10 @@ final class SyncCoordinator {
         if let stored = storage.load(), let store = rideStore {
             let backfillIds = queue.all().filter { !queue.userInitiatedIds.contains($0) }
             if backfillIds.count >= 2 {
-                let ridesToCheck = backfillIds.compactMap { id in
-                    store.rides.first(where: { $0.id == id })
-                }
-                // v2.0 O2: encode + hash on a detached task (Ride's
-                // Codable went nonisolated in O1).  Doing this on the
-                // MainActor froze the UI for seconds at drain start
-                // when the backfill queue held hundreds of MB.
-                let entries: [(id: UUID, hash: String)] = await Task.detached(priority: .utility) {
-                    let encoder = JSONEncoder()
-                    encoder.dateEncodingStrategy = .iso8601
-                    return ridesToCheck.compactMap { ride in
-                        guard let body = try? encoder.encode(ride) else { return nil }
-                        let hash = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
-                        return (id: ride.id, hash: hash)
-                    }
-                }.value
+                // v2.0 O2/P1: encode + hash streamed off-main, one ride
+                // at a time from disk — the store only holds summaries
+                // now, and nothing here needs the rides retained.
+                let entries = await store.contentHashes(ids: backfillIds)
                 if !entries.isEmpty {
                     do {
                         let needed = try await client.checkRidesBatch(entries: entries, token: stored.token)
@@ -276,21 +264,13 @@ final class SyncCoordinator {
 
             state = .syncing(remaining: queue.count)
 
-            // v2.0 O2: encode on a detached task — Ride's Codable went
-            // nonisolated in O1, so the old "must encode on the
-            // MainActor" constraint is gone, and a multi-MB encode per
-            // drain iteration was stuttering the UI.  The actor still
-            // receives raw bytes.
-            let body: Data
-            do {
-                let rideToUpload = next
-                body = try await Task.detached(priority: .userInitiated) {
-                    let encoder = JSONEncoder()
-                    encoder.dateEncodingStrategy = .iso8601
-                    return try encoder.encode(rideToUpload)
-                }.value
-            } catch {
-                log.error("Failed to encode ride \(next.id, privacy: .public) — dropping from queue")
+            // v2.0 O2/P1: the wire body is produced off-main from disk
+            // on demand (`next` is only a summary now).  nil means the
+            // ride file is gone — the user deleted it after enqueue —
+            // so drop it from the queue, same as the old missing-ride
+            // prune.
+            guard let body = await store.encodedBody(id: next.id) else {
+                log.error("Ride \(next.id, privacy: .public) missing or unreadable on disk — dropping from queue")
                 queue.remove(next.id)
                 continue
             }

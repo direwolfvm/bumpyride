@@ -14,7 +14,7 @@ import CoreLocation
 /// "how hard on average" — a corner where the user brakes hard 8 times is
 /// notable even if each one is barely above threshold; a single 0.5 g brake
 /// could be a one-off.  The detector's threshold acts as the intensity gate.
-struct BrakeGrid {
+nonisolated struct BrakeGrid {
     /// Per-cell tally.  Keys match `BumpGrid.key(ix:iy:)`.
     private(set) var cells: [UInt64: Int] = [:]
 

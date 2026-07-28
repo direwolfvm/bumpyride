@@ -111,6 +111,14 @@ struct CalibrationDiagnostics: Codable, Equatable {
 /// Recomputation is O(total points) per call, which on real data is sub-millisecond
 /// and fine to run synchronously on every ride save.  The result is persisted to
 /// `<Documents>/calibration.json` so it survives launches.
+/// v2.0 P1: Sendable accumulator for the off-main paired-cell fold in
+/// `CalibrationStore.recompute` — plain dicts of tuples so nothing
+/// actor-isolated crosses the detached boundary.
+nonisolated private struct PairedCellAccumulator: Sendable {
+    var mounted: [UInt64: (sum: Double, count: Int)] = [:]
+    var pocket: [UInt64: (sum: Double, count: Int)] = [:]
+}
+
 @Observable
 final class CalibrationStore {
     /// A single user-wide calibration value.  Per-rider variance dominates (loose-pocket
@@ -166,24 +174,26 @@ final class CalibrationStore {
     /// meaningfully different value emerges.  Safe to call on every ride save —
     /// the work is bounded by total point count, which for a year of daily commutes
     /// is on the order of 10⁵ points → low single-digit milliseconds.
-    func recompute(from rides: [Ride]) {
-        var mounted: [UInt64: (sum: Double, count: Int)] = [:]
-        var pocket: [UInt64: (sum: Double, count: Int)] = [:]
-
-        for ride in rides {
+    /// v2.0 P1: summaries in, points streamed one ride at a time
+    /// off-main via `store.foldRides` — the paired-cell mining needs
+    /// every point but never needs two rides resident at once.
+    func recompute(summaries: [RideSummary], store: RideStore) async {
+        let acc = await store.foldRides(ids: summaries.map(\.id), initial: PairedCellAccumulator()) { acc, ride in
             let isPocket = ride.pocketMode == true
             for point in ride.points {
                 let (ix, iy) = BumpGrid.gridIndex(lat: point.latitude, lon: point.longitude)
                 let key = BumpGrid.key(ix: ix, iy: iy)
                 if isPocket {
-                    let existing = pocket[key] ?? (0, 0)
-                    pocket[key] = (existing.sum + point.bumpiness, existing.count + 1)
+                    let existing = acc.pocket[key] ?? (0, 0)
+                    acc.pocket[key] = (existing.sum + point.bumpiness, existing.count + 1)
                 } else {
-                    let existing = mounted[key] ?? (0, 0)
-                    mounted[key] = (existing.sum + point.bumpiness, existing.count + 1)
+                    let existing = acc.mounted[key] ?? (0, 0)
+                    acc.mounted[key] = (existing.sum + point.bumpiness, existing.count + 1)
                 }
             }
         }
+        let mounted = acc.mounted
+        let pocket = acc.pocket
 
         var ratios: [Double] = []
         ratios.reserveCapacity(min(mounted.count, pocket.count))
@@ -229,13 +239,25 @@ final class CalibrationStore {
     /// only updated by `recompute(from:)` on save / delete.  Roughly O(total points)
     /// like `recompute` itself, with a bit of extra overhead for the per-cell
     /// breakdown.  Sub-millisecond on typical ride collections.
-    func computeDiagnostics(from rides: [Ride], recentRidesLimit: Int = 30) -> CalibrationDiagnostics {
+    /// v2.0 P1: summaries in; each full ride is loaded on demand
+    /// (decode off-main via `store.fullRide`) and accumulated here on
+    /// the main actor — per-ride accumulation is milliseconds, and the
+    /// awaits between loads keep the UI responsive.  The recent-ride
+    /// detector snapshots are captured in the same pass while the full
+    /// ride is in hand, since `MountStyleDetector` needs points.
+    func computeDiagnostics(
+        summaries: [RideSummary],
+        store: RideStore,
+        recentRidesLimit: Int = 30
+    ) async -> CalibrationDiagnostics {
         var mounted: [UInt64: (sum: Double, count: Int)] = [:]
         var pocket: [UInt64: (sum: Double, count: Int)] = [:]
         var totalMountedSamples = 0
         var totalPocketSamples = 0
+        var recentDetections: [CalibrationDiagnostics.RideDetectionSnapshot] = []
 
-        for ride in rides {
+        for (index, summary) in summaries.enumerated() {
+            guard let ride = await store.fullRide(id: summary.id) else { continue }
             let isPocket = ride.pocketMode == true
             for point in ride.points {
                 let (ix, iy) = BumpGrid.gridIndex(lat: point.latitude, lon: point.longitude)
@@ -249,6 +271,24 @@ final class CalibrationStore {
                     mounted[key] = (existing.sum + point.bumpiness, existing.count + 1)
                     totalMountedSamples += 1
                 }
+            }
+            // Per-ride detector snapshots for the N most-recent rides
+            // (summaries arrive newest-first from RideStore) — done in
+            // this pass while the full ride is loaded.
+            if index < recentRidesLimit {
+                let result = MountStyleDetector.analyze(ride)
+                recentDetections.append(CalibrationDiagnostics.RideDetectionSnapshot(
+                    rideId: ride.id,
+                    rideTitle: ride.title,
+                    startedAt: ride.startedAt,
+                    pocketMode: ride.pocketMode,
+                    schemaVersion: ride.schemaVersion,
+                    detectorVerdict: result?.verdict,
+                    detectorRatio: result?.ratio,
+                    cadenceRMS: result?.cadenceRMS,
+                    bumpRMS: result?.bumpRMS,
+                    samplesAnalyzed: result?.samplesAnalyzed
+                ))
             }
         }
 
@@ -305,24 +345,8 @@ final class CalibrationStore {
             sortedRatios.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(sortedRatios.count)
         let stdDev = sqrt(variance)
 
-        // Per-ride detector snapshots for the N most-recent rides.  `rides` is
-        // expected newest-first from RideStore.  Skipping empty-points rides.
-        var recentDetections: [CalibrationDiagnostics.RideDetectionSnapshot] = []
-        for ride in rides.prefix(recentRidesLimit) {
-            let result = MountStyleDetector.analyze(ride)
-            recentDetections.append(CalibrationDiagnostics.RideDetectionSnapshot(
-                rideId: ride.id,
-                rideTitle: ride.title,
-                startedAt: ride.startedAt,
-                pocketMode: ride.pocketMode,
-                schemaVersion: ride.schemaVersion,
-                detectorVerdict: result?.verdict,
-                detectorRatio: result?.ratio,
-                cadenceRMS: result?.cadenceRMS,
-                bumpRMS: result?.bumpRMS,
-                samplesAnalyzed: result?.samplesAnalyzed
-            ))
-        }
+        // (v2.0 P1: recentDetections was captured inline in the main
+        // pass above, while each full ride was in hand.)
 
         return CalibrationDiagnostics(
             computedAt: Date(),

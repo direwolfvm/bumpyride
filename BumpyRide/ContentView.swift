@@ -360,7 +360,8 @@ struct ContentView: View {
             store.onRideSaved = { ride in
                 syncCoordinator.enqueue(ride.id)
                 syncCoordinator.kick()
-                calibration.recompute(from: store.rides)
+                // v2.0 P1: recompute streams full rides off-main now.
+                Task { await calibration.recompute(summaries: store.rides, store: store) }
                 // Auto-export to Apple Health.  Gated on three things
                 // so this stays cheap and doesn't loop:
                 //  - user has opted in via Settings,
@@ -385,7 +386,7 @@ struct ContentView: View {
                                 // bumpyride.me and re-push calibration
                                 // for a 36-byte field nobody else
                                 // interprets.
-                                store.updateHealthKitWorkoutUUID(uuid, forRideId: ride.id)
+                                await store.updateHealthKitWorkoutUUID(uuid, forRideId: ride.id)
                             case .unavailable:
                                 break
                             }
@@ -400,12 +401,12 @@ struct ContentView: View {
             }
             store.onRideDeleted = { id in
                 syncCoordinator.remove(id)
-                calibration.recompute(from: store.rides)
+                Task { await calibration.recompute(summaries: store.rides, store: store) }
             }
             // Recompute on launch in case rides were added on another device and
             // synced down (currently no such path; future-proofing) or for users
             // who saved rides under an older build that didn't have calibration yet.
-            calibration.recompute(from: store.rides)
+            await calibration.recompute(summaries: store.rides, store: store)
             // If the user was already paired in a prior session (token in Keychain →
             // WebAccount.init() set state to .connected before the view was even built),
             // .onChange(of: isConnected) won't fire — SwiftUI only observes transitions.

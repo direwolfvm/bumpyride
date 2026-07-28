@@ -39,7 +39,16 @@ struct SavedRidesView: View {
                     List {
                         ForEach(store.rides) { ride in
                             Button {
-                                appState.open(ride)
+                                // v2.0 P1: rows are summaries; the
+                                // viewer needs the full ride, loaded on
+                                // demand (decode off-main, ~a few
+                                // hundred ms for the largest rides).
+                                let id = ride.id
+                                Task {
+                                    if let full = await store.fullRide(id: id) {
+                                        appState.open(full)
+                                    }
+                                }
                             } label: {
                                 rideRow(ride)
                             }
@@ -73,7 +82,7 @@ struct SavedRidesView: View {
         }
     }
 
-    private func rideRow(_ ride: Ride) -> some View {
+    private func rideRow(_ ride: RideSummary) -> some View {
         HStack(spacing: 12) {
             RoundedRectangle(cornerRadius: 6)
                 .fill(settings.color(for: ride.averageBumpiness))
@@ -124,7 +133,7 @@ struct SavedRidesView: View {
     }
 
     @ViewBuilder
-    private func syncIndicator(for ride: Ride) -> some View {
+    private func syncIndicator(for ride: RideSummary) -> some View {
         // Hide entirely when the user has no web account — keep the row clean for
         // people who don't use sync.  Still show queued rides if the user paired
         // then disconnected (queue persists; reconnecting drains it).

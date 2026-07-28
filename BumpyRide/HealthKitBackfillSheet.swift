@@ -24,7 +24,7 @@ struct HealthKitBackfillSheet: View {
     /// the body delegates to `coordinator.phase` for the rest of the
     /// flow.
     enum SheetPhase: Equatable {
-        case ready(unsyncedRides: [Ride])
+        case ready(unsyncedRides: [RideSummary])
         case nothingToSync
         case authDenied
         case running
@@ -110,7 +110,7 @@ struct HealthKitBackfillSheet: View {
     // MARK: - Setup phase content
 
     @ViewBuilder
-    private func readyContent(rides: [Ride]) -> some View {
+    private func readyContent(rides: [RideSummary]) -> some View {
         Section {
             VStack(alignment: .leading, spacing: 6) {
                 Label {
@@ -311,7 +311,7 @@ struct HealthKitBackfillSheet: View {
     /// Tap of the Sync button in `.ready`.  Auth-on-demand: if the
     /// user already opted in via the Settings toggle, this path skips
     /// the prompt entirely.
-    private func startBackfill(rides: [Ride]) {
+    private func startBackfill(rides: [RideSummary]) {
         Task {
             if !healthKitAuth.canWrite {
                 let granted = await healthKitAuth.requestAuthorization()

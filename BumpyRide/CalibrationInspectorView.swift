@@ -38,10 +38,10 @@ struct CalibrationInspectorView: View {
         .navigationTitle("Calibration Inspector")
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            // Run on a Task to avoid blocking view appearance on large ride sets.
-            // The compute is still on MainActor (CalibrationStore is MainActor),
-            // but wrapping in a Task lets SwiftUI render the loading state first.
-            let d = calibration.computeDiagnostics(from: store.rides)
+            // v2.0 P1: streams full rides on demand (decode off-main),
+            // accumulating per ride between awaits — the loading state
+            // renders immediately and stays responsive.
+            let d = await calibration.computeDiagnostics(summaries: store.rides, store: store)
             diagnostics = d
             writeExportFile(d)
         }

@@ -11,7 +11,7 @@ import CoreLocation
 /// is the only meaningful aggregate, and it's the right metric anyway: a
 /// corner with 5 logged close calls is more notable than one with 1,
 /// regardless of how each rider felt about each individual incident.
-struct CloseCallGrid {
+nonisolated struct CloseCallGrid {
     /// Per-cell tally.  Keys match `BumpGrid.key(ix:iy:)`.
     private(set) var cells: [UInt64: Int] = [:]
 

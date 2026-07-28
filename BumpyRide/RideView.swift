@@ -363,7 +363,7 @@ struct RideView: View {
 
     private func commitDelete() {
         if let ride = appState.loadedRide {
-            store.delete(ride)
+            store.delete(id: ride.id)
             // Drop any cached score for this id so a re-restore of the
             // same UUID later doesn't surface stale data.
             rideScoreCache.invalidate(ride.id)
@@ -544,7 +544,9 @@ struct RideView: View {
             // cells exist, so the default (uncalibrated) gain is fine —
             // calibration scales bumpiness values, not the cell set.
             .onChange(of: showVisitedCells) { _, on in
-                if on { bumpMap.rebuildIfNeeded(from: store.rides) }
+                if on {
+                    Task { await bumpMap.rebuildIfNeeded(from: store.rides, store: store) }
+                }
             }
             } // end if !reportingMode (N6)
 
@@ -1572,7 +1574,7 @@ struct RideView: View {
                     // multi-MB upload to bumpyride.me for a field the
                     // server doesn't interpret.  See RideStore's
                     // updateHealthKitWorkoutUUID doc for details.
-                    store.updateHealthKitWorkoutUUID(uuid, forRideId: ride.id)
+                    await store.updateHealthKitWorkoutUUID(uuid, forRideId: ride.id)
                     // Also patch appState so the viewer renders the
                     // updated struct (its `ride` parameter is a value
                     // type; we need to push the new copy through).

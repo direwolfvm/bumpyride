@@ -37,7 +37,7 @@ final class BrakeMapStore {
     /// for the bumpiness systematic damping in pocket mode, which doesn't
     /// apply to GPS-derived deceleration.  A hard brake reads the same regardless
     /// of where the phone was carried.
-    func rebuildIfNeeded(from rides: [Ride]) {
+    func rebuildIfNeeded(from rides: [RideSummary]) {
         let sig = Self.signature(rides)
         guard sig != lastSignature else { return }
         lastSignature = sig
@@ -62,7 +62,7 @@ final class BrakeMapStore {
     /// whether `brakeEvents` is "not detected," "empty," or "N events" — that
     /// trio of states is what differentiates two ride sets for the brake
     /// aggregation.
-    private static func signature(_ rides: [Ride]) -> String {
+    private static func signature(_ rides: [RideSummary]) -> String {
         var parts: [String] = []
         parts.reserveCapacity(rides.count)
         for r in rides {

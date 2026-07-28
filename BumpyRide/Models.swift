@@ -15,6 +15,30 @@ import CoreLocation
 /// cornering) independent of phone orientation, since the projection is done
 /// in the phone's body frame using CMDeviceMotion's gravity vector at the
 /// same instant.  Optional because v1 and v2 rides don't have it.
+/// v2.0 P1: per-ride metadata held in memory by the lazy `RideStore`
+/// (see `Ride.summary`).  Derived values (`distanceMeters`,
+/// `averageBumpiness`, `maxBumpiness`, `pointCount`) are computed once
+/// at summary time and stored — the whole point is not needing
+/// `points` to answer them.  Persisted in a local (non-iCloud) cache
+/// keyed by ride-file size + mtime so relaunches skip full decodes.
+nonisolated struct RideSummary: Codable, Identifiable, Hashable, Sendable {
+    let id: UUID
+    var title: String
+    var startedAt: Date
+    var endedAt: Date
+    var pocketMode: Bool?
+    var pointCount: Int
+    var distanceMeters: Double
+    var averageBumpiness: Double
+    var maxBumpiness: Double
+    var brakeEvents: [BrakeEvent]?
+    var closeCallEvents: [CloseCall]?
+    var otherEvents: [OtherEvent]?
+    var healthKitWorkoutUUID: UUID?
+
+    var duration: TimeInterval { endedAt.timeIntervalSince(startedAt) }
+}
+
 // v2.0 O1: every model type below is `nonisolated`.  The project's
 // default actor isolation is MainActor, which put the synthesized
 // Codable/Hashable machinery on the main thread — meaning a 500+ MB
@@ -405,6 +429,30 @@ nonisolated struct Ride: Codable, Identifiable, Hashable {
     }
 
     var duration: TimeInterval { endedAt.timeIntervalSince(startedAt) }
+
+    /// v2.0 P1: the lightweight projection the metadata-eager store
+    /// keeps in memory.  Everything the list/score/map-event surfaces
+    /// need, WITHOUT `points` — the points (accelWindow especially)
+    /// are what made 168 rides occupy ~1 GB resident.  Event arrays
+    /// ride along in full because they're tiny (dozens per ride) and
+    /// the brake/close-call map layers are built from them.
+    var summary: RideSummary {
+        RideSummary(
+            id: id,
+            title: title,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            pocketMode: pocketMode,
+            pointCount: points.count,
+            distanceMeters: distanceMeters,
+            averageBumpiness: averageBumpiness,
+            maxBumpiness: maxBumpiness,
+            brakeEvents: brakeEvents,
+            closeCallEvents: closeCallEvents,
+            otherEvents: otherEvents,
+            healthKitWorkoutUUID: healthKitWorkoutUUID
+        )
+    }
 
     var distanceMeters: Double {
         guard points.count > 1 else { return 0 }

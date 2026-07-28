@@ -71,7 +71,7 @@ final class HealthKitBackfillCoordinator {
     /// Idempotent re-entry: if already running, this is a no-op.  To
     /// start a new backfill after a terminal phase, call `reset()`
     /// first then `start`.
-    func start(exporting rides: [Ride]) {
+    func start(exporting rides: [RideSummary]) {
         if case .running = phase { return }
         let total = rides.count
         // Show progress on the first ride immediately so the sheet's
@@ -106,13 +106,13 @@ final class HealthKitBackfillCoordinator {
 
     // MARK: - Internal
 
-    private func runExports(_ rides: [Ride]) async {
+    private func runExports(_ rides: [RideSummary]) async {
         var exported = 0
         var alreadyPresent = 0
         var failed = 0
         let total = rides.count
 
-        for (index, ride) in rides.enumerated() {
+        for (index, summary) in rides.enumerated() {
             if Task.isCancelled {
                 phase = .cancelled(exportedCount: exported)
                 return
@@ -121,8 +121,15 @@ final class HealthKitBackfillCoordinator {
             phase = .running(
                 currentIndex: index,
                 total: total,
-                currentTitle: ride.title
+                currentTitle: summary.title
             )
+
+            // v2.0 P1: full ride on demand — the exporter needs points
+            // for the route + the HR window.
+            guard let ride = await store.fullRide(id: summary.id) else {
+                failed += 1
+                continue
+            }
 
             do {
                 let result = try await exporter.export(ride)
@@ -134,10 +141,10 @@ final class HealthKitBackfillCoordinator {
                     // loud-save pattern visible in the field
                     // (multi-MB POST + calibration PUT per ride),
                     // hitting network timeouts and the OSLog quarantine.
-                    store.updateHealthKitWorkoutUUID(uuid, forRideId: ride.id)
+                    await store.updateHealthKitWorkoutUUID(uuid, forRideId: ride.id)
                     exported += 1
                 case .alreadyPresent(let uuid):
-                    store.updateHealthKitWorkoutUUID(uuid, forRideId: ride.id)
+                    await store.updateHealthKitWorkoutUUID(uuid, forRideId: ride.id)
                     alreadyPresent += 1
                 case .unavailable:
                     // HealthKit went away mid-backfill (extremely rare:
