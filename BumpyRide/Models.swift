@@ -15,7 +15,14 @@ import CoreLocation
 /// cornering) independent of phone orientation, since the projection is done
 /// in the phone's body frame using CMDeviceMotion's gravity vector at the
 /// same instant.  Optional because v1 and v2 rides don't have it.
-struct RidePoint: Codable, Identifiable, Hashable {
+// v2.0 O1: every model type below is `nonisolated`.  The project's
+// default actor isolation is MainActor, which put the synthesized
+// Codable/Hashable machinery on the main thread — meaning a 500+ MB
+// ride-corpus decode at startup froze the UI.  These are pure value
+// types with Sendable stored properties; nonisolated lets RideStore
+// decode on a background task and the sync path encode off-main.
+
+nonisolated struct RidePoint: Codable, Identifiable, Hashable {
     var id: UUID = UUID()
     var timestamp: Date
     var latitude: Double
@@ -78,7 +85,7 @@ struct RidePoint: Codable, Identifiable, Hashable {
 /// label verbatim for customs.  The `isCustom` flag (rather than a
 /// registry lookup) is what the server keys privacy on, so it doesn't
 /// need to track our registry to make the right call.
-struct OtherEvent: Codable, Identifiable, Hashable, Sendable {
+nonisolated struct OtherEvent: Codable, Identifiable, Hashable, Sendable {
     var id: UUID = UUID()
     var timestamp: Date
     var latitude: Double
@@ -118,7 +125,7 @@ struct OtherEvent: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
-struct CloseCall: Codable, Identifiable, Hashable, Sendable {
+nonisolated struct CloseCall: Codable, Identifiable, Hashable, Sendable {
     var id: UUID = UUID()
     var timestamp: Date
     var latitude: Double
@@ -150,7 +157,7 @@ struct CloseCall: Codable, Identifiable, Hashable, Sendable {
 /// `unknown` is intentionally NOT a case here — the live modal
 /// auto-dismisses to `.vehicle` (the documented default), and saved
 /// edits always carry an intentional value.
-enum CloseCallCategory: String, Codable, Equatable, Sendable, CaseIterable {
+nonisolated enum CloseCallCategory: String, Codable, Equatable, Sendable, CaseIterable {
     case vehicle
     case bike
     case pedestrian
@@ -178,7 +185,7 @@ enum CloseCallCategory: String, Codable, Equatable, Sendable, CaseIterable {
 ///
 /// Wire format additive — old clients ignore unknown fields, and `Ride`'s
 /// `brakeEvents` is itself optional, so v1/v2 rides decode unchanged.
-struct BrakeEvent: Codable, Identifiable, Hashable, Sendable {
+nonisolated struct BrakeEvent: Codable, Identifiable, Hashable, Sendable {
     var id: UUID = UUID()
     var timestamp: Date
     var latitude: Double
@@ -216,7 +223,7 @@ struct BrakeEvent: Codable, Identifiable, Hashable, Sendable {
 /// case here: a brake that the detector emitted but the rider never
 /// touched is meaningfully different from one the rider actively
 /// flagged as `.other`.
-enum BrakeEventCategory: String, Codable, Equatable, Sendable, CaseIterable {
+nonisolated enum BrakeEventCategory: String, Codable, Equatable, Sendable, CaseIterable {
     /// Rider braked to avoid an accident or hazard.  Informs the
     /// public bump map's safety overlay (future).
     case safety
@@ -257,7 +264,7 @@ enum BrakeEventCategory: String, Codable, Equatable, Sendable, CaseIterable {
 /// custom `init(from:)` supplies sensible defaults for fields that didn't exist in
 /// earlier on-disk records (`schemaVersion` → 1, `pocketMode` → nil), so old files
 /// keep decoding after schema additions.  See `docs/SCHEMA.md`.
-struct Ride: Codable, Identifiable, Hashable {
+nonisolated struct Ride: Codable, Identifiable, Hashable {
     var id: UUID
     var title: String
     var startedAt: Date

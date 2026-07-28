@@ -17,11 +17,24 @@ struct SavedRidesView: View {
         NavigationStack {
             Group {
                 if store.rides.isEmpty {
+                    // v2.0 O1: the library loads asynchronously at
+                    // startup — show a loading state until the first
+                    // reload publishes, so a rider with 100+ rides
+                    // doesn't see a misleading "No Saved Rides" flash.
+                    if !store.initialLoadComplete {
+                        VStack(spacing: 12) {
+                            ProgressView()
+                            Text("Loading rides…")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
                     ContentUnavailableView(
                         "No Saved Rides",
                         systemImage: "bicycle",
                         description: Text("Record a ride in the Ride tab and save it here.")
                     )
+                    }
                 } else {
                     List {
                         ForEach(store.rides) { ride in

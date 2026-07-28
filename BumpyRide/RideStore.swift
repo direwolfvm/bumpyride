@@ -8,15 +8,21 @@ import OSLog
 /// to the local app sandbox's `Documents/Rides/` otherwise.  RideStore itself
 /// is storage-mode-agnostic — it sees a URL and writes to it.
 ///
-/// Loads everything into memory at init (rides are small; thousands fit
-/// comfortably) and keeps `rides` sorted newest-first for the UI.
+/// v2.0 O1: rides load **asynchronously off the main thread** via
+/// `reload()` — the app renders immediately and the library fills in
+/// when the decode finishes (`initialLoadComplete` tells the UI which
+/// state it's in).  The original synchronous load-at-init design froze
+/// startup for 10+ seconds once the corpus grew to hundreds of MB of
+/// JSON.  ContentView's startup task owns the one `reload()` call,
+/// sequenced after the iCloud migration so a single pass sees
+/// everything.
 ///
 /// Writes to iCloud Documents are wrapped in `NSFileCoordinator` because the
 /// ubiquity container can be touched concurrently by the iCloud sync engine
 /// or another instance of the app on a different device.  Reads are
-/// intentionally *not* coordinated — load() is best-effort, runs at startup,
-/// and a torn read of a single ride just means that ride is skipped this
-/// launch and reloaded next time.
+/// intentionally *not* coordinated — reload() is best-effort, runs at
+/// startup, and a torn read of a single ride just means that ride is
+/// skipped this launch and reloaded next time.
 @Observable
 final class RideStore {
     private(set) var rides: [Ride] = []
@@ -42,7 +48,12 @@ final class RideStore {
 
     private let directoryURL: URL
     private let encoder: JSONEncoder
-    private let decoder: JSONDecoder
+    /// v2.0 O1: `false` until the first `reload()` publishes.  UI uses
+    /// this to distinguish "library is empty" from "library hasn't
+    /// loaded yet"; SyncCoordinator uses it to defer drains (its
+    /// missing-ride-means-deleted heuristic would wipe the queue
+    /// against an unloaded store).
+    private(set) var initialLoadComplete: Bool = false
 
     init(directoryURL: URL) {
         self.directoryURL = directoryURL
@@ -53,13 +64,29 @@ final class RideStore {
 
         encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-
-        load()
+        // v2.0 O1: no load here — ContentView's startup task calls
+        // reload() (after the iCloud migration).  A synchronous load at
+        // init blocked the first frame behind hundreds of MB of JSON.
     }
 
-    func load() {
+    /// v2.0 O1: read + decode the whole library on a detached
+    /// background task, then publish on the main actor.  Callable
+    /// repeatedly (each call is a full rescan).
+    func reload() async {
+        let dir = directoryURL
+        let loaded = await Task.detached(priority: .userInitiated) {
+            Self.readAllRides(in: dir)
+        }.value
+        rides = loaded.sorted { $0.startedAt > $1.startedAt }
+        initialLoadComplete = true
+        Self.log.info("Loaded \(self.rides.count, privacy: .public) ride(s)")
+    }
+
+    /// The heavy part, deliberately `nonisolated` so it runs off-main
+    /// (model Codable is nonisolated as of O1).
+    nonisolated private static func readAllRides(in directoryURL: URL) -> [Ride] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
         let files = (try? FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil))
             ?? []
         var loaded: [Ride] = []
@@ -69,7 +96,7 @@ final class RideStore {
                 loaded.append(ride)
             }
         }
-        rides = loaded.sorted { $0.startedAt > $1.startedAt }
+        return loaded
     }
 
     func save(_ ride: Ride) {

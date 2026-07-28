@@ -297,12 +297,19 @@ struct ContentView: View {
             await watchLaunchCoordinator.considerLaunchingWatchApp()
             // Migrate any rides still sitting in legacy local Documents into
             // iCloud (no-op when iCloud is unavailable, or when there's
-            // nothing local to migrate).  Runs before the store's initial
-            // load is observed by the UI in practice — RideStore.init
-            // already loaded what was in the directory at startup, and we
-            // re-load below to pick up freshly-migrated files.
+            // nothing local to migrate), THEN run the one library load —
+            // sequenced this way so a single pass sees migrated files.
+            //
+            // v2.0 O1: this is the app's only ride load, and it decodes
+            // off the main thread (see RideStore.reload).  The old
+            // design loaded synchronously in RideStore.init AND re-loaded
+            // here — two full main-thread parses of a 500+ MB corpus,
+            // the second of which froze the just-rendered UI for 10-15 s.
+            // Everything below that needs rides (recovery-save flow,
+            // brake reprocessor, sync kicks) already runs after this
+            // await, so ordering is preserved.
             cloudStorage.migrateLocalRidesIfNeeded()
-            store.load()
+            await store.reload()
             // Check for a recoverable ride journal first — this is the recovery
             // path for users whose last session ended abruptly (OS kill, crash,
             // force-quit).  Has to happen before anything else might touch the

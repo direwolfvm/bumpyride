@@ -168,6 +168,16 @@ final class SyncCoordinator {
     // MARK: - Drain loop
 
     private func drain() async {
+        // v2.0 O1: never drain against a store that hasn't finished its
+        // async initial load — the loop below treats "queued id not in
+        // store.rides" as locally-deleted and would remove the whole
+        // queue.  ContentView's startup task kicks again right after
+        // the load completes, so a deferred drain is only postponed.
+        if let store = rideStore, !store.initialLoadComplete {
+            log.info("Drain deferred — ride library still loading")
+            state = .idle
+            return
+        }
         log.info("Starting drain — queued: \(self.queue.count, privacy: .public)")
 
         // v1.8 L1: prune the backfill queue with ONE batch check
