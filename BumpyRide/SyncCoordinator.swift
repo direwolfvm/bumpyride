@@ -198,15 +198,22 @@ final class SyncCoordinator {
         if let stored = storage.load(), let store = rideStore {
             let backfillIds = queue.all().filter { !queue.userInitiatedIds.contains($0) }
             if backfillIds.count >= 2 {
-                let encoder = JSONEncoder()
-                encoder.dateEncodingStrategy = .iso8601
-                var entries: [(id: UUID, hash: String)] = []
-                for id in backfillIds {
-                    guard let ride = store.rides.first(where: { $0.id == id }),
-                          let body = try? encoder.encode(ride) else { continue }
-                    let hash = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
-                    entries.append((id: id, hash: hash))
+                let ridesToCheck = backfillIds.compactMap { id in
+                    store.rides.first(where: { $0.id == id })
                 }
+                // v2.0 O2: encode + hash on a detached task (Ride's
+                // Codable went nonisolated in O1).  Doing this on the
+                // MainActor froze the UI for seconds at drain start
+                // when the backfill queue held hundreds of MB.
+                let entries: [(id: UUID, hash: String)] = await Task.detached(priority: .utility) {
+                    let encoder = JSONEncoder()
+                    encoder.dateEncodingStrategy = .iso8601
+                    return ridesToCheck.compactMap { ride in
+                        guard let body = try? encoder.encode(ride) else { return nil }
+                        let hash = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+                        return (id: ride.id, hash: hash)
+                    }
+                }.value
                 if !entries.isEmpty {
                     do {
                         let needed = try await client.checkRidesBatch(entries: entries, token: stored.token)
@@ -269,14 +276,19 @@ final class SyncCoordinator {
 
             state = .syncing(remaining: queue.count)
 
-            // Encode the Ride here on the MainActor — `Ride.Encodable` is MainActor-
-            // isolated (project default), so it can't be called from inside the
-            // WebSyncClient actor.  We hand the actor raw bytes instead.
+            // v2.0 O2: encode on a detached task — Ride's Codable went
+            // nonisolated in O1, so the old "must encode on the
+            // MainActor" constraint is gone, and a multi-MB encode per
+            // drain iteration was stuttering the UI.  The actor still
+            // receives raw bytes.
             let body: Data
             do {
-                let encoder = JSONEncoder()
-                encoder.dateEncodingStrategy = .iso8601
-                body = try encoder.encode(next)
+                let rideToUpload = next
+                body = try await Task.detached(priority: .userInitiated) {
+                    let encoder = JSONEncoder()
+                    encoder.dateEncodingStrategy = .iso8601
+                    return try encoder.encode(rideToUpload)
+                }.value
             } catch {
                 log.error("Failed to encode ride \(next.id, privacy: .public) — dropping from queue")
                 queue.remove(next.id)
