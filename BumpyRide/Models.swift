@@ -361,6 +361,14 @@ nonisolated struct Ride: Codable, Identifiable, Hashable {
     /// actual export attempt.  Phase E's badge logic accepts this
     /// trade-off.
     var healthKitWorkoutUUID: UUID?
+    /// v2.0 Q1: when the ride's CONTENT was last edited by the user
+    /// (trim, split, rename) — additive optional, `nil` for rides never
+    /// edited.  This is the conflict-detection hook for a future
+    /// web-side editor: with both clients able to modify a ride, the
+    /// server compares `editedAt` and keeps the newer edit instead of
+    /// letting an iOS re-upload silently clobber a web edit (or vice
+    /// versa).  See `docs/RIDE_EDIT_WEB_HANDOFF.md`.
+    var editedAt: Date?
 
     init(
         id: UUID = UUID(),
@@ -400,6 +408,7 @@ nonisolated struct Ride: Codable, Identifiable, Hashable {
         case closeCallEvents
         case otherEvents
         case healthKitWorkoutUUID
+        case editedAt
     }
 
     init(from decoder: Decoder) throws {
@@ -426,6 +435,8 @@ nonisolated struct Ride: Codable, Identifiable, Hashable {
         // this device (the common case for any ride from a build that
         // predates v1.5, or any v1.5+ ride with auto-export off).
         self.healthKitWorkoutUUID = try c.decodeIfPresent(UUID.self, forKey: .healthKitWorkoutUUID)
+        // editedAt missing → nil → never edited (v2.0 Q1 additive).
+        self.editedAt = try c.decodeIfPresent(Date.self, forKey: .editedAt)
     }
 
     var duration: TimeInterval { endedAt.timeIntervalSince(startedAt) }
@@ -495,6 +506,21 @@ nonisolated struct Ride: Codable, Identifiable, Hashable {
         // Health for the user to delete manually if they want; we don't
         // proactively reach into HealthKit to clean it up.
         copy.healthKitWorkoutUUID = nil
+        // v2.0 Q1: keep only user events inside the kept window.  The
+        // old behavior carried the FULL arrays through, so a trimmed
+        // ride retained close calls / other events located outside its
+        // own time range (rendering off-route pins and double-counting
+        // on the public maps once synced).  Brake events are nil'd —
+        // they're derived data; the caller re-runs detection on the
+        // new points.
+        copy.brakeEvents = nil
+        copy.closeCallEvents = closeCallEvents.map { calls in
+            calls.filter { $0.timestamp >= copy.startedAt && $0.timestamp <= copy.endedAt }
+        }
+        copy.otherEvents = otherEvents.map { events in
+            events.filter { $0.timestamp >= copy.startedAt && $0.timestamp <= copy.endedAt }
+        }
+        copy.editedAt = Date()
         return copy
     }
 
@@ -516,6 +542,30 @@ nonisolated struct Ride: Codable, Identifiable, Hashable {
         // both so the UI re-offers export and the badge is honest.
         first.healthKitWorkoutUUID = nil
         second.healthKitWorkoutUUID = nil
+        // v2.0 Q1: PARTITION user events between the halves by the
+        // split boundary.  The old `var second = self` copy carried the
+        // full arrays into BOTH halves — every close call / other
+        // event appeared twice (once per half), usually outside one
+        // half's time range entirely.  Brake events are nil'd on both;
+        // the caller re-runs detection per half.
+        let boundary = second.startedAt
+        first.brakeEvents = nil
+        second.brakeEvents = nil
+        first.closeCallEvents = closeCallEvents.map { calls in
+            calls.filter { $0.timestamp < boundary }
+        }
+        second.closeCallEvents = closeCallEvents.map { calls in
+            calls.filter { $0.timestamp >= boundary }
+        }
+        first.otherEvents = otherEvents.map { events in
+            events.filter { $0.timestamp < boundary }
+        }
+        second.otherEvents = otherEvents.map { events in
+            events.filter { $0.timestamp >= boundary }
+        }
+        let now = Date()
+        first.editedAt = now
+        second.editedAt = now
         return (first, second)
     }
 

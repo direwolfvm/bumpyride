@@ -419,6 +419,9 @@ final class RideStore {
     func rename(_ ride: Ride, to title: String) {
         var updated = ride
         updated.title = title
+        // v2.0 Q1: renames are user content edits — stamp editedAt so a
+        // future web-side editor can order conflicting edits.
+        updated.editedAt = Date()
         save(updated)
     }
 

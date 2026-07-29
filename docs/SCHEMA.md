@@ -54,6 +54,7 @@ Non-breaking additions (adding a new optional field, adding a new enum case) do 
 - `BrakeEvent.category` (optional string, iOS v1.7): user-supplied classification of the brake event. One of `safety`, `other`, `error`, `unknown`. See the BrakeEvent table for null semantics.
 - `CloseCall.category` (optional string, iOS v1.7): user-supplied classification of the close call. One of `vehicle`, `bike`, `pedestrian`. See the CloseCall table for null semantics.
 - `Ride.otherEvents` (optional array of `OtherEvent`, iOS v2.0): sparse list of user-reported "other" events (Blocked Lane + rider-defined custom kinds). `null` = ride predates the feature; `[]` = feature available, nothing logged. See the OtherEvent table — **note the `isCustom` privacy rule**.
+- `Ride.editedAt` (optional ISO-8601 date, iOS v2.0): when the ride's content was last edited by the user (trim, split, rename). `null` = never edited. Conflict-ordering hook for multi-client editing — see `RIDE_EDIT_WEB_HANDOFF.md`.
 
 ## `Ride` object
 
