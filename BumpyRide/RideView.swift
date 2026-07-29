@@ -223,7 +223,11 @@ struct RideView: View {
                     onDisappearAction: { }
                 ))
                 .sheet(isPresented: $showingSaveSheet, onDismiss: { pendingRide = nil }) { saveSheet }
-                .sheet(isPresented: $showingEditSheet) { editSheet }
+                // v2.0 Q2: the editor is a dedicated full-screen surface
+                // (map preview + range selection need the room a sheet
+                // doesn't give), entered from the ellipsis menu so the
+                // ride summary itself stays uncluttered.
+                .fullScreenCover(isPresented: $showingEditSheet) { editSheet }
                 // v2.0 M5: system share sheet for the ride photo.
                 .sheet(item: $sharePayload) { payload in
                     ActivityShareSheet(items: [payload.image])
@@ -291,6 +295,11 @@ struct RideView: View {
                     store.save(second.withDetectedBrakeEvents())
                 }
                 appState.loadedRide = updatedWithBrakes
+                // v2.0 Q2: content changed → the cached per-ride score
+                // is stale.  Drop it so the viewer re-fetches after the
+                // re-upload lands and the server re-scores.  (The split
+                // second half has a fresh id — nothing cached to drop.)
+                rideScoreCache.invalidate(updated.id)
             }
         }
     }
@@ -412,7 +421,7 @@ struct RideView: View {
 
                     Button {
                         showingEditSheet = true
-                    } label: { Label("Trim or Split", systemImage: "scissors") }
+                    } label: { Label("Edit Ride…", systemImage: "scissors") }
 
                     Button {
                         shareCurrentRide()

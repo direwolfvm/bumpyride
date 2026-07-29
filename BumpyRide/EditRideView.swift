@@ -1,9 +1,22 @@
 import SwiftUI
+import CoreLocation
 
-/// Modal editor for trimming or splitting a saved ride.  Two sliders define a
-/// `[startIdx, endIdx]` range over the ride's points.  "Trim" replaces the original
-/// ride with the slice; "Split at marker" returns both halves via `onCommit` so the
-/// caller can save them as separate rides.
+/// v2.0 Q2: dedicated full-screen ride editor — trim a ride down to a
+/// slice, or split it into two rides at a chosen point.  Presented as a
+/// `fullScreenCover` from the viewer's ellipsis menu ("Edit Ride…"),
+/// keeping the ride summary itself uncluttered.
+///
+/// Layout: a live map preview of what the edit will keep, the bumpiness
+/// chart with the kept range highlighted, a Trim/Split mode picker, and
+/// per-mode controls with live distance/duration readouts so the rider
+/// can see exactly what each half gets before committing.
+///
+/// Commit contract (unchanged from v1.x): `onCommit(updated, second)` —
+/// `second` is non-nil only for splits.  The caller re-runs brake
+/// detection on the new points, saves both, updates the viewer, and
+/// invalidates the score cache (content changed → server re-scores on
+/// re-upload).  The model layer (`Ride.trimmed` / `split`) partitions
+/// user events by the new time bounds and stamps `editedAt`.
 struct EditRideView: View {
     let original: Ride
     let settings: AppSettings
@@ -11,173 +24,262 @@ struct EditRideView: View {
 
     @Environment(\.dismiss) private var dismiss
 
+    private enum Mode: String, CaseIterable {
+        case trim = "Trim"
+        case split = "Split"
+    }
+
+    @State private var mode: Mode = .trim
     @State private var startIdx: Int = 0
     @State private var endIdx: Int = 0
-    @State private var scrubIdx: Int = 0
-    @State private var zoom: Double = 1.0
+    @State private var splitIdx: Int = 0
 
     private var maxIndex: Int { max(0, original.points.count - 1) }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 14) {
-                SessionBumpinessChart(
-                    points: original.points,
-                    scrubIndex: scrubIdx,
-                    zoom: zoom,
-                    settings: settings
-                )
-                .frame(height: 140)
+            ScrollView {
+                VStack(spacing: 14) {
+                    // Live preview of what the edit keeps: the trimmed
+                    // slice, or (in split mode) the full route with the
+                    // split point highlighted.
+                    RouteMapView(
+                        points: previewPoints,
+                        followUser: false,
+                        highlightIndex: mode == .split ? splitPreviewHighlight : nil,
+                        settings: settings,
+                        colorRoute: true
+                    )
+                    .frame(height: 280)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
 
-                trimPreview
-                    .frame(height: 18)
+                    SessionBumpinessChart(
+                        points: original.points,
+                        scrubIndex: mode == .trim ? startIdx : splitIdx,
+                        zoom: 1.0,
+                        settings: settings
+                    )
+                    .frame(height: 110)
 
-                scrubControls
+                    rangeBar
+                        .frame(height: 14)
 
-                Divider()
+                    Picker("Mode", selection: $mode) {
+                        ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
 
-                actionButtons
+                    if maxIndex >= 2 {
+                        switch mode {
+                        case .trim: trimControls
+                        case .split: splitControls
+                        }
+                    } else {
+                        Text("This ride is too short to edit.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, 12)
+                    }
 
-                Spacer()
+                    Text("Edits replace the synced copy on bumpyride.me — the ride re-uploads and is re-scored. Apple Health exports are not modified.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(16)
             }
-            .padding(16)
             .navigationTitle("Edit Ride")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Apply Trim") { applyTrim() }
-                        .disabled(startIdx == 0 && endIdx == maxIndex)
-                }
             }
             .onAppear {
                 endIdx = maxIndex
-                scrubIdx = 0
+                splitIdx = maxIndex / 2
             }
         }
     }
 
-    private var trimPreview: some View {
+    // MARK: - Preview helpers
+
+    /// Trim mode previews the kept slice; split mode previews the whole
+    /// route (both halves survive) with the boundary highlighted.
+    private var previewPoints: [RidePoint] {
+        switch mode {
+        case .trim:
+            guard maxIndex >= 1, startIdx <= endIdx else { return original.points }
+            return Array(original.points[startIdx...endIdx])
+        case .split:
+            return original.points
+        }
+    }
+
+    /// Highlight index into `previewPoints` for split mode (identical
+    /// indexing since split previews the full array).
+    private var splitPreviewHighlight: Int? {
+        original.points.indices.contains(splitIdx) ? splitIdx : nil
+    }
+
+    /// Kept-range bar under the chart: full-width track, tinted span
+    /// for the slice being kept (trim) or a boundary tick (split).
+    private var rangeBar: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 Capsule().fill(Color(.tertiarySystemFill))
                 if maxIndex > 0 {
-                    let startFrac = CGFloat(startIdx) / CGFloat(maxIndex)
-                    let endFrac = CGFloat(endIdx) / CGFloat(maxIndex)
-                    Capsule()
-                        .fill(Color.accentColor)
-                        .frame(width: max(2, (endFrac - startFrac) * geo.size.width))
-                        .offset(x: startFrac * geo.size.width)
+                    switch mode {
+                    case .trim:
+                        let startFrac = CGFloat(startIdx) / CGFloat(maxIndex)
+                        let endFrac = CGFloat(endIdx) / CGFloat(maxIndex)
+                        Capsule()
+                            .fill(Color.green)
+                            .frame(width: max(3, (endFrac - startFrac) * geo.size.width))
+                            .offset(x: startFrac * geo.size.width)
+                    case .split:
+                        let frac = CGFloat(splitIdx) / CGFloat(maxIndex)
+                        Capsule().fill(Color.blue)
+                            .frame(width: geo.size.width * frac)
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(Color.orange)
+                            .frame(width: 3)
+                            .offset(x: frac * geo.size.width - 1.5)
+                    }
                 }
             }
         }
     }
 
-    private var scrubControls: some View {
-        VStack(spacing: 10) {
-            HStack {
-                Text("Position")
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Text(timeLabel(for: scrubIdx))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            // Guard against degenerate slider ranges.  A 0- or 1-point
-            // ride yields maxIndex == 0, which makes Slider's
-            // 0...0 + step 1 range crash with "max stride must be
-            // positive."  See the same fix in RideView.scrubberSection.
-            // Trim/split don't make sense for such a ride anyway —
-            // there's no slice to take — so we hide the slider and let
-            // the user back out via Cancel.
-            if maxIndex >= 1 {
-                Slider(
-                    value: Binding(
-                        get: { Double(scrubIdx) },
-                        set: { scrubIdx = Int($0.rounded()) }
-                    ),
-                    in: 0...Double(maxIndex),
-                    step: 1
+    // MARK: - Trim
+
+    private var trimControls: some View {
+        VStack(spacing: 12) {
+            labeledSlider(
+                label: "Start",
+                time: timeLabel(startIdx),
+                value: Binding(
+                    get: { Double(startIdx) },
+                    set: { startIdx = min(Int($0.rounded()), endIdx) }
                 )
+            )
+            labeledSlider(
+                label: "End",
+                time: timeLabel(endIdx),
+                value: Binding(
+                    get: { Double(endIdx) },
+                    set: { endIdx = max(Int($0.rounded()), startIdx) }
+                )
+            )
 
-                HStack {
-                    Text("Zoom")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Slider(value: $zoom, in: 0.05...1.0)
-                }
-            } else {
-                Text("Single-point ride — nothing to trim or split.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 4)
+            Text("Keeping \(Formatters.distance(distanceMeters(from: startIdx, to: endIdx))) · \(durationLabel(from: startIdx, to: endIdx)) of \(Formatters.distance(original.distanceMeters)) · \(Formatters.duration(original.duration))")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button {
+                onCommit(original.trimmed(startIndex: startIdx, endIndex: endIdx), nil)
+                dismiss()
+            } label: {
+                Label("Apply Trim", systemImage: "crop")
+                    .font(.body.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 44)
             }
+            .buttonStyle(.borderedProminent)
+            .tint(.green)
+            .disabled(startIdx == 0 && endIdx == maxIndex)
         }
     }
 
-    private var actionButtons: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                Button {
-                    startIdx = min(scrubIdx, endIdx)
-                } label: {
-                    Label("Trim Before", systemImage: "arrow.left.to.line")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
+    // MARK: - Split
 
-                Button {
-                    endIdx = max(scrubIdx, startIdx)
-                } label: {
-                    Label("Trim After", systemImage: "arrow.right.to.line")
-                        .frame(maxWidth: .infinity)
+    private var splitControls: some View {
+        VStack(spacing: 12) {
+            labeledSlider(
+                label: "Split at",
+                time: timeLabel(splitIdx),
+                value: Binding(
+                    get: { Double(splitIdx) },
+                    set: { splitIdx = min(max(Int($0.rounded()), 1), max(1, maxIndex - 1)) }
+                )
+            )
+
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Part 1")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text("\(Formatters.distance(distanceMeters(from: 0, to: max(0, splitIdx - 1)))) · \(durationLabel(from: 0, to: max(0, splitIdx - 1)))")
+                        .font(.caption.monospacedDigit())
                 }
-                .buttonStyle(.bordered)
+                Divider().frame(height: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Part 2")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text("\(Formatters.distance(distanceMeters(from: splitIdx, to: maxIndex))) · \(durationLabel(from: splitIdx, to: maxIndex))")
+                        .font(.caption.monospacedDigit())
+                }
+                Spacer()
             }
 
             Button {
-                resetTrim()
+                guard let (first, second) = original.split(at: splitIdx) else { return }
+                onCommit(first, second)
+                dismiss()
             } label: {
-                Label("Reset Trim", systemImage: "arrow.counterclockwise")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .disabled(startIdx == 0 && endIdx == maxIndex)
-
-            Button {
-                splitHere()
-            } label: {
-                Label("Split at Position", systemImage: "scissors")
-                    .frame(maxWidth: .infinity)
+                Label("Split into Two Rides", systemImage: "scissors")
+                    .font(.body.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 44)
             }
             .buttonStyle(.borderedProminent)
             .tint(.orange)
-            .disabled(scrubIdx <= 0 || scrubIdx >= maxIndex)
+            .disabled(splitIdx <= 0 || splitIdx >= maxIndex)
         }
     }
 
-    private func resetTrim() {
-        startIdx = 0
-        endIdx = maxIndex
+    // MARK: - Shared controls
+
+    private func labeledSlider(label: String, time: String, value: Binding<Double>) -> some View {
+        VStack(spacing: 4) {
+            HStack {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(time)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: value, in: 0...Double(max(1, maxIndex)), step: 1)
+        }
     }
 
-    private func applyTrim() {
-        let updated = original.trimmed(startIndex: startIdx, endIndex: endIdx)
-        onCommit(updated, nil)
-        dismiss()
+    // MARK: - Readout math
+
+    /// Slice distance without materializing a points sub-array — this
+    /// runs on every slider tick.
+    private func distanceMeters(from lo: Int, to hi: Int) -> Double {
+        let pts = original.points
+        guard lo < hi, pts.indices.contains(lo), pts.indices.contains(hi) else { return 0 }
+        var total: Double = 0
+        for i in (lo + 1)...hi {
+            let a = CLLocation(latitude: pts[i - 1].latitude, longitude: pts[i - 1].longitude)
+            let b = CLLocation(latitude: pts[i].latitude, longitude: pts[i].longitude)
+            total += b.distance(from: a)
+        }
+        return total
     }
 
-    private func splitHere() {
-        guard let (first, second) = original.split(at: scrubIdx) else { return }
-        onCommit(first, second)
-        dismiss()
+    private func durationLabel(from lo: Int, to hi: Int) -> String {
+        let pts = original.points
+        guard pts.indices.contains(lo), pts.indices.contains(hi), lo <= hi else { return "—" }
+        return Formatters.duration(max(0, pts[hi].timestamp.timeIntervalSince(pts[lo].timestamp)))
     }
 
-    private func timeLabel(for idx: Int) -> String {
+    private func timeLabel(_ idx: Int) -> String {
         guard original.points.indices.contains(idx) else { return "—" }
         let t = original.points[idx].timestamp.timeIntervalSince(original.startedAt)
-        return "\(Formatters.duration(max(0, t))) / \(Formatters.duration(original.duration))"
+        return Formatters.duration(max(0, t))
     }
 }
