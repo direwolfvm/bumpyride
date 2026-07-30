@@ -801,6 +801,12 @@ private struct ClearDataSheet: View {
             // user-fixable failure mode they're most likely to hit.
             return "The server didn't accept that request — check that your email matches and try again."
         case .conflict: return "The server reported a conflict. Try again later."
+        case .editConflict:
+            // v2.0 R1: shouldn't surface here (edit conflicts are
+            // resolved automatically by the sync path adopting the
+            // server copy), but the enum is shared — keep the message
+            // honest if it ever leaks through.
+            return "This ride was edited on bumpyride.me — the newer copy will sync down automatically."
         case .decoding: return "Couldn't parse the server's response. Try again later."
         case .http(let status): return "Server returned an unexpected status (\(status))."
         }

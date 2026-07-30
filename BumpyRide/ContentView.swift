@@ -355,6 +355,16 @@ struct ContentView: View {
             syncCoordinator.onAchievementsAwarded = { awards in
                 showAchievementToast(awards)
             }
+            // v2.0 R1: a web-side edit won the editedAt conflict and the
+            // server copy was adopted locally.  The cached score is for
+            // the pre-edit content, and the viewer (if showing this
+            // ride) is rendering the stale copy.
+            syncCoordinator.onServerCopyAdopted = { [rideScoreCache] id in
+                rideScoreCache.invalidate(id)
+                if appState.loadedRide?.id == id {
+                    Task { appState.loadedRide = await store.fullRide(id: id) }
+                }
+            }
             // Connect RideStore save/delete to the sync queue + calibration recompute.
             // Idempotent — re-running just overwrites the same closure references.
             store.onRideSaved = { ride in

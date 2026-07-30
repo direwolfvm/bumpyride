@@ -303,9 +303,12 @@ final class WebAccount {
             throw WebSyncClient.ClientError.unauthorized
         }
         do {
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            return try decoder.decode(Ride.self, from: data)
+            // v2.0 R1: tolerant date decoding.  Rides the WEB editor has
+            // touched are rewritten as server-canonical JSON whose dates
+            // carry fractional seconds — strict .iso8601 rejected those,
+            // which would have failed both restore and pull-on-conflict
+            // adoption for any web-edited ride.
+            return try WebSyncClient.tolerantISO8601Decoder().decode(Ride.self, from: data)
         } catch {
             throw WebSyncClient.ClientError.decoding
         }

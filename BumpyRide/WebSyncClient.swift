@@ -17,6 +17,7 @@ actor WebSyncClient {
         case unauthorized            // 401
         case validationFailed        // 400 — payload doesn't match SCHEMA.md
         case conflict                // 409 — ride owned by a different account
+        case editConflict            // 409 — server copy has a newer editedAt (web edit); pull, don't push (v2.0 R1)
         case http(status: Int)       // any other non-2xx
         case transport               // URLSession threw (offline, DNS, TLS)
         case decoding                // 2xx with a body we can't parse
@@ -527,7 +528,7 @@ actor WebSyncClient {
     /// The server emits ISO-8601 with fractional seconds
     /// ("…T14:31:02.000Z"); Foundation's `.iso8601` strategy rejects
     /// the fraction.  Try fractional first, plain second.
-    nonisolated private static func tolerantISO8601Decoder() -> JSONDecoder {
+    nonisolated static func tolerantISO8601Decoder() -> JSONDecoder {
         let withFraction = ISO8601DateFormatter()
         withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let plain = ISO8601DateFormatter()

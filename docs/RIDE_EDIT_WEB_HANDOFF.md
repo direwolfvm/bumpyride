@@ -93,3 +93,74 @@ second half. The server implementation should filter events and
 re-detect brakes server-side (or accept the recomputed arrays from the
 web client) — whichever, the invariants above hold: events partition,
 points partition, ids behave as specified, `editedAt` stamps.
+
+---
+
+## Status: SHIPPED server-side (web, 2026-07-29)
+
+Everything above is now live. Concrete contracts iOS should code
+against:
+
+### `editedAt` storage + round-trip
+
+- Stored (`rides.edited_at`, migration 0021), clamped to server time
+  when in the future, and round-tripped by the restore endpoints
+  (`GET /api/sync/ride/[id]`, `GET /api/me/rides/[ride]/export`).
+  Omitted — not null — when the ride has never been edited, same
+  convention as `healthKitWorkoutUUID`.
+
+### Conflict rule (rule 1) — ACTIVE
+
+`POST /api/sync/ride` now rejects an upload whose `editedAt` is older
+than the stored copy's (missing/null = older than any timestamp):
+
+```json
+HTTP 409
+{ "error": "edit conflict", "serverEditedAt": "2026-07-29T18:04:11.000Z" }
+```
+
+Equal or newer `editedAt` is accepted as before. On this 409, iOS
+should re-fetch the server copy via the existing restore path instead
+of retrying the upload. (Distinguish from the other 409 on this
+endpoint, `{"error":"ride owned by another user"}`, by the `error`
+string / presence of `serverEditedAt`.)
+
+### Web editor (rule 2) — shipped
+
+`POST /api/me/rides/[ride]/edit` (session or bearer auth) with
+`{"op":"trim","startIdx":N,"endIdx":M}` (inclusive point-index range)
+or `{"op":"split","atIdx":N}` (part 1 = points [0, N-1], part 2 =
+[N, end]). Semantics as specced: ids behave as above, slice-bound
+`startedAt`/`endedAt`, `healthKitWorkoutUUID` cleared, per-ride
+score + achievements recomputed, split part 2 gets a server-generated
+UUID and "… (part 2)" title. One deviation the spec allows: the web
+editor FILTERS `brakeEvents` by the new time range rather than
+re-detecting (every kept event's points remain in the ride).
+
+Web edits (including **rename** on the ride page) stamp `editedAt`
+server-side and rewrite `content_hash` to a hash of the
+server-canonical JSON — which never equals a hash of client-side raw
+bytes, so `check`/`check-batch` will report such rides as `needed`.
+That is the designed signal: the device copy and server copy differ,
+and the server's `editedAt` wins via the 409 above until iOS adopts
+the pull-on-conflict handling.
+
+---
+
+## Status: iOS pull-on-conflict SHIPPED (v2.0 R1)
+
+iOS now implements the client half of the conflict rule:
+
+- The upload path distinguishes the two 409s by the presence of
+  `serverEditedAt` in the body.
+- On an edit conflict: the stale upload is dropped from the queue, the
+  server copy is fetched via `GET /api/sync/ride/{id}` and adopted
+  locally through a **quiet** persist (no re-enqueue — a loud save
+  would loop the 409), the cached per-ride score is invalidated, and
+  an open viewer showing that ride refreshes to the adopted copy.
+- Convergence note: the adopted copy re-uploads once on a later drain
+  (equal `editedAt` → accepted), settling `content_hash` back to
+  client-canonical bytes; checks match from then on.
+- Ride decode for restore/adoption is fractional-seconds tolerant —
+  required for server-canonical JSON from web-edited rides (strict
+  ISO-8601 parsing would have rejected them).

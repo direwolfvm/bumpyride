@@ -400,6 +400,15 @@ final class RideStore {
         return persistQuietly(ride)
     }
 
+    /// v2.0 R1: persist a server-authoritative copy of a ride —
+    /// the pull half of the editedAt conflict rule.  Quiet on purpose:
+    /// firing onRideSaved would re-enqueue the ride for upload and
+    /// loop the very 409 that triggered the adoption.
+    @discardableResult
+    func adoptServerCopy(_ ride: Ride) -> Bool {
+        persistQuietly(ride)
+    }
+
     /// Shared quiet-persist: write the file and refresh summary +
     /// caches WITHOUT firing onRideSaved.
     private func persistQuietly(_ ride: Ride) -> Bool {

@@ -88,6 +88,12 @@ final class SyncCoordinator {
     /// ContentView presents the toast.
     var onAchievementsAwarded: (([WebSyncClient.AwardedAchievement]) -> Void)?
 
+    /// v2.0 R1: fired after a 409 edit-conflict resolves by adopting the
+    /// server's newer copy of a ride.  ContentView invalidates the
+    /// per-ride score cache and refreshes the viewer if that ride is
+    /// open.
+    var onServerCopyAdopted: ((UUID) -> Void)?
+
     private var drainTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
     private var attempt: Int = 0
@@ -354,6 +360,24 @@ final class SyncCoordinator {
                 // can't fix it.  Drop from queue so we don't loop forever; log loudly.
                 log.error("400 from /api/sync/ride for \(next.id, privacy: .public) — dropping from queue")
                 queue.remove(next.id)
+            } catch WebSyncClient.ClientError.editConflict {
+                // v2.0 R1: the server copy carries a NEWER editedAt —
+                // someone edited this ride in the web editor.  Server
+                // wins: drop the stale upload and adopt the server copy
+                // locally, QUIETLY (a loud save would fire onRideSaved,
+                // re-enqueue the ride, and loop this 409 forever).
+                log.notice("409 edit conflict for \(next.id, privacy: .public) — adopting the server's newer copy")
+                queue.remove(next.id)
+                if let account = webAccount,
+                   let serverRide = try? await account.downloadRide(rideId: next.id) {
+                    store.adoptServerCopy(serverRide)
+                    onServerCopyAdopted?(next.id)
+                } else {
+                    // Fetch failed — local copy stays stale.  The next
+                    // drain's batch check reports the hash mismatch,
+                    // the upload 409s again, and adoption retries.
+                    log.error("Couldn't fetch server copy for \(next.id, privacy: .public); will reconcile on a later drain")
+                }
             } catch WebSyncClient.ClientError.conflict {
                 // Ride UUID is already owned by a different user account on the
                 // server.  Can't be resolved without manual intervention; drop and
@@ -416,6 +440,17 @@ final class SyncCoordinator {
         case 401:
             throw WebSyncClient.ClientError.unauthorized
         case 409:
+            // v2.0 R1: this endpoint has TWO 409s now.  The edit-conflict
+            // body carries `serverEditedAt` (per RIDE_EDIT_WEB_HANDOFF's
+            // shipped appendix); the owned-by-another-user body doesn't.
+            struct ConflictBody: Decodable {
+                let error: String?
+                let serverEditedAt: String?
+            }
+            if let conflict = try? JSONDecoder().decode(ConflictBody.self, from: responseBody),
+               conflict.serverEditedAt != nil {
+                throw WebSyncClient.ClientError.editConflict
+            }
             throw WebSyncClient.ClientError.conflict
         default:
             throw WebSyncClient.ClientError.http(status: status)
