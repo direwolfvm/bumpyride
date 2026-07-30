@@ -6,14 +6,22 @@ and acceptance criteria. Convention unchanged: when an item ships,
 append a Status appendix to its handoff doc (as done for
 `RIDE_EDIT_WEB_HANDOFF.md`) so the iOS side picks it up.
 
+> **2026-07-30: this queue is empty — every item below is shipped and
+> verified server-side.** Items 2/2a/3 had in fact shipped before this
+> work order was written (web PRs #63, #65, #66); their handoff docs
+> were missing the Status appendix, which is why they still read
+> "Pending" here. Appendices are now written, so the ledger and the
+> docs agree. Item 1 was a verification task and **passed with no data
+> loss found** — details under each item.
+
 ## Current handoff ledger
 
 | Handoff | Direction | Status |
 |---|---|---|
 | Achievements (`ACHIEVEMENTS_IOS_HANDOFF.md`) | web → iOS | **Shipped both sides** |
 | Ride edit + `editedAt` (`RIDE_EDIT_WEB_HANDOFF.md`) | iOS → web | **Shipped both sides** (incl. iOS pull-on-conflict) |
-| Other events (`OTHER_EVENTS_WEB_HANDOFF.md`) | iOS → web | **Pending** — items 1–2 below |
-| Batch sync check (`SYNC_BATCH_CHECK_WEB_HANDOFF.md`) | iOS → web | **Pending** — item 3 below |
+| Other events (`OTHER_EVENTS_WEB_HANDOFF.md`) | iOS → web | **Shipped both sides** — see doc appendix |
+| Batch sync check (`SYNC_BATCH_CHECK_WEB_HANDOFF.md`) | iOS → web | **Shipped both sides** — see doc appendix |
 
 ## 1. URGENT — verify `otherEvents` round-trip survival
 
@@ -31,6 +39,32 @@ restore** — user data loss, invisible until someone restores.
   the kind of code that drops unknown keys.
 - Zero new features required; this is a data-integrity check on
   existing behavior. **Do this first.**
+
+### ✅ DONE 2026-07-30 — no data loss found
+
+Storage is not canonicalized: ride payloads are stored **decomposed
+into relational tables**, and restore re-materializes them from
+columns. There is no whole-payload JSON schema that could drop unknown
+keys, and `otherEvents` has had dedicated storage since migration
+0018. Verified by upload → restore: 5/5 events returned, key sets and
+values identical, whole-payload key set complete.
+
+The instinct behind the warning was still right, and it caught
+something. The ride editor **does** build a server-canonical payload
+(to slice points and re-derive stats), and its `buildSlice` helper had
+exactly the fixed field list the item describes. It happened to list
+every field that exists today, so nothing was being lost — but the
+next additive field would have been silently dropped on any web
+trim/split. Rewritten to carry-by-default (spread the loaded payload,
+override only what an edit must change: slice bounds, and the
+deliberate `healthKitWorkoutUUID` clear / `editedAt` restamp). A
+regression test now asserts no payload, point, or event key is lost
+across a trim and a split, so future additive fields are covered
+without anyone remembering to update the editor.
+
+One documented normalization: restored timestamps are UTC ISO-8601
+with milliseconds (`...T10:01:00.000Z`) whatever offset form was
+uploaded. Same instant — key-complete, not byte-identical.
 
 ## 2. Other events — ingest + privacy rule
 
@@ -52,6 +86,17 @@ Full contract: `OTHER_EVENTS_WEB_HANDOFF.md`.
   kind + `isCustom: false` stored as private; no custom kind ever
   served from a public endpoint.
 
+### ✅ DONE — shipped in web PR #63 (migration 0018), re-verified 2026-07-30
+
+All three acceptance criteria pass. The implementation keys privacy on
+a **second, server-computed** column (`is_public_eligible =
+registry(kind) ∧ NOT isCustom`) while storing the client's `is_custom`
+verbatim — so skew degrades toward privacy *without* corrupting the
+round-trip item 1 depends on. Verified: `blocked-lane`/`false` →
+eligible; `Broken glass`/`true` → private; `future-kind-v9`/`false` →
+stored `false`, published never. No `/api/public/` route reads the
+table at all today. Full contract in the handoff doc's appendix.
+
 ### 2a. Follow-on: `lane-scout` achievement data source
 
 The achievements registry already defines `lane-scout` (safety, per
@@ -60,6 +105,15 @@ only award once the `other_events` table exists. When item 2 lands,
 wire the achievement's metric to count built-in (`is_custom = false`)
 `blocked-lane` rows per ride, and backfill awards over eligible rides
 like the other per-ride achievements.
+
+### ✅ DONE — shipped in web PR #66, re-verified 2026-07-30
+
+Wired and backfilled (migration 0020) with the rest of the registry.
+One refinement on the spec: the metric filters on `is_public_eligible`
+rather than `NOT is_custom`, which additionally excludes registry-skew
+events — an event we can't confirm is a real blocked-lane report
+shouldn't earn safety points. Verified: 3 built-in + 1 custom + 1 skew
+awards exactly 200.
 
 ## 3. Batch sync-status check
 
@@ -80,9 +134,27 @@ Full contract: `SYNC_BATCH_CHECK_WEB_HANDOFF.md`.
 - Acceptance: a 75-ride no-op drain makes 1 check request instead of
   75; pruned rides don't re-upload.
 
+### ✅ DONE — shipped in web PR #65, re-verified 2026-07-30
+
+Acceptance verified directly: a 75-entry batch resolves in one request
+and the in-sync ride is absent from `needed`. Cap enforced at 500 (501
+→ 400). Foreign-owned ids land in `needed` as specified. One behavior
+worth knowing on the client: repeated ids inside a single request are
+deduped, **first entry wins**. The web-edit / `content_hash`
+interaction you flagged behaves exactly as you predicted — see the
+handoff doc's appendix.
+
 ## Priority order
 
 1. **Item 1** — cheap verification, guards against silent data loss.
 2. **Item 2** — unlocks community value of Blocked Lane + the
    `lane-scout` achievement (2a).
 3. **Item 3** — pure efficiency; whenever convenient.
+
+## Next up
+
+Nothing blocking. The one deferred piece, called out in item 2 and
+left deliberately un-built, is the **public tile layer for built-in
+other-event kinds** (`blocked-lane` today) — same sharing gates as the
+close-calls layer, filtering on `is_public_eligible`. Say the word and
+it can follow the brakes/close-calls layer pattern.

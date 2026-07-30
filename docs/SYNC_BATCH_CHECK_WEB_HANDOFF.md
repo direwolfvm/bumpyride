@@ -75,3 +75,38 @@ front-loaded), sends one batch request, prunes everything not in
 `needed`, and skips the in-loop per-ride checks for that drain.
 User-initiated rides are excluded — they always upload, since the
 local copy is the source of truth.
+
+---
+
+## Status: SHIPPED (web, 2026-07-30)
+
+`POST /api/sync/ride/check-batch` is live and matches this contract.
+Re-verified against the acceptance criteria on 2026-07-30.
+
+- `{rides: [{rideId, hash}]}` → `{needed: [ids]}`. Bearer auth.
+- One indexed query over the caller's own rides (`user_id` +
+  `ride_uuid = ANY`), no payload reads, as sketched.
+- `needed` = missing **or** foreign-owned **or** null stored hash
+  (pre-migration-0015 rides) **or** hash mismatch. Foreign-owned ids
+  are reported `needed` rather than 404/403, so the endpoint leaks no
+  existence information; the upload path's 409 still owns conflict
+  signaling.
+- `rideId` is accepted case-insensitively and echoed lowercase; `hash`
+  must be 64 lowercase hex chars.
+- Cap: 500 entries. 501 → `400`. Empty array → `{needed: []}` without
+  touching the DB.
+- Repeated ids within one request are deduped, **first entry wins**.
+
+Acceptance verified: a 75-ride drain resolves in a single request, and
+an in-sync ride is correctly absent from `needed` (no re-upload).
+
+### Interaction with web-side ride edits
+
+As anticipated in the work order: rides edited on the web (trim,
+split, rename) carry a **server-canonical** `content_hash` — a hash of
+the server's own JSON serialization, which never equals a hash of the
+client's raw bytes. Such rides therefore always report as `needed`.
+That is correct and intended: the device copy really is stale. When
+iOS then uploads, the `editedAt` conflict rule returns `409 {"error":
+"edit conflict", "serverEditedAt": ...}` and the client pulls the
+server copy instead. See `RIDE_EDIT_WEB_HANDOFF.md`.
