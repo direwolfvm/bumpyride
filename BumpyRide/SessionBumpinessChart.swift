@@ -6,7 +6,15 @@ import SwiftUI
 struct SessionBumpinessChart: View {
     var points: [RidePoint]
     var scrubIndex: Int
-    var zoom: Double
+    /// v2.0 S2: the visible span as fractions of the ride, `0...1`.
+    /// Replaces the old single `zoom` width — that could only set how
+    /// WIDE the window was (anchored around the scrubber), so the
+    /// left edge was effectively pinned to the ride start and you
+    /// couldn't frame, say, just the last mile.  Two explicit edges
+    /// make both ends directly settable.  Defaults show everything,
+    /// which is what non-interactive callers (the editor) want.
+    var windowStart: Double = 0
+    var windowEnd: Double = 1
     var settings: AppSettings
 
     var body: some View {
@@ -84,24 +92,27 @@ struct SessionBumpinessChart: View {
         return points[scrubIndex]
     }
 
+    /// Fewest points worth charting — below this the bars are noise.
+    /// The caller's slider clamping keeps the window at least this
+    /// wide; this is the backstop.
+    static let minVisiblePoints = 4
+
+    /// Map the fractional window onto point indices.  No scrubber
+    /// involvement — the window is whatever the caller framed, which
+    /// is the whole point of S2 (the scrub line still draws when it
+    /// happens to fall inside).
     private func visibleWindow() -> Range<Int> {
         let n = points.count
         guard n > 0 else { return 0..<0 }
-        let z = min(1.0, max(0.05, zoom))
-        let visibleCount = max(4, Int((Double(n) * z).rounded()))
-        if visibleCount >= n { return 0..<n }
-        // Center on the scrubber, then clamp the LOWER bound into
-        // [0, n - visibleCount] once.  The old version applied the
-        // `lower < 0` and `upper > n` corrections in sequence, so the
-        // tail clamp could override the head clamp and re-pin a
-        // start-of-ride window to the end of the ride — the window
-        // effectively wouldn't travel to the beginning.  Clamping the
-        // origin (rather than both edges independently) can't
-        // contradict itself, and keeps the window exactly
-        // `visibleCount` wide everywhere.
-        let half = visibleCount / 2
-        let lower = min(max(0, scrubIndex - half), n - visibleCount)
-        return lower..<(lower + visibleCount)
+        guard n > Self.minVisiblePoints else { return 0..<n }
+        let lo = min(max(0, windowStart), 1)
+        let hi = min(max(lo, windowEnd), 1)
+        let last = Double(n - 1)
+        var lower = Int((last * lo).rounded())
+        var upper = Int((last * hi).rounded()) + 1  // exclusive
+        lower = max(0, min(lower, n - Self.minVisiblePoints))
+        upper = max(lower + Self.minVisiblePoints, min(upper, n))
+        return lower..<upper
     }
 
     private func gridLines(in size: CGSize) -> some View {

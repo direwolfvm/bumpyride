@@ -47,7 +47,11 @@ struct RideView: View {
     @State private var editableTitle: String = ""
 
     @State private var scrubIndex: Int = 0
-    @State private var zoom: Double = 1.0
+    // v2.0 S2: visible chart span as fractions of the ride.  Two
+    // independent edges (was: a single `zoom` width, which pinned the
+    // window's left edge to the ride start).
+    @State private var windowStart: Double = 0
+    @State private var windowEnd: Double = 1
 
     // v1.7 K21 live-map controls.  Default off / north-up; not persisted —
     // each ride starts clean (per the chosen design).
@@ -219,7 +223,7 @@ struct RideView: View {
                         recorder.requestPermissions()
                     },
                     onStateChange: { _ in },
-                    onLoadedChange: { scrubIndex = 0; zoom = 1.0 },
+                    onLoadedChange: { scrubIndex = 0; windowStart = 0; windowEnd = 1 },
                     onDisappearAction: { }
                 ))
                 .sheet(isPresented: $showingSaveSheet, onDismiss: { pendingRide = nil }) { saveSheet }
@@ -1612,7 +1616,8 @@ struct RideView: View {
             SessionBumpinessChart(
                 points: ride.points,
                 scrubIndex: clampedScrub(for: ride),
-                zoom: zoom,
+                windowStart: windowStart,
+                windowEnd: windowEnd,
                 settings: settings
             )
         case .brakes:
@@ -2038,38 +2043,54 @@ struct RideView: View {
                     in: 0...Double(maxIdx),
                     step: 1
                 )
-                HStack(spacing: 8) {
-                    Image(systemName: "arrow.left.and.right.square")
-                        .foregroundStyle(.secondary)
-                    Slider(value: $zoom, in: 0.05...1.0)
-                    Text(zoomLabel)
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 44, alignment: .trailing)
-                }
-                // The zoom window is centered on the scrubber, so
-                // moving the view meant dragging the scrub slider —
-                // fine for "look near here", useless for "show me the
-                // start."  These page the window a screenful at a
-                // time (and jump to either end), which is what you
-                // actually want when zoomed in.
-                if zoom < 0.999 {
+                // v2.0 S2: two-handle view window.  Each edge is set
+                // independently, so you can frame any span — the last
+                // mile, a middle stretch — not just "how wide, centered
+                // near the scrubber."
+                VStack(spacing: 4) {
                     HStack(spacing: 8) {
-                        windowButton("backward.end.fill", "Jump to ride start") {
-                            scrubIndex = 0
-                        }
-                        windowButton("chevron.left", "Previous window") {
-                            scrubIndex = max(0, clampedScrub(for: ride) - visibleWindowCount(for: ride))
-                        }
-                        Text(windowPositionLabel(for: ride))
+                        Image(systemName: "arrow.left.and.right.square")
+                            .foregroundStyle(.secondary)
+                        Text(windowSpanLabel(for: ride))
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                        windowButton("chevron.right", "Next window") {
-                            scrubIndex = min(maxIdx, clampedScrub(for: ride) + visibleWindowCount(for: ride))
+                        Spacer()
+                        if isWindowed {
+                            Button("Reset") {
+                                windowStart = 0
+                                windowEnd = 1
+                            }
+                            .font(.caption2)
                         }
-                        windowButton("forward.end.fill", "Jump to ride end") {
-                            scrubIndex = maxIdx
+                    }
+                    // Mutually clamped so the handles can't cross and
+                    // the span stays at least minVisiblePoints wide.
+                    Slider(
+                        value: Binding(
+                            get: { windowStart },
+                            set: { windowStart = min($0, windowEnd - minWindowFraction(for: ride)) }
+                        ),
+                        in: 0...1
+                    )
+                    .accessibilityLabel("View window start")
+                    Slider(
+                        value: Binding(
+                            get: { windowEnd },
+                            set: { windowEnd = max($0, windowStart + minWindowFraction(for: ride)) }
+                        ),
+                        in: 0...1
+                    )
+                    .accessibilityLabel("View window end")
+                    // Pan the framed span without re-dragging both
+                    // handles — width preserved, scrubber pulled along
+                    // so the map keeps showing what's charted.
+                    if isWindowed {
+                        HStack(spacing: 8) {
+                            windowButton("backward.end.fill", "Jump to ride start") { panWindow(toStart: true) }
+                            windowButton("chevron.left", "Pan back") { panWindow(by: -1, ride: ride) }
+                            Spacer()
+                            windowButton("chevron.right", "Pan forward") { panWindow(by: 1, ride: ride) }
+                            windowButton("forward.end.fill", "Jump to ride end") { panWindow(toStart: false) }
                         }
                     }
                 }
@@ -2089,12 +2110,12 @@ struct RideView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    private var zoomLabel: String {
-        if zoom >= 0.999 { return "All" }
-        return String(format: "%.0f%%", zoom * 100)
+    /// True when the chart is showing less than the whole ride.
+    private var isWindowed: Bool {
+        windowStart > 0.001 || windowEnd < 0.999
     }
 
-    /// Compact button for the zoomed-window navigation row.
+    /// Compact button for the window pan row.
     private func windowButton(_ systemImage: String, _ label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
@@ -2105,26 +2126,53 @@ struct RideView: View {
         .accessibilityLabel(label)
     }
 
-    /// How many points the chart is currently showing — mirrors
-    /// `SessionBumpinessChart.visibleWindow`'s sizing so paging moves
-    /// by exactly one screenful.
-    private func visibleWindowCount(for ride: Ride) -> Int {
-        let n = ride.points.count
-        guard n > 0 else { return 1 }
-        let z = min(1.0, max(0.05, zoom))
-        return min(n, max(4, Int((Double(n) * z).rounded())))
+    /// Smallest fraction of the ride the window may cover — mirrors
+    /// `SessionBumpinessChart.minVisiblePoints` so the slider clamping
+    /// and the chart's backstop agree.
+    private func minWindowFraction(for ride: Ride) -> Double {
+        let n = max(1, ride.points.count)
+        return min(1.0, Double(SessionBumpinessChart.minVisiblePoints) / Double(n))
     }
 
-    /// "2:10–5:44" — the time span the zoomed chart currently covers,
-    /// so the rider knows where in the ride they're looking.
-    private func windowPositionLabel(for ride: Ride) -> String {
+    /// Shift the framed span by whole windows, preserving its width.
+    private func panWindow(by direction: Int, ride: Ride) {
+        let width = windowEnd - windowStart
+        var start = windowStart + Double(direction) * width
+        start = min(max(0, start), 1 - width)
+        windowStart = start
+        windowEnd = start + width
+        pullScrubIntoWindow(ride: ride)
+    }
+
+    /// Jump the span to either end of the ride, preserving its width.
+    private func panWindow(toStart: Bool) {
+        let width = windowEnd - windowStart
+        windowStart = toStart ? 0 : 1 - width
+        windowEnd = windowStart + width
+        if let ride = appState.loadedRide { pullScrubIntoWindow(ride: ride) }
+    }
+
+    /// Keep the scrubber inside the framed span after a pan, so the
+    /// map and the "current point" readout stay consistent with what
+    /// the chart is showing.
+    private func pullScrubIntoWindow(ride: Ride) {
+        let n = ride.points.count
+        guard n > 1 else { return }
+        let last = Double(n - 1)
+        let lower = Int((last * windowStart).rounded())
+        let upper = Int((last * windowEnd).rounded())
+        scrubIndex = min(max(scrubIndex, lower), upper)
+    }
+
+    /// "2:10–5:44" — the span the chart currently covers, so the rider
+    /// knows where in the ride they're looking.
+    private func windowSpanLabel(for ride: Ride) -> String {
         let pts = ride.points
         let n = pts.count
-        guard n > 0 else { return "—" }
-        let count = visibleWindowCount(for: ride)
-        let half = count / 2
-        let lower = min(max(0, clampedScrub(for: ride) - half), max(0, n - count))
-        let upper = min(n - 1, lower + count - 1)
+        guard n > 1 else { return "—" }
+        let last = Double(n - 1)
+        let lower = min(max(0, Int((last * windowStart).rounded())), n - 1)
+        let upper = min(max(lower, Int((last * windowEnd).rounded())), n - 1)
         let from = pts[lower].timestamp.timeIntervalSince(ride.startedAt)
         let to = pts[upper].timestamp.timeIntervalSince(ride.startedAt)
         return "\(Formatters.duration(max(0, from)))–\(Formatters.duration(max(0, to)))"

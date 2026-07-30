@@ -56,7 +56,6 @@ struct EditRideView: View {
                     SessionBumpinessChart(
                         points: original.points,
                         scrubIndex: mode == .trim ? startIdx : splitIdx,
-                        zoom: 1.0,
                         settings: settings
                     )
                     .frame(height: 110)
