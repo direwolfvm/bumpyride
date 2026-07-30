@@ -159,3 +159,76 @@ correctly excluded), tiers 1/3/5 → 100/200/400. Backfilled over
 eligible rides by migration 0020 along with the rest of the registry.
 Verified: a ride with 3 built-in reports + 1 custom + 1 skew awards
 exactly 200.
+
+---
+
+## Status update: public tile layer SHIPPED (web, 2026-07-30)
+
+The "Future (not in this handoff)" item — a public tile layer for
+built-in kinds — is now built, on both the public and personal maps.
+Nothing is required of iOS; this is a web-surface addition over data
+the app already uploads.
+
+### Surfaces
+
+| Endpoint | Who | Shows |
+|---|---|---|
+| `/api/tiles/public/other-events/{z}/{x}/{y}` | anyone | per-cell counts, built-in kinds only |
+| `/api/public/other-events/events?bbox=` | anyone | individual reports as GeoJSON, built-in kinds only |
+| `/api/tiles/user/other-events/{z}/{x}/{y}` | owner | per-cell counts, **all** their kinds |
+| `/api/me/other-events/events?bbox=` | owner | individual events, **all** their kinds |
+| `/api/me/other-events/kinds` | owner | their distinct kinds + counts (drives the picker) |
+
+Shared query axes match the brakes / close-calls layers:
+`?mode=all|3mo|last10`, `?percentile=all|top10|bottom10`,
+`?norm=raw|freq`, plus `?rides=` on the personal ones.
+
+### New: the kind axis
+
+Other events are the first layer with a kind dimension, so every
+surface takes `?kind=<kind>|all` (default `all`). On public surfaces
+the value is validated against the built-in registry and anything
+unrecognised — including a custom label — silently falls back to "all
+built-in kinds". The kind filter can only ever *narrow* a result set;
+it is never the thing keeping data private.
+
+**When you add a kind to `OtherEvent.builtinKinds`, tell us.** Adding
+it to the server registry lights it up across all five surfaces and
+the map pickers with no other code change — but until the server knows
+it, events of that kind arrive as registry skew and stay private
+(correctly, but invisibly). The web picker stays hidden while only one
+built-in kind exists, since "All kinds" and "Blocked lane" would be
+the same view.
+
+### Privacy — two independent gates on public surfaces
+
+1. **Per-event**: `is_public_eligible` only, enforced through a single
+   shared SQL predicate (`publicOtherEventsPredicate`) that both public
+   routes call, so a future public surface can't forget it.
+2. **Per-cell**: the same ≥3-distinct-sharing-users gate the close-call
+   layer uses. Without it a lone rider's report would be exposed at a
+   verbatim lat/lon — worse than the aggregate.
+
+Public GeoJSON features carry `timestamp` and `kind` only — never
+`isCustom`, and never a user reference.
+
+**Worth knowing about that second gate:** it counts users who *logged
+an event* in the cell, not users who rode through it — matching close
+calls exactly, as specced. It's strict: three different riders must
+report at the same 20 ft cell before anything publishes. Expect the
+public layer to stay sparse until reporting density builds up. The
+personal map has no such gate, so a rider always sees their own
+reports immediately. If you'd rather have a looser public rule for
+infrastructure reports (say, ≥3 riders *rode* the cell and ≥1
+reported), that's a deliberate policy change we should make together —
+flag it and we'll spec it.
+
+### Personal map shows custom kinds
+
+"Custom events are owner-only forever" restricts *cross-account*
+exposure; it was never meant to hide a rider's notes from their own
+map. The personal surfaces therefore return every kind the rider
+logged, with the wire `isCustom` intact on each feature, and the kind
+picker lists their own labels. Verified: rider A's custom label is
+absent from every public response and from rider B's personal
+surfaces, while remaining visible to rider A.
