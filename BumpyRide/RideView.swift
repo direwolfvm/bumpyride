@@ -2047,6 +2047,32 @@ struct RideView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 44, alignment: .trailing)
                 }
+                // The zoom window is centered on the scrubber, so
+                // moving the view meant dragging the scrub slider —
+                // fine for "look near here", useless for "show me the
+                // start."  These page the window a screenful at a
+                // time (and jump to either end), which is what you
+                // actually want when zoomed in.
+                if zoom < 0.999 {
+                    HStack(spacing: 8) {
+                        windowButton("backward.end.fill", "Jump to ride start") {
+                            scrubIndex = 0
+                        }
+                        windowButton("chevron.left", "Previous window") {
+                            scrubIndex = max(0, clampedScrub(for: ride) - visibleWindowCount(for: ride))
+                        }
+                        Text(windowPositionLabel(for: ride))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                        windowButton("chevron.right", "Next window") {
+                            scrubIndex = min(maxIdx, clampedScrub(for: ride) + visibleWindowCount(for: ride))
+                        }
+                        windowButton("forward.end.fill", "Jump to ride end") {
+                            scrubIndex = maxIdx
+                        }
+                    }
+                }
             } else {
                 // Single-point ride — show a minimal informative
                 // placeholder instead of broken scrub controls.
@@ -2066,6 +2092,42 @@ struct RideView: View {
     private var zoomLabel: String {
         if zoom >= 0.999 { return "All" }
         return String(format: "%.0f%%", zoom * 100)
+    }
+
+    /// Compact button for the zoomed-window navigation row.
+    private func windowButton(_ systemImage: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.caption.weight(.semibold))
+                .frame(width: 32, height: 28)
+        }
+        .buttonStyle(.bordered)
+        .accessibilityLabel(label)
+    }
+
+    /// How many points the chart is currently showing — mirrors
+    /// `SessionBumpinessChart.visibleWindow`'s sizing so paging moves
+    /// by exactly one screenful.
+    private func visibleWindowCount(for ride: Ride) -> Int {
+        let n = ride.points.count
+        guard n > 0 else { return 1 }
+        let z = min(1.0, max(0.05, zoom))
+        return min(n, max(4, Int((Double(n) * z).rounded())))
+    }
+
+    /// "2:10–5:44" — the time span the zoomed chart currently covers,
+    /// so the rider knows where in the ride they're looking.
+    private func windowPositionLabel(for ride: Ride) -> String {
+        let pts = ride.points
+        let n = pts.count
+        guard n > 0 else { return "—" }
+        let count = visibleWindowCount(for: ride)
+        let half = count / 2
+        let lower = min(max(0, clampedScrub(for: ride) - half), max(0, n - count))
+        let upper = min(n - 1, lower + count - 1)
+        let from = pts[lower].timestamp.timeIntervalSince(ride.startedAt)
+        let to = pts[upper].timestamp.timeIntervalSince(ride.startedAt)
+        return "\(Formatters.duration(max(0, from)))–\(Formatters.duration(max(0, to)))"
     }
 
     private func scrubTimeLabel(for ride: Ride) -> String {

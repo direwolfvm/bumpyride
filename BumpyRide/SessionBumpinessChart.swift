@@ -90,12 +90,18 @@ struct SessionBumpinessChart: View {
         let z = min(1.0, max(0.05, zoom))
         let visibleCount = max(4, Int((Double(n) * z).rounded()))
         if visibleCount >= n { return 0..<n }
+        // Center on the scrubber, then clamp the LOWER bound into
+        // [0, n - visibleCount] once.  The old version applied the
+        // `lower < 0` and `upper > n` corrections in sequence, so the
+        // tail clamp could override the head clamp and re-pin a
+        // start-of-ride window to the end of the ride — the window
+        // effectively wouldn't travel to the beginning.  Clamping the
+        // origin (rather than both edges independently) can't
+        // contradict itself, and keeps the window exactly
+        // `visibleCount` wide everywhere.
         let half = visibleCount / 2
-        var lower = scrubIndex - half
-        var upper = lower + visibleCount
-        if lower < 0 { lower = 0; upper = visibleCount }
-        if upper > n { upper = n; lower = n - visibleCount }
-        return lower..<upper
+        let lower = min(max(0, scrubIndex - half), n - visibleCount)
+        return lower..<(lower + visibleCount)
     }
 
     private func gridLines(in size: CGSize) -> some View {
