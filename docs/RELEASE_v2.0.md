@@ -142,8 +142,8 @@ community maps.
 ## 3. App Review Information — Review Notes
 
 > **Budget: 4,000 characters** (App Store Connect's hard limit).
-> The block below measures **3,756** — 244 to spare. Re-measure if
-> you edit it:
+> The block below measures **3,895** — only ~105 to spare, so any
+> addition needs a matching cut. Re-measure after editing:
 > `python3 -c "import re,sys;print(len(re.findall(r'\`\`\`\n(.*?)\n\`\`\`',open('docs/RELEASE_v2.0.md').read().split('## 3.')[1],re.S)[0]))"`
 >
 > Written around what review actually adjudicates — permission
@@ -240,11 +240,11 @@ window and a token is returned to the app — no password is ever
 entered in the app. Users can unpair, clear all server data, or
 delete their account from Settings.
 
-TEST ACCOUNT
-
-A demo bumpyride.me account for testing sync, restore, scoring,
-and achievements is provided in the App Review credentials
-fields.
+No account is required to review the app. Recording, the bump
+map, event reporting, ride editing, Apple Health, and the watch
+app all work fully offline and signed-out; the account only adds
+off-device backup, scoring, and community maps. That's why no
+test credentials are attached.
 
 CONTACT
 
