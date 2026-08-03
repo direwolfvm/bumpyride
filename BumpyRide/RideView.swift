@@ -153,6 +153,32 @@ struct RideView: View {
     /// together.")
     @State private var activeBrakeCategorization: BrakeEvent?
 
+    /// v2.0 S3: true from the instant we clear `activeBrakeCategorization`
+    /// until the dismissal has fully settled.  **This is the fix for the
+    /// stuck-sheet bug L5 only half-closed.**
+    ///
+    /// L5 stopped `onDismiss` from promoting the next brake too early,
+    /// but `updateLiveBrakes()` — which runs at 1 Hz — calls
+    /// `presentNextBrakeIfIdle()` too, and its only guard was
+    /// "item == nil".  That's *already* true during a dismissal, so a
+    /// tick landing in the ~350 ms dismissal window re-populated the
+    /// item mid-flight: the same identity swap, through the other door.
+    /// SwiftUI then kept the stale sheet on screen with its `committed`
+    /// flag already set — every tap a no-op, its timer already
+    /// cancelled.  Hence "tapped Other and it didn't drop" and "it
+    /// never disappeared on its own."
+    @State private var brakeSheetIsSettling: Bool = false
+
+    /// Invalidates a stale settle-watchdog when a newer dismissal
+    /// starts (same generation-counter pattern as the ride banners).
+    @State private var brakeSettleGeneration: Int = 0
+
+    /// v2.0 S3 instrumentation.  Brake-sheet lifecycle is hard to
+    /// reproduce on demand (it needs real detections arriving close
+    /// together mid-ride), so every transition is logged to the
+    /// sidecar under one greppable category.
+    nonisolated private static let brakeLog = DebugLog(category: "brake-sheet")
+
     /// v1.7 J3: close call awaiting categorization from the live
     /// tap path.  Drives the close-call categorization sheet's
     /// item binding.  Single-slot rather than a queue because the
@@ -740,21 +766,31 @@ struct RideView: View {
             // Give the dismissal animation a beat to settle before
             // presenting the next sheet — presenting during the
             // teardown is exactly the identity-swap glitch we're
-            // avoiding.
+            // avoiding.  `brakeSheetIsSettling` (S3) holds every OTHER
+            // promotion path off until this completes.
+            Self.brakeLog.info("onDismiss fired")
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 350_000_000)
+                brakeSheetIsSettling = false
                 presentNextBrakeIfIdle()
             }
         }) { brake in
             BrakeCategorizationSheet(brake: brake) { category in
+                Self.brakeLog.info("commit id=\(brake.id) category=\(category?.rawValue ?? "timeout")")
                 if let category {
                     recorder.setBrakeCategory(category, at: brake.timestamp)
                 }
                 // nil (timer expired) leaves the brake uncategorized.
-                // Clearing the item dismisses; onDismiss promotes the
-                // next queued brake, if any.
-                activeBrakeCategorization = nil
+                dismissActiveBrakeSheet(reason: category.map { "chose \($0.rawValue)" } ?? "timeout")
             }
+            // S3: force a fresh view identity per brake.  `.sheet(item:)`
+            // is *supposed* to rebuild on identity change, but the
+            // stuck-sheet reports are consistent with SwiftUI reusing
+            // the view — which would carry the previous brake's
+            // `committed = true` into the new sheet, making every
+            // button a no-op from the moment it appeared.  An explicit
+            // .id() guarantees fresh @State even if that happens.
+            .id(brake.id)
         }
         // v1.7 J3: close-call categorization sheet.  Single-slot
         // (not a queue) because each modal blocks further taps; the
@@ -815,8 +851,40 @@ struct RideView: View {
     /// discipline is what prevents the stuck-sheet identity-swap
     /// glitch — see `activeBrakeCategorization`'s doc.
     private func presentNextBrakeIfIdle() {
-        guard activeBrakeCategorization == nil, !pendingBrakeQueue.isEmpty else { return }
-        activeBrakeCategorization = pendingBrakeQueue.removeFirst()
+        guard !pendingBrakeQueue.isEmpty else { return }
+        // The settling guard is the S3 fix — see brakeSheetIsSettling.
+        guard activeBrakeCategorization == nil else {
+            Self.brakeLog.debug("present skipped: a sheet is already up (queue=\(pendingBrakeQueue.count))")
+            return
+        }
+        guard !brakeSheetIsSettling else {
+            Self.brakeLog.debug("present skipped: previous sheet still dismissing (queue=\(pendingBrakeQueue.count))")
+            return
+        }
+        let next = pendingBrakeQueue.removeFirst()
+        Self.brakeLog.info("present brake id=\(next.id) peak=\(String(format: "%.2f", next.peakDecelerationMPS2)) queue-remaining=\(pendingBrakeQueue.count)")
+        activeBrakeCategorization = next
+    }
+
+    /// Clear the active brake and enter the settling window.  Single
+    /// funnel for every dismissal cause (button, Skip, timeout) so the
+    /// guard can't be bypassed.
+    private func dismissActiveBrakeSheet(reason: String) {
+        Self.brakeLog.info("dismissing brake sheet (\(reason))")
+        brakeSheetIsSettling = true
+        activeBrakeCategorization = nil
+        // Watchdog: if onDismiss never arrives (the SwiftUI edge case
+        // this whole mechanism exists to survive), don't strand the
+        // queue in a permanently-settling state.
+        brakeSettleGeneration += 1
+        let generation = brakeSettleGeneration
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            guard generation == brakeSettleGeneration, brakeSheetIsSettling else { return }
+            Self.brakeLog.notice("settle watchdog fired — onDismiss never arrived; clearing")
+            brakeSheetIsSettling = false
+            presentNextBrakeIfIdle()
+        }
     }
 
     /// Content-equality for live brake arrays, ignoring the per-call

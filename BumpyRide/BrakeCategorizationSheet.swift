@@ -41,6 +41,10 @@ struct BrakeCategorizationSheet: View {
     /// `onCommit`.  Whichever wins flips this; the other no-ops.
     @State private var committed: Bool = false
 
+    /// v2.0 S3 instrumentation — same category as the parent's
+    /// lifecycle logging so one grep shows the whole interaction.
+    nonisolated private static let log = DebugLog(category: "brake-sheet")
+
     var body: some View {
         VStack(spacing: 22) {
             // Header — visually loud so a glance recognizes it.
@@ -109,21 +113,50 @@ struct BrakeCategorizationSheet: View {
             .padding(.horizontal, 4)
         }
         .padding()
-        .interactiveDismissDisabled(true)
+        // S3: swipe-to-dismiss is no longer disabled.  It was blocked
+        // so a bump couldn't dismiss the prompt mid-ride, but that
+        // also meant a sheet in a bad state had NO exit — the reported
+        // recovery was force-killing the app mid-ride.  A deliberate
+        // swipe is a fine "leave it uncategorized", and the safety
+        // net matters more than the stray-gesture risk.
+        .interactiveDismissDisabled(false)
         .onAppear {
+            // S3: `committed` surviving from a previous brake (view
+            // reuse) is the stuck-sheet failure mode — the parent's
+            // .id() should prevent it, but log if it ever happens so
+            // the sidecar names the culprit instead of us guessing.
+            if committed {
+                Self.log.error("appeared with committed=true — stale view reused for brake \(brake.id); resetting")
+                committed = false
+            }
+            Self.log.info("sheet appeared for brake \(brake.id)")
             // Kick the linear shrink animation immediately and the
             // auto-dismiss timer in parallel.
             withAnimation(.linear(duration: Self.timeoutSeconds)) {
                 remainingFraction = 0
             }
+            timeoutTask?.cancel()
             timeoutTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: UInt64(Self.timeoutSeconds * 1_000_000_000))
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else {
+                    Self.log.debug("timeout task cancelled for brake \(brake.id)")
+                    return
+                }
+                Self.log.info("timeout fired for brake \(brake.id)")
                 commit(nil)
             }
         }
         .onDisappear {
+            Self.log.info("sheet disappeared for brake \(brake.id) (committed=\(committed))")
             timeoutTask?.cancel()
+            // Swipe-dismiss path: the sheet is gone but nothing has
+            // told the parent, so it would sit in the settling window
+            // with a queue it never drains.  Commit as uncategorized
+            // (same outcome as the timeout) to close the loop.
+            if !committed {
+                Self.log.info("dismissed without a choice for brake \(brake.id) — recording as uncategorized")
+                commit(nil)
+            }
         }
     }
 
@@ -154,7 +187,13 @@ struct BrakeCategorizationSheet: View {
     /// reaches here first; the other path no-ops on the second
     /// call.
     private func commit(_ category: BrakeEventCategory?) {
-        guard !committed else { return }
+        guard !committed else {
+            // S3: if this ever logs on a *tap*, the sheet on screen is
+            // stale — exactly the reported "pressed Other and nothing
+            // happened."  Naming it here beats inferring it later.
+            Self.log.error("commit ignored (already committed) for brake \(brake.id) — sheet is stale")
+            return
+        }
         committed = true
         timeoutTask?.cancel()
         onCommit(category)
