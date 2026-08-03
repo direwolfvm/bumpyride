@@ -1,6 +1,16 @@
-# Release v1.7
+# Release v1.7 — NEVER SHIPPED
 
-Build **29**. MARKETING_VERSION `1.7`.
+> **This release was cut but never submitted.** The version line went
+> 1.6 → 2.0; everything described here shipped as part of **v2.0**
+> (see `RELEASE_v2.0.md`, which supersedes this doc).
+>
+> Kept as the historical record of the 1.7 cut, and because its
+> long-form App Review notes — trimmed down for 2.0 to fit the
+> 4,000-character limit — are the fullest written explanation of the
+> watch HealthKit handoff and detector internals if a reviewer ever
+> asks for more depth.
+
+Build **29** (unshipped). MARKETING_VERSION was `1.7`.
 
 v1.7 is a large release. Its headline is **heart rate monitoring during rides** via a new "Open watch app with this app" toggle that auto-launches the BumpyRide watch app from the iPhone, runs a `HKWorkoutSession` on the watch to engage the watch's heart-rate sensor at workout sampling rate, and embeds those heart-rate samples into the saved ride's Apple Health workout. Alongside it ship four more substantial additions:
 
