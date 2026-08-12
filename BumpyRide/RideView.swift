@@ -808,6 +808,10 @@ struct RideView: View {
         .sheet(isPresented: $showingLogEventSheet) {
             LogEventSheet(
                 customKinds: settings.customEventKinds,
+                // v2.0 S4: in reporting mode the picker scales up too,
+                // so the whole log-an-event flow stays no-look — not
+                // just the button that opens it.
+                bigButtons: reportingMode,
                 onSelect: { kind, isCustom in
                     showingLogEventSheet = false
                     handleEventSelection(kind: kind, isCustom: isCustom)
