@@ -56,6 +56,12 @@ final class RideRecorder {
         return "battery \(level) \(state) lowPower=\(ProcessInfo.processInfo.isLowPowerModeEnabled) thermal=\(thermal)"
     }
 
+    /// v2.1 U6: our own CoreLocation call tally, for the rate-limit question.
+    /// See `CLCallAudit` — this counts only calls we make, not MapKit's.
+    private func auditStamp() -> String {
+        CLCallAudit.snapshot()
+    }
+
     // MARK: - Stillness auto-pause
 
     /// A ride left recording after the rider has stopped keeps GPS at full
@@ -196,6 +202,12 @@ final class RideRecorder {
     }
 
     private func autoPauseTick() {
+        // v2.1 U6: a 30 s time series of our CoreLocation call count, written
+        // to the sidecar (not OSLog, which is what gets quarantined).  Only
+        // emitted when the total actually moved.
+        if state == .recording, let audit = CLCallAudit.snapshotIfChanged() {
+            Self.log.info("CoreLocation calls: \(audit)")
+        }
         guard state == .recording,
               UserDefaults.standard.object(forKey: Self.autoPauseSettingKey) as? Bool ?? true,
               let last = lastMovementAt,
@@ -264,6 +276,7 @@ final class RideRecorder {
         startAutoPauseWatch()
         startBatteryLevel = UIDevice.current.batteryLevel >= 0 ? UIDevice.current.batteryLevel : nil
         Self.log.info("start() complete: rideId=\(rideId), state=recording, motion+location started; \(batteryStamp())")
+        Self.log.info("CoreLocation calls at start: \(auditStamp())")
     }
 
     /// Temporarily halt sampling without ending the ride.  Stops the GPS + motion
@@ -313,6 +326,10 @@ final class RideRecorder {
             let drop = (s0 - UIDevice.current.batteryLevel) * 100
             let hours = Date().timeIntervalSince(t0) / 3600
             Self.log.info(String(format: "ride battery cost: %.0f%% over %.2f h (%.1f%%/h)", drop, hours, hours > 0 ? drop / Float(hours) : 0))
+        }
+        Self.log.info("CoreLocation calls at stop: \(auditStamp())")
+        if CLCallAudit.total < 500 {
+            Self.log.info("CoreLocation: our own call volume is low — a rate-limit warning this ride would be MapKit's manager, not ours")
         }
         location.stopUpdating()
         motion.stop()

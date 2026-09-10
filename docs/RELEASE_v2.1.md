@@ -207,6 +207,34 @@ each needs re-measuring on 2.1 once a few days of payloads accumulate.
   the trace to attach. Cosmetic either way: Fitness shows heart rate for
   the workout's time window regardless of formal association.
 
+- **U6 - "Supported CoreLocation API call rate exceeded" (count 24001),
+  taking the app's OSLog subsystem down with it.** That count is the
+  *threshold* CoreLocation warns at, not a fingerprint, which is why it
+  matches the 2023 auto-resume incident in `LocationManager`'s header
+  exactly — two unrelated causes, one limit.
+  Audited every CoreLocation call site the app owns: all are one-shot or
+  rate-limited (`attemptResume` is capped at 30 s), and the reads in
+  `RideView` hit our cached `authorizationStatus`, not the CLLocationManager
+  property. Nothing of ours loops.
+  One genuine flaw found and fixed: `BumpMapLocationHint` created a
+  CLLocationManager, read `authorizationStatus` and fired `requestLocation()`
+  from its `init`, while being constructed in a `@State` initializer
+  (`BumpMapTabView.locationHint`). Swift evaluates that expression on every
+  view-struct construction and SwiftUI keeps only the first instance, so each
+  throwaway still made ~3 CoreLocation calls that nothing would read. The
+  auto-request moved to the view's `.task`, which runs against the retained
+  instance.
+  Whether that accounts for 24,000 calls is unproven — it depends on how
+  often `ContentView`'s body evaluates, which is not obviously high. So this
+  also adds `CLCallAudit`: a per-call-site tally written to the per-ride
+  sidecar at start, every 30 s, and at stop. The sidecar is a file, so it
+  survives the OSLog quarantine that makes this bug hard to diagnose.
+  **The audit is the deliverable here**; next ride tells us whether the
+  volume is ours at all. If the totals come back low, the calls are MapKit's
+  own manager behind `showsUserLocation` / `userTrackingMode` — invisible to
+  our audit but charged to the same app-wide budget — which would tie this to
+  U3 and make the heading-gating fix the relevant lever.
+
 **Confirmations from the same data**
 - T3a is justified: on 5 Sep, with **no ride recorded**, the app spent
   18 min in the background and 10 min using location against 3 min of

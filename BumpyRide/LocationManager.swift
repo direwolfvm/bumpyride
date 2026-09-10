@@ -156,8 +156,10 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         // screen or switches apps — and as long as location is running the app process
         // stays alive, so CoreMotion callbacks keep firing too.  The indicator shows the
         // user a green/blue pill at the top of the screen so they know location is active.
+        CLCallAudit.note("start.allowsBackground")
         manager.allowsBackgroundLocationUpdates = true
         manager.showsBackgroundLocationIndicator = true
+        CLCallAudit.note("start.startUpdating")
         manager.startUpdatingLocation()
         // Also register for Significant Location Change service.  SLC is the
         // *only* CoreLocation service that iOS will wake a suspended (or
@@ -168,6 +170,7 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         // and SLC is our only path back from that state.  When SLC
         // delivers a callback, our `didUpdateLocations` handler restarts
         // continuous tracking via `attemptResume`.
+        CLCallAudit.note("start.startSLC")
         manager.startMonitoringSignificantLocationChanges()
         // Reset per-ride bookkeeping; start the watchdog.
         lastResumeAttemptAt = nil
@@ -184,6 +187,7 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     /// indefinitely, every day, with location attributed to us in Settings ›
     /// Battery.  Calling stop on a fresh manager at launch clears it.
     func ensureIdle() {
+        CLCallAudit.note("ensureIdle")
         manager.stopUpdatingLocation()
         manager.stopMonitoringSignificantLocationChanges()
         manager.allowsBackgroundLocationUpdates = false
@@ -191,6 +195,7 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     }
 
     func stopUpdating() {
+        CLCallAudit.note("stopUpdating")
         manager.stopUpdatingLocation()
         manager.stopMonitoringSignificantLocationChanges()
         // Drop the background-mode opt-in when not recording so the app doesn't show the
@@ -287,6 +292,7 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         }
         lastResumeAttemptAt = Date()
         Self.log.notice("Attempting resume (reason=\(reason, privacy: .public))")
+        CLCallAudit.note("attemptResume")
         manager.startUpdatingLocation()
     }
 

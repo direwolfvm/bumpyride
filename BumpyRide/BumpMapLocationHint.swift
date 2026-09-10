@@ -40,13 +40,19 @@ final class BumpMapLocationHint: NSObject, CLLocationManagerDelegate {
         authorizationStatus = initialStatus
         super.init()
         manager.delegate = self
-        // If the user has already granted permission in a prior session (most
-        // likely path — they recorded a ride before opening Bump Map), kick off
-        // a fix immediately so the empty state has something to center on by the
-        // time it renders.  Free signal; harmless if it never lands.
-        if isAuthorized(initialStatus) {
-            requestOneShot()
-        }
+        // v2.1 U6: deliberately NO location request here.
+        //
+        // This type is created in a `@State` initializer
+        // (`BumpMapTabView.locationHint`), and Swift evaluates that expression
+        // every time the view struct is built — SwiftUI keeps only the first
+        // instance and throws the rest away.  Each throwaway still ran its
+        // `init`, so each one created a CLLocationManager and fired a
+        // `requestLocation()` that nothing would ever read.  CoreLocation
+        // counts those against an app-wide budget and disables the app's
+        // logging once it is exceeded.
+        //
+        // The auto-request now lives in `BumpMapTabView`'s `.task`, which runs
+        // against the single retained instance, once per appearance.
     }
 
     /// `true` when the OS will let us call `requestLocation()` and expect a fix.
@@ -62,13 +68,22 @@ final class BumpMapLocationHint: NSObject, CLLocationManagerDelegate {
     /// triggers the system prompt; the delegate's authorization callback will
     /// then issue the actual `requestLocation()` once the user responds.
     /// Idempotent — a second call while a fetch is already in flight is a no-op.
+    /// Ask for a fix only if we don't already have one and aren't mid-flight.
+    /// Safe to call from `.task` / `.onAppear` on every appearance.
+    func requestOneShotIfNeeded() {
+        guard currentLocation == nil, !isFetching, isAuthorized else { return }
+        requestOneShot()
+    }
+
     func requestOneShot() {
         guard !isFetching else { return }
         switch manager.authorizationStatus {
         case .notDetermined:
+            CLCallAudit.note("hint.requestAuthorization")
             manager.requestWhenInUseAuthorization()
         case .authorizedWhenInUse, .authorizedAlways:
             isFetching = true
+            CLCallAudit.note("hint.requestLocation")
             manager.requestLocation()
         case .denied, .restricted:
             // Nothing we can do here — caller (the empty-state overlay) should
@@ -101,6 +116,7 @@ final class BumpMapLocationHint: NSObject, CLLocationManagerDelegate {
             // "Use my location" button.
             if self.isAuthorized(status), self.currentLocation == nil, !self.isFetching {
                 self.isFetching = true
+                CLCallAudit.note("hint.requestLocation.authChange")
                 manager.requestLocation()
             }
         }

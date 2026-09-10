@@ -47,6 +47,10 @@ struct BumpMapTabView: View {
                     recenterTrigger: recenterTrigger
                 )
                 .ignoresSafeArea(edges: .bottom)
+                // v2.1 U6: the auto-centering fix is requested here rather
+                // than in BumpMapLocationHint.init — see that type's init for
+                // why.  `.task` runs against the retained @State instance.
+                .task { locationHint.requestOneShotIfNeeded() }
 
                 // Chrome (filter + stats) is shown only when there's data to
                 // operate on.  Hiding it in the empty state keeps the focus on
