@@ -61,6 +61,17 @@ struct RideView: View {
     /// re-arms user-location tracking after the rider panned away.
     @State private var liveRecenterTrigger: Int = 0
 
+    /// v2.1 U3: heading-up tracking is only meaningful while actually
+    /// riding.  MapKit runs its own CLLocationManager behind
+    /// `showsUserLocation` + `userTrackingMode`, and MetricKit recorded it
+    /// asking for navigation-grade accuracy (40 min on 8 Sep) on days our
+    /// own manager never left `kCLLocationAccuracyBest`.  Outside a
+    /// recording the map drops to plain north-up follow; once the ride ends
+    /// it stops tracking altogether (`rideIsOver`).
+    private var isLiveRecording: Bool {
+        recorder.state == .recording || recorder.state == .paused
+    }
+
     @State private var showingEditSheet: Bool = false
     @State private var showingRenameAlert: Bool = false
     @State private var renameText: String = ""
@@ -489,12 +500,13 @@ struct RideView: View {
             // reporting mode also stops its rendering — a small
             // battery bonus during heads-down riding.)
             if !reportingMode {
-            SeismographView(
-                samples: recorder.liveSamples,
-                bumpiness: recorder.currentBumpiness,
-                capacity: recorder.motion.windowCapacity,
-                currentSpeed: liveCurrentSpeedMps,
-                settings: settings
+            // v2.1 U2: LiveSeismograph reads the 17 Hz motion buffers inside
+            // its own body.  Reading them here instead invalidated the whole
+            // ride screen — map included — at 17 Hz.  See LiveSeismograph.
+            LiveSeismograph(
+                recorder: recorder,
+                settings: settings,
+                currentSpeed: liveCurrentSpeedMps
             )
             .frame(height: 160)
             .padding(.horizontal)
@@ -526,7 +538,9 @@ struct RideView: View {
                     showVisitedCells: showVisitedCells,
                     visitedOpacity: settings.visitedCellsOpacity,
                     headingUp: headingUp,
-                    recenterTrigger: liveRecenterTrigger
+                    headingTrackingAllowed: isLiveRecording,
+                    recenterTrigger: liveRecenterTrigger,
+                    rideIsOver: recorder.state == .finished
                 )
 
                 // Weather chip, top-trailing (same placement RouteMapView
@@ -565,10 +579,11 @@ struct RideView: View {
                                 label: headingUp ? "Heading up" : "North up"
                             ) { headingUp.toggle() }
                             mapToggleButton(
-                                systemImage: "location.fill",
+                                systemImage: recorder.state == .finished
+                                    ? "arrow.up.left.and.arrow.down.right" : "location.fill",
                                 on: false,
                                 onColor: .blue,
-                                label: "Recenter on my location"
+                                label: recorder.state == .finished ? "Fit route" : "Recenter on my location"
                             ) { liveRecenterTrigger += 1 }
                         }
                         .padding(12)
@@ -1309,27 +1324,40 @@ struct RideView: View {
                 .controlSize(.large)
 
             case .paused:
-                Button { recorder.resume() } label: {
-                    Label("Resume", systemImage: "play.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.green)
-                .controlSize(.large)
-
-                Button(role: .destructive) {
-                    if let ride = recorder.stop() {
-                        presentSaveSheet(for: ride)
-                    } else {
-                        recorder.reset()
+                VStack(spacing: 8) {
+                    // Tell the rider *why* they're paused when it wasn't
+                    // them — otherwise an auto-pause looks like a bug.
+                    if recorder.autoPausedAt != nil {
+                        Label("Paused automatically — no movement for \(RideRecorder.autoPauseAfterMinutes) min. GPS is off; tap Resume to continue.",
+                              systemImage: "moon.zzz.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                } label: {
-                    Label("Stop Ride", systemImage: "stop.fill")
-                        .frame(maxWidth: .infinity)
+                    HStack(spacing: 12) {
+                        Button { recorder.resume() } label: {
+                            Label("Resume", systemImage: "play.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.green)
+                        .controlSize(.large)
+
+                        Button(role: .destructive) {
+                            if let ride = recorder.stop() {
+                                presentSaveSheet(for: ride)
+                            } else {
+                                recorder.reset()
+                            }
+                        } label: {
+                            Label("Stop Ride", systemImage: "stop.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
+                        .controlSize(.large)
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
-                .controlSize(.large)
             }
         }
     }

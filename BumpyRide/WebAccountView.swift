@@ -987,6 +987,7 @@ private struct DeleteAccountSheet: View {
             account: WebAccount(),
             syncCoordinator: SyncCoordinator(
                 queue: SyncQueue(),
+                ledger: SyncLedger(directory: tmpDir),
                 rideStore: previewStore,
                 webAccount: WebAccount()
             ),

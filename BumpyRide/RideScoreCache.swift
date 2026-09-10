@@ -38,10 +38,49 @@ final class RideScoreCache {
     }
 
     let account: WebAccount
-    private(set) var entries: [UUID: Entry] = [:]
+    private(set) var entries: [UUID: Entry] = [:] {
+        didSet { persistSoon() }
+    }
 
     init(account: WebAccount) {
         self.account = account
+        // Warm from disk so the rides list shows scores immediately on
+        // relaunch.  Only `.loaded` entries are persisted — see `persist`.
+        if let data = try? Data(contentsOf: Self.cacheURL),
+           let saved = try? JSONDecoder().decode([UUID: WebSyncClient.RideScoreData].self, from: data) {
+            var e: [UUID: Entry] = [:]
+            for (id, d) in saved { e[id] = .loaded(d) }
+            entries = e
+        }
+    }
+
+    // MARK: - Persistence
+
+    /// Caches/ (never iCloud).  Scores are recomputed server-side, so this
+    /// is a warm-start cache, not a source of truth; deleting it costs one
+    /// refetch per ride.
+    nonisolated private static var cacheURL: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ride-scores.json")
+    }
+
+    @ObservationIgnored private var persistTask: Task<Void, Never>?
+
+    /// Debounced write.  Only `.loaded` entries are written: `.ineligible`
+    /// covers "not on the server *yet*" (404 before a backfill upload
+    /// lands), and persisting that would pin the row to no-score until the
+    /// user re-opened the ride.
+    private func persistSoon() {
+        persistTask?.cancel()
+        persistTask = Task { [entries] in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled else { return }
+            var loaded: [UUID: WebSyncClient.RideScoreData] = [:]
+            for (id, e) in entries { if case .loaded(let d) = e { loaded[id] = d } }
+            if let data = try? JSONEncoder().encode(loaded) {
+                try? data.write(to: Self.cacheURL, options: .atomic)
+            }
+        }
     }
 
     /// Current cache entry for a ride, or `nil` if we haven't requested

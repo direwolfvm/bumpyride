@@ -19,14 +19,23 @@ final class NetworkReachability {
     /// synchronously soon after `start`) will correct this.
     private(set) var isReachable: Bool = true
 
+    /// `true` when the current path is cellular or a personal hotspot.
+    /// Backfill uploads defer while this holds (see
+    /// `AppSettings.backfillOnWiFiOnly`) — a library catch-up is not worth
+    /// someone's data plan.  Defaults to `false` so we never wrongly block
+    /// sync before the monitor has reported.
+    private(set) var isExpensive: Bool = false
+
     private let monitor = NWPathMonitor()
     private let monitorQueue = DispatchQueue(label: "com.bumpyride.reachability", qos: .utility)
 
     init() {
         monitor.pathUpdateHandler = { [weak self] path in
             let reachable = path.status == .satisfied
+            let expensive = path.isExpensive || path.usesInterfaceType(.cellular)
             Task { @MainActor [weak self] in
                 self?.isReachable = reachable
+                self?.isExpensive = expensive
             }
         }
         monitor.start(queue: monitorQueue)

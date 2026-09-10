@@ -32,9 +32,31 @@ struct LiveRouteMapView: UIViewRepresentable {
     var visitedOpacity: Double
     /// `false` → north-up; `true` → map rotates so the rider's heading is up.
     var headingUp: Bool
+    /// Heading-up tracking spins up the compass and asks MapKit for a more
+    /// precise fix; it is only meaningful while actually riding. Outside a
+    /// recording the map follows north-up even when the toggle is on.
+    var headingTrackingAllowed: Bool = true
     /// Monotonic counter; each increment re-arms user-location tracking
-    /// (snap back after the rider panned the map away).
+    /// (snap back after the rider panned the map away).  When the ride is
+    /// over it refits the route instead.
     var recenterTrigger: Int
+    /// `true` once the ride has ended (`.finished`) — done, but not yet saved
+    /// or discarded.  The map stops following, hides the location dot and fits
+    /// the whole route, the same view saved-ride playback opens on.
+    ///
+    /// This also takes MapKit's own location manager out of the picture for
+    /// the whole post-ride stretch — the save sheet, the summary, whatever
+    /// browsing follows. `showsUserLocation` plus a follow `userTrackingMode`
+    /// runs a second CLLocationManager independent of ours, and MetricKit
+    /// recorded it asking for navigation-grade accuracy (40 min on 8 Sep) on
+    /// days our own manager never left `kCLLocationAccuracyBest`.
+    ///
+    /// Deliberately *not* extended to `.idle`: before a ride the rider still
+    /// wants a map centred on where they are, and suppressing the dot there
+    /// left it framing the whole continent. Idle instead drops to plain
+    /// `.follow` via `headingTrackingAllowed`, which keeps the map useful
+    /// while avoiding the heading-up mode's extra sensor work.
+    var rideIsOver: Bool = false
 
     /// K24: compact hard-brake marker — a small red dot with a thin
     /// white ring (~12 pt), deliberately smaller than the default
@@ -61,13 +83,17 @@ struct LiveRouteMapView: UIViewRepresentable {
         let config = MKStandardMapConfiguration(emphasisStyle: .muted)
         config.pointOfInterestFilter = .excludingAll
         map.preferredConfiguration = config
-        map.showsUserLocation = true
         map.showsCompass = true
         map.showsScale = true
         context.coordinator.mapView = map
-        // Follow the rider from the start; orientation per the toggle.
-        map.setUserTrackingMode(headingUp ? .followWithHeading : .follow, animated: false)
+        // Follow the rider only while recording; otherwise no dot and no
+        // tracking, so MapKit's own location manager never starts.
+        map.showsUserLocation = !rideIsOver
+        if !rideIsOver {
+            map.setUserTrackingMode(effectiveTrackingMode, animated: false)
+        }
         context.coordinator.headingUp = headingUp
+        context.coordinator.rideIsOver = rideIsOver
         return map
     }
 
@@ -138,18 +164,58 @@ struct LiveRouteMapView: UIViewRepresentable {
             map.addAnnotations(c.closeCallAnnos)
         }
 
-        // --- Orientation toggle.
-        if headingUp != c.headingUp {
-            c.headingUp = headingUp
-            map.setUserTrackingMode(headingUp ? .followWithHeading : .follow, animated: true)
+        // --- Ride over ↔ live.  Entering "over": stop following, hide the
+        // dot, fit the route.  Leaving it (a new ride started): put the dot
+        // back and follow again.
+        if rideIsOver != c.rideIsOver {
+            c.rideIsOver = rideIsOver
+            if rideIsOver {
+                map.setUserTrackingMode(.none, animated: false)
+                map.showsUserLocation = false
+                fitRoute(on: map, context: context)
+            } else {
+                map.showsUserLocation = true
+                map.setUserTrackingMode(effectiveTrackingMode, animated: false)
+            }
         }
 
-        // --- Recenter: re-arm tracking (the rider panned away and tapped
-        // the button to snap back to "follow me" in the current orientation).
+        // --- Orientation toggle (live only; a finished ride stays north-up
+        // and fitted).
+        if headingUp != c.headingUp || headingTrackingAllowed != c.headingTrackingAllowed {
+            c.headingUp = headingUp
+            c.headingTrackingAllowed = headingTrackingAllowed
+            if !rideIsOver {
+                map.setUserTrackingMode(effectiveTrackingMode, animated: true)
+            }
+        }
+
+        // --- Recenter: live → re-arm tracking (the rider panned away and
+        // tapped to snap back to "follow me" in the current orientation);
+        // over → refit the whole route.
         if recenterTrigger != c.lastRecenterTrigger {
             c.lastRecenterTrigger = recenterTrigger
-            map.setUserTrackingMode(headingUp ? .followWithHeading : .follow, animated: true)
+            if rideIsOver {
+                fitRoute(on: map, context: context)
+            } else {
+                map.setUserTrackingMode(effectiveTrackingMode, animated: true)
+            }
         }
+    }
+
+    /// Heading-up only while it is allowed; otherwise plain follow.
+    private var effectiveTrackingMode: MKUserTrackingMode {
+        (headingUp && headingTrackingAllowed) ? .followWithHeading : .follow
+    }
+
+    /// Frame every route polyline with a little breathing room.  No-op for
+    /// an empty route (Stop tapped before any fix).
+    private func fitRoute(on map: MKMapView, context: Context) {
+        let overlays = context.coordinator.routeOverlays
+        // Nothing to fit before the first ride of the session — leave the
+        // camera wherever MapKit put it rather than snapping to null island.
+        guard var rect = overlays.first?.boundingMapRect else { return }
+        for o in overlays.dropFirst() { rect = rect.union(o.boundingMapRect) }
+        map.setVisibleMapRect(rect, edgePadding: UIEdgeInsets(top: 44, left: 32, bottom: 44, right: 32), animated: true)
     }
 
     @MainActor
@@ -178,7 +244,9 @@ struct LiveRouteMapView: UIViewRepresentable {
         var lastCloseCallCount: Int = -1
 
         var headingUp: Bool = false
+        var headingTrackingAllowed: Bool = true
         var lastRecenterTrigger: Int = 0
+        var rideIsOver: Bool = false
 
         // MKMapViewDelegate callbacks arrive on the main thread; `nonisolated`
         // satisfies the protocol's Sendable shape and we hop back via

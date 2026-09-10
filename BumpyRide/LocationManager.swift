@@ -176,6 +176,20 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         Self.log.info("startUpdating(): allowsBackground=true authStatus=\(self.manager.authorizationStatus.rawValue, privacy: .public)")
     }
 
+    /// Make sure nothing is registered when we're not recording.  Called at
+    /// launch.  Significant Location Change registration outlives the
+    /// process: if the app is killed mid-ride (swipe-kill, jetsam), the
+    /// registration made in `startUpdating` is never undone, and iOS keeps
+    /// relaunching the app in the background on every ~500 m of movement —
+    /// indefinitely, every day, with location attributed to us in Settings ›
+    /// Battery.  Calling stop on a fresh manager at launch clears it.
+    func ensureIdle() {
+        manager.stopUpdatingLocation()
+        manager.stopMonitoringSignificantLocationChanges()
+        manager.allowsBackgroundLocationUpdates = false
+        Self.log.info("ensureIdle(): cleared any SLC registration left by a previous process")
+    }
+
     func stopUpdating() {
         manager.stopUpdatingLocation()
         manager.stopMonitoringSignificantLocationChanges()

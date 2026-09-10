@@ -12,6 +12,11 @@ struct SavedRidesView: View {
     /// hidden entirely when the user isn't connected to a web account.
     @Bindable var syncCoordinator: SyncCoordinator
     @Bindable var webAccount: WebAccount
+    /// Per-ride points for the row chip.  Shown only when connected to a
+    /// web account — scoring is a server-side concept.  Rows request their
+    /// score lazily as they scroll into view; the cache persists across
+    /// launches so a settled list renders with no fetches at all.
+    @Bindable var rideScoreCache: RideScoreCache
 
     var body: some View {
         NavigationStack {
@@ -53,6 +58,11 @@ struct SavedRidesView: View {
                                 rideRow(ride)
                             }
                             .buttonStyle(.plain)
+                            .task(id: ride.id) {
+                                if webAccount.isConnected {
+                                    rideScoreCache.requestScore(for: ride.id)
+                                }
+                            }
                         }
                         .onDelete { indexSet in
                             for idx in indexSet { store.delete(store.rides[idx]) }
@@ -122,6 +132,8 @@ struct SavedRidesView: View {
                     .foregroundStyle(.secondary)
             }
 
+            scoreChip(for: ride)
+
             syncIndicator(for: ride)
 
             Image(systemName: "chevron.right")
@@ -130,6 +142,30 @@ struct SavedRidesView: View {
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
+    }
+
+    /// Points earned by this ride, when the user is connected and the
+    /// server has scored it.  Loading / ineligible / failed render nothing
+    /// so the row doesn't flash a placeholder.  Same trophy + number the
+    /// ride viewer's score row uses.
+    @ViewBuilder
+    private func scoreChip(for ride: RideSummary) -> some View {
+        if webAccount.isConnected,
+           case .loaded(let data) = rideScoreCache.entry(for: ride.id) {
+            VStack(alignment: .trailing, spacing: 2) {
+                HStack(spacing: 3) {
+                    Image(systemName: "trophy.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.yellow)
+                    Text(ScoreView.formattedPoints(data.totalPoints))
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                }
+                Text("pts")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityLabel("\(data.totalPoints) points")
+        }
     }
 
     @ViewBuilder

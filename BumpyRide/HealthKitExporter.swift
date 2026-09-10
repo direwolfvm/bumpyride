@@ -240,22 +240,37 @@ final class HealthKitExporter {
             // Associate the watch-collected HR samples with the
             // freshly-saved workout.  `HKHealthStore.add(_:to:)`
             // doesn't rewrite the samples — it only updates each
-            // sample's workout-association metadata, so all it
-            // needs is workout-type write authorization (which we
-            // already have).  Failures are non-fatal: the workout
-            // saved cleanly with distance + energy + route, the
-            // HR data still exists in HealthKit standalone, and
-            // Apple Fitness will surface it in the time-window
-            // aggregate view regardless of formal association.
+            // sample's workout-association metadata.
+            //
+            // v2.1 U5: this used to assume workout-type write access was
+            // enough.  It is not — `add(_:to:)` is a write against the
+            // *sample* types being added, so it needs share authorization
+            // for heart rate.  We only ever requested read, and every
+            // export since the feature shipped failed with
+            // `Code=4 "Not authorized"`, silently dropping the trace.
+            // Heart rate is now in `shareTypes`, but users who authorized
+            // under an earlier build are not re-prompted automatically, so
+            // check before attempting rather than logging a failure each
+            // ride.
+            //
+            // Losing the association is cosmetic either way: the workout
+            // saves with distance, energy and route, the heart-rate samples
+            // remain in HealthKit, and Apple Fitness shows them for the
+            // workout's time window whether or not they are formally
+            // associated.
             if !heartRateSamples.isEmpty {
-                Self.log.info("Export \(ride.id): associating \(heartRateSamples.count) HR sample(s) with workout")
-                do {
-                    try await associate(samples: heartRateSamples, with: workout, store: store)
-                    Self.log.info("Export \(ride.id): HR association returned")
-                } catch {
-                    Self.log.notice("Export \(ride.id): HR association failed: \(String(describing: error))")
-                    // Don't rethrow — workout is saved, HR association
-                    // is a nice-to-have for the in-workout trace.
+                if Self.canAssociateHeartRate(store: store) {
+                    Self.log.info("Export \(ride.id): associating \(heartRateSamples.count) HR sample(s) with workout")
+                    do {
+                        try await associate(samples: heartRateSamples, with: workout, store: store)
+                        Self.log.info("Export \(ride.id): HR association returned")
+                    } catch {
+                        Self.log.notice("Export \(ride.id): HR association failed: \(String(describing: error))")
+                        // Don't rethrow — workout is saved, HR association
+                        // is a nice-to-have for the in-workout trace.
+                    }
+                } else {
+                    Self.log.info("Export \(ride.id): skipping HR association — no share authorization for heart rate (Fitness still shows the trace for the workout's time window)")
                 }
             }
 
@@ -379,6 +394,15 @@ final class HealthKitExporter {
     /// this method as of iOS 17 — we still have to bridge by hand.
     /// Throws on failure so the caller can choose to swallow (we do
     /// — HR association is nice-to-have, not critical).
+    /// v2.1 U5: `HKHealthStore.add(_:to:)` writes association metadata onto
+    /// the samples, so it requires *share* authorization for their type.
+    /// Read access — which is all the app requested before 2.1 — is not
+    /// enough, and the call fails with `Code=4`.
+    private static func canAssociateHeartRate(store: HKHealthStore) -> Bool {
+        guard let hr = HKQuantityType.quantityType(forIdentifier: .heartRate) else { return false }
+        return store.authorizationStatus(for: hr) == .sharingAuthorized
+    }
+
     private func associate(
         samples: [HKSample],
         with workout: HKWorkout,

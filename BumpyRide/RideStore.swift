@@ -244,8 +244,16 @@ final class RideStore {
         return await Task.detached(priority: .utility) {
             var acc = initial
             for id in ids {
-                guard let ride = Self.loadFullRide(id: id, in: dir) else { continue }
-                body(&acc, ride)
+                // v2.1 U4: one pool per ride.  Without it, the Foundation
+                // temporaries from decoding hundreds of multi-MB ride files
+                // accumulate until the whole loop ends — which is how a
+                // library-wide fold reached a 467 MB peak and got the app
+                // killed under background memory pressure three times in a
+                // day.  Draining per iteration keeps the peak at one ride.
+                autoreleasepool {
+                    guard let ride = Self.loadFullRide(id: id, in: dir) else { return }
+                    body(&acc, ride)
+                }
             }
             return acc
         }.value
@@ -274,10 +282,15 @@ final class RideStore {
             encoder.dateEncodingStrategy = .iso8601
             var out: [(id: UUID, hash: String)] = []
             for id in ids {
-                guard let ride = Self.loadFullRide(id: id, in: dir),
-                      let body = try? encoder.encode(ride) else { continue }
-                let hash = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
-                out.append((id: id, hash: hash))
+                // See foldRides for why each iteration gets its own pool:
+                // this loop decodes *and* re-encodes every ride, so it is
+                // the heavier of the two.
+                autoreleasepool {
+                    guard let ride = Self.loadFullRide(id: id, in: dir),
+                          let body = try? encoder.encode(ride) else { return }
+                    let hash = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+                    out.append((id: id, hash: hash))
+                }
             }
             return out
         }.value

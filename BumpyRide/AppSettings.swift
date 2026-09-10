@@ -91,6 +91,10 @@ final class AppSettings {
     private static let keyDebugLogEnabled = "debugLogEnabled"
     private static let keyScreenWakeMode = "screenWakeMode"
     private static let keyDefaultHeadingUp = "defaultHeadingUp"
+    /// Read directly by `RideRecorder` (same key) so the recorder doesn't
+    /// need a reference to settings.
+    private static let keyAutoPauseWhenStill = "autoPauseWhenStill"
+    private static let keyBackfillOnWiFiOnly = "backfillOnWiFiOnly"
     private static let keyDefaultShowVisitedCells = "defaultShowVisitedCells"
     private static let keyVisitedCellsOpacity = "visitedCellsOpacity"
     private static let keyCustomEventKinds = "customEventKinds"
@@ -195,6 +199,15 @@ final class AppSettings {
     var defaultHeadingUp: Bool = false {
         didSet { UserDefaults.standard.set(defaultHeadingUp, forKey: Self.keyDefaultHeadingUp) }
     }
+    /// Pause the ride (GPS + motion off) after 15 minutes without movement.
+    var autoPauseWhenStill: Bool = true {
+        didSet { UserDefaults.standard.set(autoPauseWhenStill, forKey: Self.keyAutoPauseWhenStill) }
+    }
+    /// Hold back-catalogue uploads until Wi-Fi.  Rides you just saved always
+    /// upload straight away regardless.
+    var backfillOnWiFiOnly: Bool = true {
+        didSet { UserDefaults.standard.set(backfillOnWiFiOnly, forKey: Self.keyBackfillOnWiFiOnly) }
+    }
     var defaultShowVisitedCells: Bool = false {
         didSet { UserDefaults.standard.set(defaultShowVisitedCells, forKey: Self.keyDefaultShowVisitedCells) }
     }
@@ -284,6 +297,12 @@ final class AppSettings {
         if let v = d.object(forKey: Self.keyDefaultHeadingUp) as? Bool {
             defaultHeadingUp = v
         }
+        if let v = d.object(forKey: Self.keyAutoPauseWhenStill) as? Bool {
+            autoPauseWhenStill = v
+        }
+        if let v = d.object(forKey: Self.keyBackfillOnWiFiOnly) as? Bool {
+            backfillOnWiFiOnly = v
+        }
         if let v = d.object(forKey: Self.keyDefaultShowVisitedCells) as? Bool {
             defaultShowVisitedCells = v
         }
@@ -307,6 +326,8 @@ final class AppSettings {
         debugLogEnabled = false
         screenWakeMode = .whileRecording
         defaultHeadingUp = false
+        autoPauseWhenStill = true
+        backfillOnWiFiOnly = true
         defaultShowVisitedCells = false
         visitedCellsOpacity = 0.30
     }

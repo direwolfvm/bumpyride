@@ -159,6 +159,19 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Toggle(isOn: $settings.autoPauseWhenStill) {
+                        Text("Auto-pause when stopped")
+                    }
+                    Toggle(isOn: $settings.backfillOnWiFiOnly) {
+                        Text("Back up older rides on Wi-Fi only")
+                    }
+                } header: {
+                    Text("Recording")
+                } footer: {
+                    Text("Auto-pause turns off GPS and motion sampling after \(RideRecorder.autoPauseAfterMinutes) minutes without movement, so a ride left running doesn't drain the battery. Tap Resume to continue.\n\nRides you just finished always upload straight away. Wi-Fi only applies to backing up your older rides, which can be several gigabytes.")
+                }
+
+                Section {
                     // Built-in kinds shown read-only so the rider sees
                     // the full Log Event menu in one place.
                     ForEach(OtherEvent.builtinKinds, id: \.kind) { builtin in

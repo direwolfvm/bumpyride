@@ -1,6 +1,7 @@
 import Foundation
 import CoreLocation
 import Observation
+import UIKit
 
 /// The recording coordinator: owns a `LocationManager` and `MotionManager`, ingests
 /// each location update by stamping it with the current bumpiness and accelerometer
@@ -19,10 +20,66 @@ final class RideRecorder {
     /// happened during my ride" reads as a clean trace.
     nonisolated static let log = DebugLog(category: "recorder")
 
-    /// Lifecycle states.  Note `paused` is reachable only from `recording` and only
-    /// via the explicit `pause()` API — there is no auto-pause on app backgrounding
-    /// (the location entitlement covers that) or on motion stillness.
+    /// Lifecycle states.  `paused` is reachable from `recording` via the
+    /// explicit `pause()` API or the stillness auto-pause (see
+    /// `autoPauseAfterMinutes`); there is no auto-pause on app
+    /// backgrounding — the location entitlement covers that.
     enum State { case idle, recording, paused, finished }
+
+    // MARK: - Battery stamps (v2.1 T6)
+
+    /// Battery level (0…1) at `start()`, for the per-ride delta logged at
+    /// `stop()`.  MetricKit gives daily aggregates; this gives "that ride
+    /// cost 6 %".
+    @ObservationIgnored private var startBatteryLevel: Float?
+
+    /// One line of power context for the debug log.  Level is −1 until
+    /// battery monitoring is enabled, which `init` does.
+    private func batteryStamp() -> String {
+        let d = UIDevice.current
+        let level = d.batteryLevel >= 0 ? String(format: "%.0f%%", d.batteryLevel * 100) : "n/a"
+        let state: String
+        switch d.batteryState {
+        case .charging: state = "charging"
+        case .full: state = "full"
+        case .unplugged: state = "unplugged"
+        default: state = "unknown"
+        }
+        let thermal: String
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: thermal = "nominal"
+        case .fair: thermal = "fair"
+        case .serious: thermal = "serious"
+        case .critical: thermal = "critical"
+        @unknown default: thermal = "?"
+        }
+        return "battery \(level) \(state) lowPower=\(ProcessInfo.processInfo.isLowPowerModeEnabled) thermal=\(thermal)"
+    }
+
+    // MARK: - Stillness auto-pause
+
+    /// A ride left recording after the rider has stopped keeps GPS at full
+    /// accuracy and the accelerometer at 50 Hz in the background for as
+    /// long as nobody notices.  If nothing has moved for this long, pause —
+    /// which turns both off — and say so in the UI.  Resume is manual; we
+    /// deliberately don't auto-resume on movement, because that would
+    /// silently record whatever trip comes next.
+    static let autoPauseAfterMinutes = 15
+    private static let autoPauseAfter: TimeInterval = TimeInterval(autoPauseAfterMinutes * 60)
+    /// Below this GPS speed a fix counts as stationary…
+    private static let stillSpeed: CLLocationSpeed = 0.7
+    /// …unless it has drifted this far from where we last saw movement.
+    private static let stillRadius: CLLocationDistance = 30
+    private static let autoPauseCheckInterval: TimeInterval = 30
+    /// UserDefaults key shared with `AppSettings.autoPauseWhenStill`.
+    private static let autoPauseSettingKey = "autoPauseWhenStill"
+
+    /// Set when the stillness rule paused the ride; cleared on resume,
+    /// start and reset.  The UI uses it to explain the pause.
+    private(set) var autoPausedAt: Date?
+    @ObservationIgnored private var lastMovementAt: Date?
+    @ObservationIgnored private var stillAnchor: CLLocation?
+    @ObservationIgnored private var autoPauseTimer: Timer?
 
     let location = LocationManager()
     let motion = MotionManager()
@@ -114,6 +171,53 @@ final class RideRecorder {
         location.onLocationUpdate = { [weak self] loc in
             self?.handleLocation(loc)
         }
+        // Fresh process, not recording: clear any location registration a
+        // previous process left behind (see LocationManager.ensureIdle).
+        location.ensureIdle()
+        // Needed for `batteryLevel` to report anything but −1.
+        UIDevice.current.isBatteryMonitoringEnabled = true
+    }
+
+    private func startAutoPauseWatch() {
+        stopAutoPauseWatch()
+        lastMovementAt = Date()
+        stillAnchor = nil
+        let t = Timer(timeInterval: Self.autoPauseCheckInterval, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in self.autoPauseTick() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        autoPauseTimer = t
+    }
+
+    private func stopAutoPauseWatch() {
+        autoPauseTimer?.invalidate()
+        autoPauseTimer = nil
+    }
+
+    private func autoPauseTick() {
+        guard state == .recording,
+              UserDefaults.standard.object(forKey: Self.autoPauseSettingKey) as? Bool ?? true,
+              let last = lastMovementAt,
+              Date().timeIntervalSince(last) >= Self.autoPauseAfter else { return }
+        Self.log.notice("auto-pause: no movement for \(Int(Date().timeIntervalSince(last)))s — pausing")
+        autoPausedAt = Date()
+        pause()
+    }
+
+    /// Movement bookkeeping for the auto-pause rule.  A fix counts as
+    /// movement if GPS says we're moving, or if we've drifted out of the
+    /// still radius (GPS jitter at rest stays well inside it).
+    private func noteMovement(_ loc: CLLocation) {
+        if let anchor = stillAnchor {
+            if loc.speed >= Self.stillSpeed || loc.distance(from: anchor) > Self.stillRadius {
+                lastMovementAt = Date()
+                stillAnchor = loc
+            }
+        } else {
+            lastMovementAt = Date()
+            stillAnchor = loc
+        }
     }
 
     func requestPermissions() {
@@ -153,10 +257,13 @@ final class RideRecorder {
         // (horizontalAccel, brakeEvents, closeCallEvents) are all additive
         // and optional, so v3 readers handle in-flight v3 records seamlessly.
         try? journal.start(rideId: rideId, startedAt: now, schemaVersion: 3)
+        autoPausedAt = nil
         state = .recording
         motion.start()
         location.startUpdating()
-        Self.log.info("start() complete: rideId=\(rideId), state=recording, motion+location started")
+        startAutoPauseWatch()
+        startBatteryLevel = UIDevice.current.batteryLevel >= 0 ? UIDevice.current.batteryLevel : nil
+        Self.log.info("start() complete: rideId=\(rideId), state=recording, motion+location started; \(batteryStamp())")
     }
 
     /// Temporarily halt sampling without ending the ride.  Stops the GPS + motion
@@ -171,8 +278,9 @@ final class RideRecorder {
         }
         location.stopUpdating()
         motion.stop()
+        stopAutoPauseWatch()
         state = .paused
-        Self.log.info("pause() complete: state=paused")
+        Self.log.info("pause() complete: state=paused auto=\(autoPausedAt != nil); \(batteryStamp())")
     }
 
     /// Resume sampling after a `pause()`.  Calling `motion.start()` resets the
@@ -184,10 +292,12 @@ final class RideRecorder {
             Self.log.notice("resume() ignored: state=\(state) (not paused)")
             return
         }
+        autoPausedAt = nil
         motion.start()
         location.startUpdating()
+        startAutoPauseWatch()
         state = .recording
-        Self.log.info("resume() complete: state=recording")
+        Self.log.info("resume() complete: state=recording; \(batteryStamp())")
     }
 
     func stop() -> Ride? {
@@ -198,9 +308,15 @@ final class RideRecorder {
             Self.log.notice("stop() ignored: state=\(state) (neither recording nor paused)")
             return nil
         }
-        Self.log.info("stop() from state=\(state): \(points.count) points captured, totalDistance=\(totalDistanceMeters)m")
+        Self.log.info("stop() from state=\(state): \(points.count) points captured, totalDistance=\(totalDistanceMeters)m; \(batteryStamp())")
+        if let s0 = startBatteryLevel, UIDevice.current.batteryLevel >= 0, let t0 = startedAt {
+            let drop = (s0 - UIDevice.current.batteryLevel) * 100
+            let hours = Date().timeIntervalSince(t0) / 3600
+            Self.log.info(String(format: "ride battery cost: %.0f%% over %.2f h (%.1f%%/h)", drop, hours, hours > 0 ? drop / Float(hours) : 0))
+        }
         location.stopUpdating()
         motion.stop()
+        stopAutoPauseWatch()
         endedAt = Date()
         state = .finished
         // Close the file handle but leave the journal on disk until the user
@@ -230,6 +346,8 @@ final class RideRecorder {
         Self.log.info("reset() from state=\(state)")
         motion.stop()
         location.stopUpdating()
+        stopAutoPauseWatch()
+        autoPausedAt = nil
         motion.reset()
         // Release the per-ride sidecar binding now that the user has
         // resolved this ride (saved or discarded).  Subsequent log
@@ -372,6 +490,7 @@ final class RideRecorder {
         // rider was at minutes earlier, not where they are now.  Filter
         // these out — the next real fix will produce a clean point.
         guard abs(loc.timestamp.timeIntervalSinceNow) < Self.maxLocationAgeSeconds else { return }
+        noteMovement(loc)
         let bumpiness = motion.currentBumpiness
         let window = motion.snapshotWindow()
         // Snapshot the latest horizontal-plane accel magnitude for post-hoc

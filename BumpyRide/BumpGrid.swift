@@ -38,6 +38,10 @@ nonisolated struct BumpGrid {
     var count: Int { cells.count }
     var isEmpty: Bool { cells.isEmpty }
 
+    /// Explicit because declaring `init?(serialized:)` below suppresses the
+    /// synthesized default initializer.
+    init() {}
+
     // MARK: - Index math
 
     static func gridIndex(lat: Double, lon: Double) -> (ix: Int, iy: Int) {
@@ -79,6 +83,81 @@ nonisolated struct BumpGrid {
         if lat > maxLat { maxLat = lat }
         if lon < minLon { minLon = lon }
         if lon > maxLon { maxLon = lon }
+    }
+
+    // MARK: - Focus
+
+    /// Bounding box of the cells that hold the bulk of the data, trimming
+    /// `trim` of the sample weight off each edge on each axis.  This is what
+    /// the map should open on.  The full `minLat…maxLon` extent is dragged
+    /// out by any single far-away ride — one trip across town and the
+    /// initial camera sits below the overlay's minimum zoom, so nothing
+    /// renders.  Trimming 2 % per edge by sample weight ignores such
+    /// outliers while keeping every place the rider actually rides.
+    func focusBounds(trim: Double = 0.02) -> (minLat: Double, maxLat: Double, minLon: Double, maxLon: Double)? {
+        guard !cells.isEmpty else { return nil }
+        var byIx: [Int: Int] = [:], byIy: [Int: Int] = [:]
+        var total = 0
+        for (k, e) in cells {
+            let (ix, iy) = Self.unpack(k)
+            byIx[ix, default: 0] += e.count
+            byIy[iy, default: 0] += e.count
+            total += e.count
+        }
+        func band(_ hist: [Int: Int]) -> (Int, Int) {
+            let keys = hist.keys.sorted()
+            let lo = Double(total) * trim, hi = Double(total) * (1 - trim)
+            var acc = 0, a = keys[0], b = keys[keys.count - 1]
+            var aSet = false
+            for k in keys {
+                acc += hist[k]!
+                if !aSet && Double(acc) >= lo { a = k; aSet = true }
+                if Double(acc) >= hi { b = k; break }
+            }
+            return (a, b)
+        }
+        let (ix0, ix1) = band(byIx), (iy0, iy1) = band(byIy)
+        return (Double(iy0) * Self.cellLatDeg, Double(iy1 + 1) * Self.cellLatDeg,
+                Double(ix0) * Self.cellLonDeg, Double(ix1 + 1) * Self.cellLonDeg)
+    }
+
+    // MARK: - Serialization (BumpMapStore disk cache)
+
+    /// Compact binary form: magic, count, then (key, sum, count) triples.
+    /// A lifetime grid of a few hundred thousand cells is a few MB and
+    /// loads in milliseconds — versus re-reading every ride file.
+    private static let magic: UInt32 = 0x4247_5231  // "BGR1"
+
+    func serialized() -> Data {
+        var d = Data(capacity: 12 + cells.count * 24)
+        func put<T>(_ v: T) { withUnsafeBytes(of: v) { d.append(contentsOf: $0) } }
+        put(Self.magic); put(UInt64(cells.count))
+        for (k, e) in cells { put(k); put(e.sum); put(Int64(e.count)) }
+        return d
+    }
+
+    init?(serialized d: Data) {
+        guard d.count >= 12 else { return nil }
+        var off = 0
+        func take<T>(_: T.Type) -> T? {
+            let n = MemoryLayout<T>.size
+            guard off + n <= d.count else { return nil }
+            let v = d.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off, as: T.self) }
+            off += n; return v
+        }
+        guard take(UInt32.self) == Self.magic, let n = take(UInt64.self),
+              d.count == 12 + Int(n) * 24 else { return nil }
+        var c: [UInt64: Entry] = [:]; c.reserveCapacity(Int(n))
+        var mnLat = Double.infinity, mxLat = -Double.infinity, mnLon = Double.infinity, mxLon = -Double.infinity
+        for _ in 0..<n {
+            guard let k = take(UInt64.self), let sum = take(Double.self), let cnt = take(Int64.self) else { return nil }
+            c[k] = Entry(sum: sum, count: Int(cnt))
+            let (ix, iy) = Self.unpack(k)
+            let (lat, lon) = Self.cellOrigin(ix: ix, iy: iy)
+            mnLat = min(mnLat, lat); mxLat = max(mxLat, lat + Self.cellLatDeg)
+            mnLon = min(mnLon, lon); mxLon = max(mxLon, lon + Self.cellLonDeg)
+        }
+        cells = c; minLat = mnLat; maxLat = mxLat; minLon = mnLon; maxLon = mxLon
     }
 
     // MARK: - Query

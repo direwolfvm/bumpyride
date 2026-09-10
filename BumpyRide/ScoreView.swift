@@ -432,7 +432,7 @@ struct ScoreView: View {
         return f
     }()
 
-    private static func formattedPoints(_ n: Int) -> String {
+    static func formattedPoints(_ n: Int) -> String {
         pointsFormatter.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 }

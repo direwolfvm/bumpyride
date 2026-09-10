@@ -78,7 +78,7 @@ struct BumpMapView: UIViewRepresentable {
         //    over (with `didFitToData` still false at that point) and overrides
         //    this initial location-pan.
         if !context.coordinator.didFitToData {
-            if let region = bumpMap.boundingRegion {
+            if let region = dataRegion(for: map) {
                 context.coordinator.didFitToData = true
                 map.setRegion(region, animated: true)
             } else if !context.coordinator.didPanToUserHint,
@@ -95,7 +95,7 @@ struct BumpMapView: UIViewRepresentable {
         // opened with (all data → user-hint city → contiguous US).
         if recenterTrigger != context.coordinator.lastRecenterTrigger {
             context.coordinator.lastRecenterTrigger = recenterTrigger
-            map.setRegion(recenterRegion(), animated: true)
+            map.setRegion(recenterRegion(for: map), animated: true)
         }
     }
 
@@ -103,8 +103,8 @@ struct BumpMapView: UIViewRepresentable {
     /// mirrors `setInitialCamera`'s priority: full-data bounding box
     /// first, then the user's location hint at city zoom, then the
     /// contiguous-US fallback.
-    private func recenterRegion() -> MKCoordinateRegion {
-        if let region = bumpMap.boundingRegion {
+    private func recenterRegion(for map: MKMapView) -> MKCoordinateRegion {
+        if let region = dataRegion(for: map) {
             return region
         } else if let loc = locationHint.currentLocation {
             return Self.cityRegion(around: loc.coordinate)
@@ -144,8 +144,41 @@ struct BumpMapView: UIViewRepresentable {
         map.addOverlay(overlay, level: .aboveLabels)
     }
 
+    /// The overlay skips tiles below `BumpMapTileOverlay.minimumZ`, so a
+    /// region wider than roughly 0.27° of longitude on a phone opens on an
+    /// empty map — which is exactly what happened once the rider's data
+    /// spanned more than one town.  Two defences: frame the *focus* region
+    /// (where the data mass is, outliers trimmed) rather than the full
+    /// extent, and clamp the span so the camera can never land below the
+    /// overlay's minimum zoom.  A genuinely wide focus region then opens
+    /// centred on the densest data at the shallowest zoom that still
+    /// renders, and the user pans from there.
+    private static let minOpeningZoom: Double = 11.3
+
+    private func dataRegion(for map: MKMapView) -> MKCoordinateRegion? {
+        guard let region = bumpMap.focusRegion ?? bumpMap.boundingRegion else { return nil }
+        let size = map.bounds.size
+        let w = size.width > 0 ? size.width : UIScreen.main.bounds.width
+        let h = size.height > 0 ? size.height : UIScreen.main.bounds.height * 0.7
+        // Region → map-point rect, zoom from whichever axis is tighter.
+        let nw = MKMapPoint(CLLocationCoordinate2D(latitude: region.center.latitude + region.span.latitudeDelta / 2,
+                                                   longitude: region.center.longitude - region.span.longitudeDelta / 2))
+        let se = MKMapPoint(CLLocationCoordinate2D(latitude: region.center.latitude - region.span.latitudeDelta / 2,
+                                                   longitude: region.center.longitude + region.span.longitudeDelta / 2))
+        let rect = MKMapRect(x: nw.x, y: nw.y, width: se.x - nw.x, height: se.y - nw.y)
+        guard rect.width > 0, rect.height > 0 else { return region }
+        let zx = log2(MKMapSize.world.width / rect.width * (w / 256))
+        let zy = log2(MKMapSize.world.height / rect.height * (h / 256))
+        let z = min(zx, zy)
+        guard z < Self.minOpeningZoom else { return region }
+        let k = pow(2.0, z - Self.minOpeningZoom)          // < 1: shrink
+        let shrunk = MKMapRect(x: rect.midX - rect.width * k / 2, y: rect.midY - rect.height * k / 2,
+                               width: rect.width * k, height: rect.height * k)
+        return MKCoordinateRegion(shrunk)
+    }
+
     private func setInitialCamera(on map: MKMapView) {
-        if let region = bumpMap.boundingRegion {
+        if let region = dataRegion(for: map) {
             map.setRegion(region, animated: false)
         } else if let loc = locationHint.currentLocation {
             // The hint already has a fix — most likely path for a returning

@@ -32,6 +32,8 @@ struct ContentView: View {
     /// survives RideView teardown (e.g., switching tabs and coming
     /// back) — cached scores persist across the playback session.
     @State private var rideScoreCache: RideScoreCache
+    @State private var energyMetrics: EnergyMetricsCollector
+    @State private var syncLedger: SyncLedger
 
     /// v1.7 H3 level-up monitor.  Polls `/api/me/score` after each
     /// user-initiated ride upload and surfaces a celebration sheet
@@ -124,11 +126,18 @@ struct ContentView: View {
         // log GC even when the toggle is off, which keeps stale files
         // from accumulating if the user later turns it on.
         Task { await DebugLogSink.shared.configure(directory: cloud.ridesDirectoryURL) }
+        // v2.1 T6: daily MetricKit energy payloads land next to the ride
+        // files (when the debug-log toggle is on).  Held for the app's
+        // lifetime; MXMetricManager keeps a strong reference too.
+        _energyMetrics = State(initialValue: EnergyMetricsCollector(directory: cloud.ridesDirectoryURL))
         let store = RideStore(directoryURL: cloud.ridesDirectoryURL)
         let webAccount = WebAccount()
         let queue = SyncQueue()
+        let ledger = SyncLedger()
+        _syncLedger = State(initialValue: ledger)
         let coordinator = SyncCoordinator(
             queue: queue,
+            ledger: ledger,
             rideStore: store,
             webAccount: webAccount
         )
@@ -208,7 +217,8 @@ struct ContentView: View {
                 appState: appState,
                 settings: settings,
                 syncCoordinator: syncCoordinator,
-                webAccount: webAccount
+                webAccount: webAccount,
+                rideScoreCache: rideScoreCache
             )
             .tabItem { Label("Saved", systemImage: "list.bullet.rectangle") }
             // Badge shows only user-initiated unsynced rides — not the backfill
@@ -368,8 +378,15 @@ struct ContentView: View {
             // Connect RideStore save/delete to the sync queue + calibration recompute.
             // Idempotent — re-running just overwrites the same closure references.
             store.onRideSaved = { ride in
+                // The body changed, so whatever the server accepted before is
+                // stale; drop the ledger entry and let the upload re-record it.
+                syncLedger.forget(ride.id)
                 syncCoordinator.enqueue(ride.id)
                 syncCoordinator.kick()
+                // Fold the new ride into the visited-cells / bump grid in
+                // place (and refresh its disk cache) so the next ride's
+                // purple overlay is current without re-reading the library.
+                bumpMap.noteRideSaved(ride, rides: store.rides)
                 // v2.0 P1: recompute streams full rides off-main now.
                 Task { await calibration.recompute(summaries: store.rides, store: store) }
                 // Auto-export to Apple Health.  Gated on three things
@@ -411,6 +428,7 @@ struct ContentView: View {
             }
             store.onRideDeleted = { id in
                 syncCoordinator.remove(id)
+                syncLedger.forget(id)
                 Task { await calibration.recompute(summaries: store.rides, store: store) }
             }
             // Recompute on launch in case rides were added on another device and
@@ -426,6 +444,11 @@ struct ContentView: View {
             // synced" UI with zero actual POSTs to /api/sync/ride.  Server upserts are
             // idempotent on Ride.id, so re-seeding on every launch is safe — at most
             // one duplicate-but-successful POST per ride per launch.
+            // Feed the coordinator the live network posture so it can hold
+            // backfill off cellular (v2.1 U1).
+            syncCoordinator.isOnExpensiveNetwork = { reachability.isExpensive }
+            syncCoordinator.backfillOnWiFiOnly = { settings.backfillOnWiFiOnly }
+            syncLedger.prune(keeping: Set(store.rides.map(\.id)))
             if webAccount.isConnected {
                 syncCoordinator.backfillAll(rideIds: store.rides.map(\.id))
             }
@@ -480,7 +503,15 @@ struct ContentView: View {
                 // different account doesn't surface the old account's
                 // points.
                 rideScoreCache.invalidateAll()
+                // A different account's server has none of these rides.
+                syncLedger.clear()
             }
+        }
+        // v2.1 U1: getting onto Wi-Fi is the signal that held-back backfill
+        // can go.  `isReachable` doesn't change on a cellular→Wi-Fi switch,
+        // so this needs its own observer.
+        .onChange(of: reachability.isExpensive) { _, expensive in
+            if !expensive { syncCoordinator.kick() }
         }
         .onChange(of: reachability.isReachable) { _, isReachable in
             // The network coming back is another implicit "do it now" signal — kick the

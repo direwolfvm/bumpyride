@@ -201,13 +201,26 @@ final class HealthKitAuthManager {
     /// Write types: cycling workouts (and their attached route +
     /// distance + energy samples).  Adding new types here will require
     /// the user to re-authorize.
+    ///
+    /// v2.1 U5: heart rate joined this set.  `HKHealthStore.add(_:to:)` —
+    /// which is how the exporter attaches the watch's heart-rate trace to
+    /// the workout — is a *write* against those sample types, so read
+    /// access alone was never enough.  Every export since the feature
+    /// shipped logged `Code=4 "Not authorized"` and silently dropped the
+    /// trace.  Existing users are not re-prompted automatically; the
+    /// exporter checks `sharingAuthorized` and skips cleanly when it is
+    /// missing (`HealthKitExporter.canAssociateHeartRate`).
     static var shareTypes: Set<HKSampleType> {
-        [
+        var set: Set<HKSampleType> = [
             HKObjectType.workoutType(),
             HKSeriesType.workoutRoute(),
             HKQuantityType.quantityType(forIdentifier: .distanceCycling)!,
             HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned)!,
         ]
+        if let heartRate = HKQuantityType.quantityType(forIdentifier: .heartRate) {
+            set.insert(heartRate)
+        }
+        return set
     }
 
     /// Read types: body mass for the energy estimator (v1.5) plus

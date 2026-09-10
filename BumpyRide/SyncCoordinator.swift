@@ -63,6 +63,13 @@ final class SyncCoordinator {
     }
 
     let queue: SyncQueue
+    /// What the server has already accepted, so a re-seeded backfill queue
+    /// can be pruned locally instead of over the network.  See `SyncLedger`.
+    let ledger: SyncLedger
+    /// Set by ContentView.  When true and the ledger says a backfill ride is
+    /// already current, we skip it without asking the server.
+    var isOnExpensiveNetwork: () -> Bool = { false }
+    var backfillOnWiFiOnly: () -> Bool = { true }
     private let client: WebSyncClient
     private let storage: TokenStorage
     private weak var rideStore: RideStore?
@@ -104,12 +111,14 @@ final class SyncCoordinator {
 
     init(
         queue: SyncQueue,
+        ledger: SyncLedger,
         client: WebSyncClient = WebSyncClient(),
         storage: TokenStorage = TokenStorage(),
         rideStore: RideStore,
         webAccount: WebAccount
     ) {
         self.queue = queue
+        self.ledger = ledger
         self.client = client
         self.storage = storage
         self.rideStore = rideStore
@@ -200,34 +209,71 @@ final class SyncCoordinator {
         // a server that hasn't deployed the endpoint yet — we fall
         // back silently to the per-ride path.  User-initiated rides
         // are excluded: they always upload (local copy is truth).
+        // v2.1 U1: hash every queued backfill ride ONCE, then prune in two
+        // stages — locally against the ledger first, and only what survives
+        // that goes to the server.
+        //
+        // ContentView re-seeds the entire library into the backfill bucket on
+        // every launch, because the queue alone cannot tell "already synced"
+        // from "never tried".  Before the ledger, the only thing standing
+        // between that re-seed and a full re-upload was a server round-trip
+        // per ride; when those checks were slow or unavailable the drain fell
+        // straight through to uploading everything.  MetricKit caught it doing
+        // exactly that — 873 MB of cellular upload in one day against a 688 MB
+        // library.  In steady state the ledger now answers the whole question
+        // offline and this costs no requests at all.
+        var backfillHeldForWiFi = false
         var batchPruned = false
-        if let stored = storage.load(), let store = rideStore {
-            let backfillIds = queue.all().filter { !queue.userInitiatedIds.contains($0) }
-            if backfillIds.count >= 2 {
-                // v2.0 O2/P1: encode + hash streamed off-main, one ride
-                // at a time from disk — the store only holds summaries
-                // now, and nothing here needs the rides retained.
-                let entries = await store.contentHashes(ids: backfillIds)
-                if !entries.isEmpty {
-                    do {
-                        let needed = try await client.checkRidesBatch(entries: entries, token: stored.token)
-                        for entry in entries where !needed.contains(entry.id) {
-                            queue.remove(entry.id)
-                        }
-                        batchPruned = true
-                        log.info("Batch check pruned \(entries.count - needed.count, privacy: .public)/\(entries.count, privacy: .public) backfill ride(s); \(self.queue.count, privacy: .public) still queued")
-                    } catch WebSyncClient.ClientError.unauthorized {
-                        log.error("401 from /api/sync/ride/check-batch — invalidating account")
-                        webAccount?.invalidate()
-                        state = .waitingForAuth
-                        return
-                    } catch {
-                        log.debug("Batch check unavailable, falling back to per-ride checks: \(String(describing: error), privacy: .public)")
+        let backfillIds = queue.all().filter { !queue.userInitiatedIds.contains($0) }
+
+        if !backfillIds.isEmpty, let store = rideStore {
+            let entries = await store.contentHashes(ids: backfillIds)
+
+            var survivors: [(id: UUID, hash: String)] = []
+            for entry in entries {
+                if ledger.isCurrent(id: entry.id, hash: entry.hash) {
+                    queue.remove(entry.id)
+                } else {
+                    survivors.append(entry)
+                }
+            }
+            if survivors.count < entries.count {
+                log.info("Ledger pruned \(entries.count - survivors.count, privacy: .public)/\(entries.count, privacy: .public) backfill ride(s) with no network round-trip")
+            }
+
+            // Anything the ledger couldn't vouch for is several MB of upload
+            // each.  On a metered path, leave it queued for Wi-Fi; rides the
+            // user just saved are unaffected and still drain below.
+            if !survivors.isEmpty, backfillOnWiFiOnly(), isOnExpensiveNetwork() {
+                backfillHeldForWiFi = true
+                log.info("Holding \(survivors.count, privacy: .public) backfill ride(s) for Wi-Fi")
+            }
+
+            // Ask the server about the remainder in one round-trip rather
+            // than one per ride (v1.8 L1).  A ride the server already has is
+            // recorded in the ledger too, so this question is asked once
+            // rather than on every launch.  Any failure — including a 404
+            // from a server without the endpoint — falls back silently to the
+            // per-ride check inside the loop.
+            if !survivors.isEmpty, !backfillHeldForWiFi, let stored = storage.load() {
+                do {
+                    let needed = try await client.checkRidesBatch(entries: survivors, token: stored.token)
+                    for entry in survivors where !needed.contains(entry.id) {
+                        queue.remove(entry.id)
+                        ledger.record(id: entry.id, hash: entry.hash)
                     }
+                    batchPruned = true
+                    log.info("Batch check pruned \(survivors.count - needed.count, privacy: .public)/\(survivors.count, privacy: .public) backfill ride(s); \(self.queue.count, privacy: .public) still queued")
+                } catch WebSyncClient.ClientError.unauthorized {
+                    log.error("401 from /api/sync/ride/check-batch — invalidating account")
+                    webAccount?.invalidate()
+                    state = .waitingForAuth
+                    return
+                } catch {
+                    log.debug("Batch check unavailable, falling back to per-ride checks: \(String(describing: error), privacy: .public)")
                 }
             }
         }
-
         while !queue.isEmpty {
             guard let stored = storage.load() else {
                 state = .waitingForAuth
@@ -263,8 +309,13 @@ final class SyncCoordinator {
             }
 
             let userInitiated = queuedRides.first { queue.userInitiatedIds.contains($0.id) }
-            guard let next = userInitiated ?? queuedRides.first else {
+            // While backfill is held for Wi-Fi, only user-initiated rides are
+            // eligible; when they run out the drain ends and the held rides
+            // stay queued for the next kick (reachability change, next launch).
+            let candidate = backfillHeldForWiFi ? userInitiated : (userInitiated ?? queuedRides.first)
+            guard let next = candidate else {
                 state = .idle
+                if backfillHeldForWiFi { log.info("Drain complete — backfill still held for Wi-Fi") }
                 return
             }
 
@@ -309,6 +360,9 @@ final class SyncCoordinator {
                     if result.exists && result.hashMatches {
                         log.debug("Backfill ride \(next.id, privacy: .public) already on server with matching hash — skipping upload")
                         queue.remove(next.id)
+                        // v2.1 U1: record it so the next launch prunes this
+                        // ride offline instead of asking again.
+                        ledger.record(id: next.id, hash: hash)
                         attempt = 0
                         continue
                     }
@@ -333,8 +387,12 @@ final class SyncCoordinator {
                 // screen or backgrounds the app.  Same status-code →
                 // ClientError mapping as uploadRide, so the catch
                 // clauses below are unchanged.
-                let syncResponse = try await uploadViaBackgroundSession(body: body, rideId: next.id, token: stored.token)
+                let syncResponse = try await uploadViaBackgroundSession(
+                    body: body, rideId: next.id, token: stored.token, isBackfill: !isUserInitiated)
                 queue.remove(next.id)
+                // v2.1 U1: remember exactly what the server accepted, so a
+                // re-seed of this ride prunes locally next launch.
+                ledger.record(id: next.id, hash: SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined())
                 // v2.0 N1/N4: surface newly-earned achievements.  Fresh
                 // inserts only (updated != true) — see the callback doc.
                 if let awards = syncResponse?.achievementsAwarded,
@@ -416,8 +474,14 @@ final class SyncCoordinator {
     /// completion with an empty buffer; never a failure, the upload
     /// itself succeeded).
     @discardableResult
-    private func uploadViaBackgroundSession(body: Data, rideId: UUID, token: String) async throws -> WebSyncClient.RideSyncResponse? {
-        let request = await client.rideUploadRequest(token: token)
+    private func uploadViaBackgroundSession(body: Data, rideId: UUID, token: String, isBackfill: Bool = false) async throws -> WebSyncClient.RideSyncResponse? {
+        var request = await client.rideUploadRequest(token: token)
+        // Belt and braces alongside the drain-level hold: even if the path
+        // changes to cellular mid-transfer, a backfill body won't ride it.
+        if isBackfill && backfillOnWiFiOnly() {
+            request.allowsExpensiveNetworkAccess = false
+            request.allowsConstrainedNetworkAccess = false
+        }
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("BumpyRideUploads", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

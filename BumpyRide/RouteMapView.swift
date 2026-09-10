@@ -52,11 +52,20 @@ struct RouteMapView: View {
     /// `CLLocation.course` is unreliable below that.
     var bikeHeading: Double? = nil
 
-    @State private var cameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
+    /// `.automatic` fits the route content; live callers switch to
+    /// user-location tracking in `updateCamera`.  Starting from
+    /// `.userLocation` here meant playback briefly framed wherever the
+    /// phone was rather than the ride.
+    @State private var cameraPosition: MapCameraPosition = .automatic
 
     var body: some View {
         Map(position: $cameraPosition) {
-            UserAnnotation()
+            // The location dot only means something while recording.  On a
+            // saved ride it's noise, and it keeps MapKit's location updates
+            // running for as long as the map is on screen.
+            if followUser {
+                UserAnnotation()
+            }
 
             ForEach(colorRuns()) { run in
                 MapPolyline(coordinates: run.coordinates)

@@ -1,6 +1,9 @@
 import SwiftUI
 
 /// Live oscilloscope-style waveform of vertical acceleration on a black background.
+///
+/// See `LiveSeismograph` below for why callers on the recording screen should
+/// use that wrapper rather than reading the recorder's live buffers directly.
 /// `samples` is the recent ring-buffer contents from `MotionManager`; `bumpiness` is
 /// the current 1 s RMS displayed numerically in the corner.  Slow scroll comes from
 /// using a 5 s buffer instead of a tighter window.
@@ -93,5 +96,36 @@ struct SeismographView: View {
                 }
             }
         }
+    }
+}
+
+
+/// v2.1 U2: the recording screen's seismograph, isolated from its parent.
+///
+/// `MotionManager` republishes `latestSamples` / `currentBumpiness` about 17
+/// times a second.  `RideView` used to read both directly in its own body, so
+/// every one of those publishes invalidated the *entire* ride screen —
+/// including `LiveRouteMapView`, whose `updateUIView` then ran ~17 Hz for the
+/// whole ride, on top of MapKit's own continuous redraw in follow mode.  That
+/// is the shape of the GPU cost MetricKit reported: 7217 s of GPU against
+/// 3659 s of foreground time, near-100 % sustained, with the phone reaching
+/// `thermal=serious` on a half-hour ride.
+///
+/// Reading the live buffers *inside this view's* body confines the 17 Hz
+/// invalidation to the waveform itself. The map, stats bar and controls
+/// re-render only when their own inputs change.
+struct LiveSeismograph: View {
+    var recorder: RideRecorder
+    var settings: AppSettings
+    var currentSpeed: Double?
+
+    var body: some View {
+        SeismographView(
+            samples: recorder.liveSamples,
+            bumpiness: recorder.currentBumpiness,
+            capacity: recorder.motion.windowCapacity,
+            currentSpeed: currentSpeed,
+            settings: settings
+        )
     }
 }
