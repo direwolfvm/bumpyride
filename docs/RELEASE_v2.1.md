@@ -235,6 +235,85 @@ each needs re-measuring on 2.1 once a few days of payloads accumulate.
   our audit but charged to the same app-wide budget — which would tie this to
   U3 and make the heading-gating fix the relevant lever.
 
+- **U7 - the map's GPU cost: route overlays were rebuilt from scratch on
+  every GPS fix.** This is what U2 was looking for and missed.
+  `LiveRouteMapView.updateUIView` removed *every* route overlay, recomputed
+  the colour runs across the *entire* points array, allocated fresh
+  `MKPolyline`s and re-added them all — each time a fix landed. Per-fix work
+  therefore grew with the route, making the total quadratic in ride length.
+  Measured on a route matching the 12 Sep ride (6339 points, 3.17 h):
+  ~26 million polyline vertices handed to MapKit over the ride.
+  Fix, in two parts:
+  1. `RouteColoring.runs` takes a `from:` index and reports absolute
+     `startIndex` values, so a caller can recompute just the tail. Points
+     only append while recording, so every run before the last is final.
+  2. `RouteColoring.maxRunPoints` (256) caps run length regardless of
+     colour, so a smooth road can't collapse into one route-length run and
+     defeat (1). Adjacent runs share their boundary vertex exactly as
+     colour-change runs do, so the route still draws continuously.
+  `updateUIView` now swaps only the last overlay. Per-fix cost is constant
+  rather than O(route):
+
+  | Route length | Vertices before | after | reduction |
+  |---|---|---|---|
+  | 500 pts | 166,195 | 2,669 | 62x |
+  | 1,500 pts | 1,472,221 | 8,194 | 180x |
+  | 3,000 pts | 5,829,249 | 17,176 | 339x |
+  | 6,339 pts | 25,969,284 | 35,096 | **740x** |
+
+  The reduction grows with ride length because the growth is now linear
+  rather than quadratic — long rides were hurt worst and gain most.
+  Verified by porting both `RouteColoring.runs` and the incremental update
+  to Python and asserting the incremental result equals a full rebuild
+  across 400 randomised routes including dropouts and band changes
+  (`scratchpad/verify_runs.py`). Still to confirm against real MetricKit
+  numbers on the next payloads.
+
+**Verification against post-fix telemetry (12 Sep)**
+
+New build was running from the evening of 10 Sep, so 11 Sep is the first
+full day on it. Payload naming: `metrics-<date>` covers the *previous* day.
+
+| Measure | 9 Sep (pre) | 10 Sep (mixed) | 11 Sep (post) |
+|---|---|---|---|
+| Cellular upload | 873 MB | 544 MB | **6 MB** (+62 MB Wi-Fi) |
+| GPU time | 7217 s | 7215 s | 7460 s |
+| GPU / foreground | 1.97x | 1.77x | **2.54x** |
+| Location, nav accuracy | 14 min | 38 min | 37 min |
+| Peak memory | 467 MB | 552 MB | 544 MB |
+| Background memory kills | 3 | 1 | **0** |
+
+- **U1 confirmed fixed.** 873 MB -> 6 MB of cellular upload, with the
+  traffic moved to Wi-Fi. The ledger plus the metered-path hold work.
+- **U6 answered.** `CLCallAudit` reports 7-60 calls per ride (60 on a
+  3.17 h / 43 km ride), so the 24,001 was never ours — it is MapKit's own
+  manager. The hint fix was still correct but was not the cause.
+  Side observation: `hint.requestLocation.authChange` reached 33 on that
+  ride, i.e. `BumpMapTabView`'s struct is rebuilt ~33 times during a ride
+  and each rebuild constructs a CLLocationManager. Harmless at that volume,
+  but it confirms the `@State` initializer pattern is live.
+- **U4 partially.** Peak memory did **not** drop (544 MB vs 467 MB), but
+  background memory-pressure kills went 3 -> 1 -> 0. The pools appear to
+  have changed the outcome without lowering the peak, so whatever holds
+  ~500 MB is still unidentified.
+- **U2 and U3 not confirmed.** GPU time is flat in absolute terms and
+  *worse* per foreground second; navigation-accuracy location time is
+  unchanged at ~37 min. Isolating the seismograph did cut `updateUIView`
+  from ~17 Hz to the GPS rate, but that is evidently not what the GPU cost
+  was made of. See U7.
+
+**Thermal and battery**
+
+Thermal genuinely improved, comparing like for like on charging state: a
+27 min ride on 9 Sep reached `thermal=serious` while charging; the 3.17 h /
+43 km ride on 12 Sep stayed `nominal` throughout, also charging.
+
+Battery is **not yet measured**. Every post-fix ride so far was on a
+charger, and the only unplugged ride in the dataset is 8 Sep (pre-fix, at
+21.3 %/h). A 3.17 h ride holding at 100 % while plugged in is suggestive —
+the pre-fix build lost 15 % in 27 min while charging — but it is not a
+like-for-like result. **One unplugged post-fix ride would settle it.**
+
 **Confirmations from the same data**
 - T3a is justified: on 5 Sep, with **no ride recorded**, the app spent
   18 min in the background and 10 min using location against 3 min of

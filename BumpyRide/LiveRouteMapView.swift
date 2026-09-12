@@ -100,25 +100,48 @@ struct LiveRouteMapView: UIViewRepresentable {
     func updateUIView(_ map: MKMapView, context: Context) {
         let c = context.coordinator
 
-        // --- Route polylines: rebuild when the point buffer changed.
-        // The live buffer is a *trailing window* capped at 1000 points
-        // (RideView.maxLivePolylinePoints), so once the ride passes that
-        // (~16 min ≈ 5 mi) `points.count` saturates at 1000 and never
-        // changes again even though the window keeps sliding.  Triggering
-        // on count alone froze the route at the mile-5 location and let it
-        // scroll off-screen as the map followed the rider — the
-        // "bumpiness disappears after five miles" bug.  Also compare the
-        // newest point's timestamp, which advances on every fix in both
-        // the growth and saturated phases.  Rebuild cadence is unchanged
-        // (~1 Hz with new fixes); this just doesn't stop at the cap.
+        // --- Route polylines: extend, don't rebuild.
+        //
+        // This used to tear down every route overlay and recompute the colour
+        // runs across the *whole* points array on each new GPS fix. The work
+        // per fix grew with the route, so the total was quadratic in ride
+        // length: the 3.17 h / 43 km ride on 12 Sep pushed ~20 million
+        // polyline vertices at MapKit over its lifetime, and MetricKit
+        // measured GPU time at 2.5x foreground wall time with the phone
+        // reaching thermal=serious on much shorter rides.
+        //
+        // Points only ever append while recording, so every run except the
+        // last is already final. Recomputing from the last run's start index
+        // and swapping just that one overlay makes the per-fix cost constant
+        // — bounded by RouteColoring.maxRunPoints — instead of O(route).
+        //
+        // The timestamp is compared as well as the count because a fix that
+        // lands without growing the buffer still moves the route forward.
         let lastTimestamp = points.last?.timestamp
         if points.count != c.lastPointCount || lastTimestamp != c.lastPointTimestamp {
+            let previousCount = c.lastPointCount
             c.lastPointCount = points.count
             c.lastPointTimestamp = lastTimestamp
-            map.removeOverlays(c.routeOverlays)
-            c.routeOverlays.removeAll(keepingCapacity: true)
-            c.runColors.removeAll(keepingCapacity: true)
-            for run in RouteColoring.runs(points: points, settings: settings, colorRoute: true) {
+
+            // A shrinking buffer means a new ride (or a discard), so nothing
+            // already on the map can be reused.
+            let fullRebuild = c.routeOverlays.isEmpty || points.count < previousCount
+            let from = fullRebuild ? 0 : c.lastRunStartIndex
+            let rebuilt = RouteColoring.runs(
+                points: points, settings: settings, colorRoute: true, from: from)
+
+            if fullRebuild {
+                map.removeOverlays(c.routeOverlays)
+                c.routeOverlays.removeAll(keepingCapacity: true)
+                c.runColors.removeAll(keepingCapacity: true)
+            } else if !rebuilt.isEmpty, let stale = c.routeOverlays.last {
+                // Only the last run can have changed; drop just that one.
+                map.removeOverlay(stale)
+                c.runColors.removeValue(forKey: ObjectIdentifier(stale))
+                c.routeOverlays.removeLast()
+            }
+
+            for run in rebuilt {
                 let poly = MKPolyline(coordinates: run.coordinates, count: run.coordinates.count)
                 c.runColors[ObjectIdentifier(poly)] = run.bandIndex < 0
                     ? UIColor.gray.withAlphaComponent(0.75)
@@ -127,6 +150,11 @@ struct LiveRouteMapView: UIViewRepresentable {
                 // .aboveLabels so the route sits on top of the visited-cell
                 // tiles (added at .aboveRoads below).
                 map.addOverlay(poly, level: .aboveLabels)
+            }
+            if let tailStart = rebuilt.last?.startIndex {
+                c.lastRunStartIndex = tailStart
+            } else if fullRebuild {
+                c.lastRunStartIndex = 0
             }
         }
 
@@ -227,6 +255,9 @@ struct LiveRouteMapView: UIViewRepresentable {
         /// in `rendererFor`.  Avoids the MKPolyline-subclassing gotcha.
         var runColors: [ObjectIdentifier: UIColor] = [:]
         var lastPointCount: Int = -1
+        /// Points index where the last built run begins.  Everything before it
+        /// is final, so an incremental update recomputes only from here.
+        var lastRunStartIndex: Int = 0
         /// Newest point's timestamp at the last route rebuild.  Advances on
         /// every GPS fix even after the trailing-window cap freezes
         /// `lastPointCount` at 1000 — the rebuild trigger that the count
