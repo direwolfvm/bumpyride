@@ -269,6 +269,27 @@ each needs re-measuring on 2.1 once a few days of payloads accumulate.
   (`scratchpad/verify_runs.py`). Still to confirm against real MetricKit
   numbers on the next payloads.
 
+- **U8 - sync logging moved to the sidecar, and the location-hint churn
+  fixed.** Two gaps the 13-14 Sep rides exposed.
+  (a) Cellular upload went 873 MB -> 6 MB -> 22 MB -> **151 MB (13 Sep)**,
+  on a day with one 1 MB ride and no rewritten ride files. Unexplainable,
+  because every drain/ledger line went to OSLog — the subsystem CoreLocation
+  quarantines, and one that never reaches the rider's debug bundle.
+  `SyncCoordinator` now writes the same story to the ride sidecar via
+  `DebugLog`: drain start (queue split, metered-path state, Wi-Fi setting),
+  ledger prune counts, Wi-Fi holds, server batch-check results, per-ride
+  upload size, and a drain-complete total. A handful of lines per drain.
+  (b) `hint.requestLocation.authChange` reached 58 during the 17-minute
+  13 Sep ride (~3/min). Two causes, both fixed: `BumpMapLocationHint` was
+  constructed in `BumpMapTabView`'s `@State` initializer, which Swift
+  evaluates on every rebuild of that view struct — it is now owned by
+  `ContentView` and passed in; and CoreLocation's initial
+  `didChangeAuthorization` callback (fired merely for assigning the
+  delegate) was being treated as a grant and answered with a
+  `requestLocation()`, on top of the one the view's `.task` already issues.
+  Expected steady state is ~1 per launch, and only when the Bump Map tab is
+  actually opened.
+
 **Verification against post-fix telemetry (12 Sep)**
 
 New build was running from the evening of 10 Sep, so 11 Sep is the first
@@ -301,6 +322,36 @@ full day on it. Payload naming: `metrics-<date>` covers the *previous* day.
   unchanged at ~37 min. Isolating the seismograph did cut `updateUIView`
   from ~17 Hz to the GPS rate, but that is evidently not what the GPU cost
   was made of. See U7.
+
+**Second verification round (14 Sep) — the unplugged measurement**
+
+Two unplugged rides finally landed. 14 Sep is a clean match for the 8 Sep
+pre-fix baseline: both unplugged, both 12.5 km.
+
+| | 8 Sep (pre) | 14 Sep (current) |
+|---|---|---|
+| Drain | 21.3 %/h | **10.6 %/h** |
+| Active-recording portion | 35.2 %/h | 10.6 %/h (no mid-ride pause) |
+| Thermal | reached `fair` | `nominal` throughout |
+
+Battery reports in 5 % steps, so a 5 % drop puts the true rate somewhere
+between ~5 and ~16 %/h; even the pessimistic end beats the baseline. The
+13 Sep ride is not usable for this — 2 km with 11 of its 17 minutes paused,
+so the quantum dominates.
+
+**U7's diagnosis confirmed, the fix not yet.** The 3.17 h ride on 12 Sep —
+the last before U7 — recorded **25,685 s of GPU**, 3.4x the worst previous
+day, at 3.27x foreground. The longest ride produced by far the worst GPU,
+which is what quadratic route rebuilding predicts and a constant per-fix
+cost would not. The only post-U7 payload covers 13 Sep, whose ride was
+2 km — too short to exercise the quadratic path. The 14 Sep payload is the
+real test.
+
+**CoreLocation settled.** 9-15 calls across the 14 Sep ride; the audit's own
+"volume is low" line fired. The 24,001 was never ours.
+
+**Still not fixed:** peak memory (558 MB on 12 Sep) and background memory
+kills (1 then 2, not 0).
 
 **Thermal and battery**
 

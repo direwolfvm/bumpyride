@@ -32,6 +32,12 @@ final class BumpMapLocationHint: NSObject, CLLocationManagerDelegate {
     /// the user gets feedback that the tap registered.
     private(set) var isFetching: Bool = false
 
+    /// CoreLocation always fires `locationManagerDidChangeAuthorization` once
+    /// just for assigning the delegate, before anything has actually changed.
+    /// Treating that as a grant made every instance issue a `requestLocation()`
+    /// on top of the one the view asks for on appear (v2.1 U8).
+    private var sawInitialAuthorizationCallback = false
+
     override init() {
         // CLLocationManager.authorizationStatus is callable pre-super.init, so we
         // can prime the published status without an "initialized before super"
@@ -111,9 +117,14 @@ final class BumpMapLocationHint: NSObject, CLLocationManagerDelegate {
         let status = manager.authorizationStatus
         Task { @MainActor in
             self.authorizationStatus = status
-            // If the user just granted permission via our prompt, follow through
-            // with the location fetch they implicitly asked for by tapping the
-            // "Use my location" button.
+            // The first callback is CoreLocation announcing the delegate, not a
+            // change.  `BumpMapTabView`'s `.task` owns the initial request.
+            guard self.sawInitialAuthorizationCallback else {
+                self.sawInitialAuthorizationCallback = true
+                return
+            }
+            // The user just granted permission via our prompt — follow through
+            // with the fetch they implicitly asked for.
             if self.isAuthorized(status), self.currentLocation == nil, !self.isFetching {
                 self.isFetching = true
                 CLCallAudit.note("hint.requestLocation.authChange")

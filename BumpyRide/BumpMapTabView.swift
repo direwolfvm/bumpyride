@@ -19,10 +19,16 @@ struct BumpMapTabView: View {
     @Bindable var calibration: CalibrationStore
 
     /// Location source for the "where should we center the empty map?" question.
-    /// Lives on the tab so it survives BumpMapView teardown/rebuilds and so the
-    /// empty-state overlay can drive permission requests without poking the
-    /// `MKMapView` wrapper.  See `BumpMapLocationHint`.
-    @State private var locationHint = BumpMapLocationHint()
+    /// See `BumpMapLocationHint`.
+    ///
+    /// v2.1 U8: owned by `ContentView` and passed in, **not** a `@State`
+    /// initializer here.  Swift evaluates a `@State` default every time the
+    /// view struct is built and SwiftUI keeps only the first instance, so the
+    /// old form constructed a fresh CLLocationManager on every rebuild of this
+    /// tab — each one assigning a delegate, which CoreLocation answers with an
+    /// authorization callback, which fired a `requestLocation()`.  The audit
+    /// caught it: 58 such calls during a 17-minute ride.
+    var locationHint: BumpMapLocationHint
 
     /// Incremented by the floating recenter button.  `BumpMapView`
     /// observes the change and reframes to the full-data region.

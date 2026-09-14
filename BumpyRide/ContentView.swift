@@ -34,6 +34,9 @@ struct ContentView: View {
     @State private var rideScoreCache: RideScoreCache
     @State private var energyMetrics: EnergyMetricsCollector
     @State private var syncLedger: SyncLedger
+    /// v2.1 U8: owned here so it is constructed once, rather than on every
+    /// rebuild of the Bump Map tab.  See `BumpMapTabView.locationHint`.
+    @State private var bumpMapLocationHint = BumpMapLocationHint()
 
     /// v1.7 H3 level-up monitor.  Polls `/api/me/score` after each
     /// user-initiated ride upload and surfaces a celebration sheet
@@ -235,7 +238,8 @@ struct ContentView: View {
                 brakeMap: brakeMap,
                 closeCallMap: closeCallMap,
                 settings: settings,
-                calibration: calibration
+                calibration: calibration,
+                locationHint: bumpMapLocationHint
             )
             .tabItem { Label("Bump Map", systemImage: "square.grid.3x3.fill") }
             .tag(AppState.Tab.bumpMap)

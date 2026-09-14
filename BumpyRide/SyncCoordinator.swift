@@ -105,6 +105,20 @@ final class SyncCoordinator {
     private var retryTask: Task<Void, Never>?
     private var attempt: Int = 0
     private let log = Logger(subsystem: "com.herbertindustries.BumpyRide", category: "sync")
+    /// v2.1 U8: the same story, in the on-disk sidecar.
+    ///
+    /// Everything above goes to OSLog — which is precisely the subsystem
+    /// CoreLocation's rate limiter quarantines, and it is also absent from the
+    /// debug bundle the rider can actually send.  When cellular upload jumped
+    /// from 6 MB to 151 MB on 13 Sep there was no way to tell whether the
+    /// ledger had pruned, whether the Wi-Fi hold engaged, or how many bytes
+    /// actually went out.  These lines are low-volume (a handful per drain)
+    /// and land in the ride sidecar where they survive.
+    nonisolated static let debug = DebugLog(category: "sync")
+
+    /// Bytes and rides sent in the current drain, for the completion line.
+    private var drainBytes: Int = 0
+    private var drainRides: Int = 0
 
     /// Backoff schedule in seconds, indexed by attempt count.  Final entry is the cap.
     private let backoffSchedule: [TimeInterval] = [30, 120, 600, 3600]
@@ -194,6 +208,10 @@ final class SyncCoordinator {
             return
         }
         log.info("Starting drain — queued: \(self.queue.count, privacy: .public)")
+        drainBytes = 0
+        drainRides = 0
+        let userCount = queue.userInitiatedIds.count
+        Self.debug.info("drain start: queued=\(queue.count) (user=\(userCount) backfill=\(queue.count - userCount)) expensiveNetwork=\(isOnExpensiveNetwork()) wifiOnlyBackfill=\(backfillOnWiFiOnly())")
 
         // v1.8 L1: prune the backfill queue with ONE batch check
         // round-trip instead of a per-ride check inside the loop.
@@ -240,6 +258,7 @@ final class SyncCoordinator {
             if survivors.count < entries.count {
                 log.info("Ledger pruned \(entries.count - survivors.count, privacy: .public)/\(entries.count, privacy: .public) backfill ride(s) with no network round-trip")
             }
+            Self.debug.info("ledger: \(entries.count - survivors.count)/\(entries.count) backfill ride(s) already current, \(survivors.count) need upload")
 
             // Anything the ledger couldn't vouch for is several MB of upload
             // each.  On a metered path, leave it queued for Wi-Fi; rides the
@@ -247,6 +266,7 @@ final class SyncCoordinator {
             if !survivors.isEmpty, backfillOnWiFiOnly(), isOnExpensiveNetwork() {
                 backfillHeldForWiFi = true
                 log.info("Holding \(survivors.count, privacy: .public) backfill ride(s) for Wi-Fi")
+                Self.debug.info("holding \(survivors.count) backfill ride(s) for Wi-Fi (on a metered path)")
             }
 
             // Ask the server about the remainder in one round-trip rather
@@ -264,6 +284,7 @@ final class SyncCoordinator {
                     }
                     batchPruned = true
                     log.info("Batch check pruned \(survivors.count - needed.count, privacy: .public)/\(survivors.count, privacy: .public) backfill ride(s); \(self.queue.count, privacy: .public) still queued")
+                    Self.debug.info("server batch check: \(survivors.count - needed.count)/\(survivors.count) already on server, \(needed.count) to upload")
                 } catch WebSyncClient.ClientError.unauthorized {
                     log.error("401 from /api/sync/ride/check-batch — invalidating account")
                     webAccount?.invalidate()
@@ -316,6 +337,7 @@ final class SyncCoordinator {
             guard let next = candidate else {
                 state = .idle
                 if backfillHeldForWiFi { log.info("Drain complete — backfill still held for Wi-Fi") }
+                Self.debug.info("drain ended: \(drainRides) ride(s), \(drainBytes / 1024) kB uploaded; \(queue.count) still queued\(backfillHeldForWiFi ? " (backfill held for Wi-Fi)" : "")")
                 return
             }
 
@@ -393,6 +415,9 @@ final class SyncCoordinator {
                 // v2.1 U1: remember exactly what the server accepted, so a
                 // re-seed of this ride prunes locally next launch.
                 ledger.record(id: next.id, hash: SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined())
+                drainBytes += body.count
+                drainRides += 1
+                Self.debug.info("uploaded \(isUserInitiated ? "user" : "backfill") ride \(next.id.uuidString.prefix(8)) — \(body.count / 1024) kB (drain total \(drainBytes / 1024) kB over \(drainRides) ride(s))")
                 // v2.0 N1/N4: surface newly-earned achievements.  Fresh
                 // inserts only (updated != true) — see the callback doc.
                 if let awards = syncResponse?.achievementsAwarded,
@@ -459,6 +484,7 @@ final class SyncCoordinator {
         }
         state = .idle
         log.info("Drain complete")
+        Self.debug.info("drain complete: \(drainRides) ride(s), \(drainBytes / 1024) kB uploaded; \(queue.count) still queued")
     }
 
     /// v1.8 L2: write the ride body to a temp file and hand it to the
