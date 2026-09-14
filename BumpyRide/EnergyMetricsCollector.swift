@@ -113,7 +113,19 @@ final class EnergyMetricsCollector: NSObject, MXMetricManagerSubscriber {
             parts.append(String(format: "gpu %.0fs", g.cumulativeGPUTime.converted(to: .seconds).value))
         }
         if let m = p.memoryMetrics {
-            parts.append(String(format: "peakMem %.0fMB", m.peakMemoryUsage.converted(to: .megabytes).value))
+            // v2.1 U9: suspended memory matters more than the peak here.
+            //
+            // The peak is a foreground high-water mark; it has never produced a
+            // foreground exit (zero across every payload so far) and it tracks
+            // foreground time almost exactly — 344 MB on a 574 s day against
+            // 558 MB on a 7840 s one — which is MapKit's tile cache growing
+            // with how much map got panned, not our data. Background jetsam,
+            // which is what has actually been killing the app (7 memory-pressure
+            // exits over five days), is governed by the *suspended* footprint
+            // instead. That is the figure worth watching for drift.
+            parts.append(String(format: "peakMem %.0fMB suspendedMem %.0fMB",
+                                m.peakMemoryUsage.converted(to: .megabytes).value,
+                                m.averageSuspendedMemory.averageMeasurement.converted(to: .megabytes).value))
         }
         if let n = p.networkTransferMetrics {
             parts.append(String(format: "up cell %.0fMB wifi %.0fMB",

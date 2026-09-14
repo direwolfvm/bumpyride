@@ -350,8 +350,36 @@ real test.
 **CoreLocation settled.** 9-15 calls across the 14 Sep ride; the audit's own
 "volume is low" line fired. The 24,001 was never ours.
 
-**Still not fixed:** peak memory (558 MB on 12 Sep) and background memory
-kills (1 then 2, not 0).
+**Memory: reassessed, and U4 was aimed at the wrong number.**
+
+| Covers | Foreground | Peak | Suspended | bg kills | fg exits |
+|---|---|---|---|---|---|
+| 9 Sep | 3659 s | 468 MB | 163 MB | 3 | 0 |
+| 10 Sep | 4097 s | 552 MB | 199 MB | 1 | 0 |
+| 11 Sep | 2935 s | 544 MB | 155 MB | 0 | 0 |
+| 12 Sep | 7840 s | 558 MB | 186 MB | 1 | 0 |
+| 13 Sep | 574 s | 344 MB | 138 MB | 2 | 0 |
+
+The peak is a *foreground* high-water mark and is not a problem: zero
+foreground exits across every payload, and it tracks foreground time almost
+exactly (344 MB on a 574 s day vs 558 MB on a 7840 s one), which is MapKit's
+tile cache growing with how much map was panned rather than our data.
+
+Background jetsam — the 7 memory-pressure exits — is governed by the
+*suspended* footprint (138-199 MB), which was never being reported. The
+consequences are also largely absorbed by design: background uploads survive
+process death on a background `URLSession`, T3a clears the orphaned SLC
+registration at launch, an active recording holds a location assertion and
+has journal recovery, and cold start is ~350 ms. Counts are noisy with no
+trend (3, 1, 0, 1, 2) and partly reflect system-wide pressure.
+
+**U4 shows no measurable effect** — it targeted the peak, and the peak did
+not move. The pools remain correct for those library-wide loops but should
+not be counted as a fix.
+
+- **U9** adds `suspendedMem` to the metrics digest so drift in the figure
+  that actually governs background survival would be visible. No further
+  memory work is warranted on current evidence.
 
 **Thermal and battery**
 
