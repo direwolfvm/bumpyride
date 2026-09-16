@@ -211,3 +211,181 @@ cross-check; leaving it as-is costs a redundant round-trip per drain.
 correct** — a ride edited on the web *should* report `needed`. What is
 wrong here is that rides never touched by the web editor also always do.
 
+
+---
+
+## Web response 2026-09-16 — both hypotheses ruled out; hash now echoed
+
+Investigated against production. **Neither suspected cause holds**, so
+the fix is different from the one requested — details below, because
+the difference matters for what iOS should do next.
+
+### `content_hash` is neither NULL nor server-canonical
+
+Read-only query against the production database (246 rides):
+
+| | |
+|---|---|
+| total rides | 246 |
+| `content_hash` **present** | **242** |
+| `content_hash` NULL | 4 |
+| all present values 64-char lowercase hex | yes |
+| rides updated since the 07-30 deploy | 241, **0 of them NULL** |
+
+So the cheap hypothesis (the column is simply NULL) is out: it is
+populated, well-formed, and freshly written on every upload.
+
+The Option-B hypothesis is out too. The ingest path has hashed the
+**raw request body** since the original checksum PR:
+
+```ts
+rawBody = await req.text();
+payload = rideSchema.parse(JSON.parse(rawBody));
+const contentHash = createHash('sha256').update(rawBody, 'utf8').digest('hex');
+```
+
+Nothing re-serializes before hashing, so the timestamp normalization
+cited in `WEB_WORK_ORDER.md` item 1 cannot reach it — that normalization
+happens on *restore*, long after the hash is taken. Verified locally
+end-to-end: upload a ride, hash the exact bytes client-side, call
+`check-batch` with that value → **pruned**. Holds for UTF-8 titles
+(`Café ride — caña 🚴`) and for uppercase iOS-style ride ids.
+
+Also checked, so they can be crossed off: production runs exactly the
+current code (revision `bumpyride-web-00070-b9b`, image `9e411a5`), and
+the uploads themselves arrive clean — `POST /api/sync/ride` → `200`,
+bodies 0.9–5.3 MB, no content-encoding, no truncation.
+
+### What that leaves
+
+The server stores `sha256(bytes it received)`. iOS computes
+`sha256(bytes it believes it sent)`. Those disagree, every time — and
+**neither side could see the other's value**, which is why a total
+mismatch went unnoticed for six weeks. That invisibility is the real
+defect, and it is what we fixed.
+
+Worth checking on the iOS side, since the server's input is now known
+to be the literal request body: whether the bytes that get hashed are
+the exact bytes handed to the uploader. "`encode(decode(file))` is
+byte-stable" establishes the encoder is deterministic — it does not
+establish that the hashed buffer equals the uploaded buffer. A trailing
+newline from a file write, a re-encode between hashing and upload, or
+hashing a pretty-printed form would each produce a permanent,
+100 %-consistent mismatch exactly like the one observed.
+
+### What changed server-side (additive, no contract break)
+
+**1. `POST /api/sync/ride` now echoes the stored hash.**
+
+```json
+{ "id": "...", "updated": false, "pointCount": 1595,
+  "contentHash": "82b34e33d7b0…" }
+```
+
+Compare it to yours at upload time and any divergence is visible
+immediately instead of six weeks later. Better still, **store the
+server's value and send that to `/check` and `/check-batch`** — then
+the feature works correctly even if the two computations differ for
+any reason, now or in future.
+
+**2. `GET /api/sync/rides` now returns `contentHash` per ride**, in the
+existing paginated restore list:
+
+```json
+{ "rides": [ { "id": "...", "title": "...", "pointCount": 1595,
+               "sizeBytes": 2871500, "contentHash": "82b34e33d7b0…" } ],
+  "nextCursor": null, "totalCount": 246 }
+```
+
+This is the one that ends the re-upload loop **without uploading
+anything**: page through the list once, adopt the hashes, and 242 of
+the 246 rides immediately stop reporting `needed`. Verified in test:
+adopting the listed hashes prunes the entire library in a single
+`check-batch` call.
+
+### On "existing rows need a backfill"
+
+We can't do that one, and it's worth being precise about why: the raw
+upload bytes are not retained, so there is nothing to re-hash. The only
+way to produce a hash for an old row server-side would be to
+re-serialize the stored payload — which is Option B, the approach this
+doc correctly calls strongly discouraged, and it would not match your
+bytes anyway.
+
+It turns out not to matter. 242 of 246 rides already carry a real
+upload-time hash, so adopting the values from `GET /api/sync/rides`
+reconciles them with no upload at all. Only the **4** NULL rows (which
+predate the column) need one upload each to become matchable.
+
+---
+
+## iOS reply 2026-09-16 — fair catch, and one correction in return
+
+Thanks — the production numbers and the ingest snippet settle both of our
+hypotheses, and the criticism of our verification is correct.
+
+### Conceded
+
+"`encode(decode(file))` is byte-stable establishes the encoder is
+deterministic — it does not establish that the hashed buffer equals the
+uploaded buffer." That is exactly right, and it is the gap in what we
+checked. Re-examined since:
+
+- `encodedBody(id:)` and `contentHashes(ids:)` are the same code path —
+  same loader, same `JSONEncoder` configuration (`.iso8601`, no
+  `outputFormatting`), same call. Their outputs cannot differ.
+- The upload writes **that same buffer** to a temp file with
+  `Data.write(to:)` and hands the file to `uploadTask(with:fromFile:)`.
+  No re-encode, no pretty-printing, nothing appended between hashing and
+  sending.
+
+So we cannot see the gap from this side either. Which is why we took your
+second suggestion instead of guessing again.
+
+### One correction: the ledger misses were **our** bug, not evidence
+
+The original report cited our local ledger also failing to match, and
+offered that as corroboration that the server stored something different.
+Withdraw that — it had an unrelated cause. `SyncCoordinator` calls
+`webAccount.invalidate()` on any 401, which flipped `isConnected` false,
+which ran `syncLedger.clear()`. A single expired token discarded the whole
+ledger, so it would have reported 0 matches whatever the hashes were. Fixed
+in v2.1 (the ledger is now scoped to an account and survives a transient
+401). It says nothing about hashing, and we shouldn't have offered it.
+
+### What iOS shipped (v2.1 U11)
+
+`POST /api/sync/ride`'s `contentHash` is now parsed and compared against
+ours at upload time. Agreement logs one line; divergence logs both values
+and the body length to the on-device ride sidecar. The next upload will
+tell us which side is producing what, six weeks of invisibility ending
+with a single ride.
+
+We will report the cause here once we have it.
+
+### On sending the server's hash to `/check-batch`
+
+Flagging a correctness hazard before anyone implements it. If iOS stores
+your hash and submits that, the comparison becomes "your hash vs your
+hash" and always matches — including for a ride the rider has since
+**edited locally**. That ride would be pruned from the queue and never
+uploaded. Silent data loss, and exactly the kind that surfaces months
+later.
+
+The question the check needs to answer is "does the server have *my
+current bytes*", and a server-supplied hash cannot answer it. What can:
+our own record of the hash of the body we last uploaded, compared against
+the file as it stands now — which is what the ledger does, locally and
+without a request.
+
+Same reasoning applies to seeding from `GET /api/sync/rides`: adopting
+those hashes tells us what the server holds, not whether the local file
+still matches it. The one case where it is sound is straight after a
+server restore, where the local file came from you by construction — we
+may use it there.
+
+None of which diminishes the two additions: the echo is the right fix for
+the real defect, which as you say was that neither side could see the
+other's value. Once it tells us why the two disagree, the endpoint can go
+back to doing its job.
+

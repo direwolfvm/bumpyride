@@ -6,11 +6,16 @@ and acceptance criteria. Convention unchanged: when an item ships,
 append a Status appendix to its handoff doc (as done for
 `RIDE_EDIT_WEB_HANDOFF.md`) so the iOS side picks it up.
 
-> **2026-09-16: one new item — see item 4.** The batch sync check
-> ships and answers, but has never pruned a single ride; evidence and
-> a one-query diagnostic are in the appendix to
-> `SYNC_BATCH_CHECK_WEB_HANDOFF.md`. Not blocking (iOS v2.1 works
-> around it locally), but the endpoint is currently a no-op.
+> **2026-09-16: item 4 investigated — both hypotheses ruled out, fix
+> shipped server-side.** `content_hash` is neither NULL (242 of 246
+> production rides carry one) nor server-canonical (ingest has always
+> hashed the raw request body). The real defect was that neither side
+> could see the other's hash, so a total mismatch went unnoticed for
+> six weeks. The server now echoes `contentHash` on upload **and** on
+> `GET /api/sync/rides`, so iOS can adopt the server's values and
+> reconcile the whole library without re-uploading it. Full evidence
+> and the iOS-side follow-up in the appendix to
+> `SYNC_BATCH_CHECK_WEB_HANDOFF.md`.
 >
 > **2026-07-30: this queue was empty — every item 1-3 is shipped and
 > verified server-side.** Items 2/2a/3 had in fact shipped before this
@@ -27,7 +32,7 @@ append a Status appendix to its handoff doc (as done for
 | Achievements (`ACHIEVEMENTS_IOS_HANDOFF.md`) | web → iOS | **Shipped both sides** |
 | Ride edit + `editedAt` (`RIDE_EDIT_WEB_HANDOFF.md`) | iOS → web | **Shipped both sides** (incl. iOS pull-on-conflict) |
 | Other events (`OTHER_EVENTS_WEB_HANDOFF.md`) | iOS → web | **Shipped both sides** — see doc appendix |
-| Batch sync check (`SYNC_BATCH_CHECK_WEB_HANDOFF.md`) | iOS → web | Shipped both sides, but **never prunes** — see item 4 |
+| Batch sync check (`SYNC_BATCH_CHECK_WEB_HANDOFF.md`) | iOS → web | Shipped; hash now echoed for reconciliation — **iOS action needed**, see item 4 |
 
 ## 1. URGENT — verify `otherEvents` round-trip survival
 
@@ -175,14 +180,45 @@ mismatch. Cheaper alternative to check first: the column is simply NULL.
   state free regardless; this restores a cross-check rather than
   unblocking anything.
 
+### ✅ INVESTIGATED + FIXED 2026-09-16 — but not the way the report expected
+
+Both hypotheses are wrong, checked directly against production:
+
+- **Not NULL.** 242 of 246 rides carry a `content_hash`; all are
+  64-char lowercase hex; of the 241 rides updated since the 07-30
+  deploy, **zero** are NULL. (4 legacy rows predate the column.)
+- **Not server-canonical.** Ingest hashes `await req.text()` — the raw
+  request body — and always has. The timestamp normalization from item
+  1 happens on *restore*, after the hash is taken, so it can't reach
+  it. Verified locally: upload, hash the exact bytes client-side,
+  `check-batch` → pruned. Holds for UTF-8 titles and uppercase ids.
+
+Production runs the current code (`9e411a5`) and uploads arrive clean
+(200, 0.9–5.3 MB, no content-encoding). So the server stores
+`sha256(bytes received)` and iOS computes `sha256(bytes it believes it
+sent)`, and those differ — with no way for either side to see it. That
+invisibility was the actual defect.
+
+**Shipped:** `POST /api/sync/ride` now echoes `contentHash`, and `GET
+/api/sync/rides` returns it per ride. Adopting the listed values
+reconciles 242 rides with **no upload at all** — verified to prune an
+entire library in one `check-batch` call.
+
+**iOS follow-up:** adopt the server's hash rather than trying to match
+it, and check whether the hashed buffer is byte-identical to the
+uploaded one (a deterministic encoder doesn't prove that). A backfill
+was requested but is impossible — raw bytes aren't retained, and
+re-serializing to hash would be Option B. It's moot: only the 4 NULL
+rows need an upload.
+
 ## Priority order
 
 1. **Item 1** — cheap verification, guards against silent data loss.
 2. **Item 2** — unlocks community value of Blocked Lane + the
    `lane-scout` achievement (2a).
 3. **Item 3** — pure efficiency; whenever convenient.
-4. **Item 4** — the batch check is a no-op today; fix restores a
-   cross-check, but iOS no longer depends on it.
+4. **Item 4** — server side done 2026-09-16; ball is with iOS to adopt
+   the echoed hash (one list call reconciles the library).
 
 ## Next up
 

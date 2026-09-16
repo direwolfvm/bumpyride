@@ -439,7 +439,20 @@ final class SyncCoordinator {
                 queue.remove(next.id)
                 // v2.1 U1: remember exactly what the server accepted, so a
                 // re-seed of this ride prunes locally next launch.
-                ledger.record(id: next.id, hash: SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined())
+                let localHash = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+                ledger.record(id: next.id, hash: localHash)
+                // v2.1 U11: the server now echoes its own hash of the bytes it
+                // received.  If these ever disagree the batch check can never
+                // prune, which is precisely the state the library was in — so
+                // say so loudly, in the sidecar, with both values.
+                if let serverHash = syncResponse?.contentHash {
+                    if serverHash == localHash {
+                        Self.debug.info("hash agrees with server for \(next.id.uuidString.prefix(8)) (\(localHash.prefix(12)))")
+                    } else {
+                        Self.debug.info("HASH MISMATCH \(next.id.uuidString.prefix(8)): ours=\(localHash) server=\(serverHash) bodyBytes=\(body.count)")
+                        log.error("Content-hash mismatch for \(next.id, privacy: .public): ours=\(localHash, privacy: .public) server=\(serverHash, privacy: .public)")
+                    }
+                }
                 drainBytes += body.count
                 drainRides += 1
                 Self.debug.info("uploaded \(isUserInitiated ? "user" : "backfill") ride \(next.id.uuidString.prefix(8)) — \(body.count / 1024) kB (drain total \(drainBytes / 1024) kB over \(drainRides) ride(s))")

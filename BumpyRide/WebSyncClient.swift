@@ -485,6 +485,16 @@ actor WebSyncClient {
     struct RideSyncResponse: Codable, Sendable {
         let updated: Bool?
         let achievementsAwarded: [AwardedAchievement]?
+        /// v2.1 U11: the SHA-256 the server computed over the raw request
+        /// body it received, added web-side 2026-09-16 so the two sides can
+        /// finally see each other's value.
+        ///
+        /// Ours and theirs have disagreed on every ride for six weeks, with
+        /// neither able to observe the other — which is the actual reason a
+        /// total mismatch went unnoticed. `SyncCoordinator` compares them at
+        /// upload time and logs any divergence to the ride sidecar.
+        /// Optional: older servers omit it.
+        let contentHash: String?
     }
 
     struct AchievementTier: Codable, Equatable, Sendable {
