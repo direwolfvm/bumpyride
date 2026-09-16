@@ -323,6 +323,64 @@ full day on it. Payload naming: `metrics-<date>` covers the *previous* day.
   from ~17 Hz to the GPS rate, but that is evidently not what the GPU cost
   was made of. See U7.
 
+**Third verification round (16 Sep)**
+
+| Covers | GPU / foreground | nav-accuracy loc | cell upload | battery (unplugged, 12.5 km) |
+|---|---|---|---|---|
+| 9 Sep (pre) | 1.97x | 14 of 61 min | 873 MB | 21.3 %/h (8 Sep) |
+| 14 Sep (post-U7) | 2.34x | 78 of 78 min | 7 MB | 0.0 %/h* |
+| 15 Sep (post-U8) | 2.05x | 82 of 85 min | **519 MB** | 10.1 / 10.3 %/h |
+| 16 Sep | — | — | — | 11.1 %/h |
+
+\* quantisation luck; steady state is ~10-11 %/h.
+
+- **Battery confirmed.** Four unplugged rides on the same route now read
+  10.1, 10.3, 11.1 %/h with `thermal=nominal` throughout, against a
+  21.3 %/h pre-fix baseline that reached `fair`. Halved, and stable.
+- **U7 did not work.** GPU per foreground minute is unchanged
+  (pre 1.76-2.54x, post 2.05-2.34x). The quadratic rebuild was real and the
+  180x vertex reduction is real, but vertex upload is not what the GPU time
+  is made of — MapKit's own continuous rendering in follow mode is, and
+  nothing here touches it. The 12 Sep spike (3.28x) was a 131-minute
+  foreground day, not the quadratic biting. The change is still a correct
+  optimisation and stays, but it is not an energy fix.
+- **Navigation-accuracy location is now ~100 % of foreground** (78/78,
+  82/85), up from partial. This is MapKit's manager and is the main
+  remaining energy lever.
+- **U9 confirmed** — `suspendedMem 159MB` now appears in the digest.
+
+- **U10 — U1 was not working, and U8's logging found why.** Every drain
+  reported `ledger: 0/237 already current` and `server batch check: 0/237
+  already on server`, then uploaded **453 MB in a single pass**.
+  Root cause: `SyncCoordinator` calls `webAccount.invalidate()` on any 401,
+  which flips `isConnected` false, which ran `syncLedger.clear()`. One
+  expired token therefore discarded the entire ledger and the next drain
+  re-uploaded the library. Ruled out first, by direct test: the `[UUID:
+  String]` persistence round-trips correctly and `encode(decode(file))` is
+  byte-stable across independent loads, so neither storage nor hash
+  stability was at fault.
+  Fix: the ledger is now **scoped to an account**. It records the owning
+  email (the same identity `TokenStorage` keys on) and clears only on a
+  genuine account switch, so a transient auth failure costs nothing.
+  Disconnect no longer clears it. The old bare-dictionary file is still
+  read, and its entries are adopted by the current account rather than
+  discarded.
+  Also fixed: **the Wi-Fi hold was decided once at drain start.** The
+  15 Sep drain began on Wi-Fi at 12:36, the ride started at 12:38, and it
+  followed the rider onto cellular for the next half hour. It is now
+  re-checked before every ride. The per-request
+  `allowsExpensiveNetworkAccess` flags are a hint only — on a *background*
+  URLSession the session-level policy governs — so the drain-loop check is
+  the real control; the comment now says so.
+  Diagnostics kept: drain start logs `ledgerEntries`, and a ledger miss
+  logs computed-vs-stored hash for the first few rides, which separates
+  "never recorded" from "hash unstable" without guesswork.
+
+  The server batch check returning 0/237 is a **separate, still-open**
+  issue: the server's stored hash apparently never matches ours, so that
+  guard has never pruned anything. The ledger is what makes steady state
+  cheap regardless; worth raising with the web side.
+
 **Second verification round (14 Sep) — the unplugged measurement**
 
 Two unplugged rides finally landed. 14 Sep is a clean match for the 8 Sep

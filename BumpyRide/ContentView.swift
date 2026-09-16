@@ -454,6 +454,7 @@ struct ContentView: View {
             syncCoordinator.backfillOnWiFiOnly = { settings.backfillOnWiFiOnly }
             syncLedger.prune(keeping: Set(store.rides.map(\.id)))
             if webAccount.isConnected {
+                if let email = webAccount.connectedEmail { syncLedger.setOwner(email) }
                 syncCoordinator.backfillAll(rideIds: store.rides.map(\.id))
             }
             // Drain anything queued from prior sessions / paired devices.
@@ -498,6 +499,7 @@ struct ContentView: View {
             // upserts are idempotent on Ride.id, so this is safe to call every time
             // and a no-op for rides already in the queue or already synced earlier.
             if isConnected {
+                if let email = webAccount.connectedEmail { syncLedger.setOwner(email) }
                 syncCoordinator.backfillAll(rideIds: store.rides.map(\.id))
                 syncCoordinator.kick()
                 Task { await pullThenPushCalibration() }
@@ -507,8 +509,11 @@ struct ContentView: View {
                 // different account doesn't surface the old account's
                 // points.
                 rideScoreCache.invalidateAll()
-                // A different account's server has none of these rides.
-                syncLedger.clear()
+                // Deliberately NOT clearing syncLedger here.  `isConnected`
+                // drops on any 401 — an expired token, a server blip — and
+                // wiping the ledger for that re-uploaded the whole library on
+                // the next drain.  `setOwner` handles a genuine account switch
+                // when we reconnect and know who we are.
             }
         }
         // v2.1 U1: getting onto Wi-Fi is the signal that held-back backfill

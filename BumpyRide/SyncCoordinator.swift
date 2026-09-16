@@ -211,7 +211,7 @@ final class SyncCoordinator {
         drainBytes = 0
         drainRides = 0
         let userCount = queue.userInitiatedIds.count
-        Self.debug.info("drain start: queued=\(queue.count) (user=\(userCount) backfill=\(queue.count - userCount)) expensiveNetwork=\(isOnExpensiveNetwork()) wifiOnlyBackfill=\(backfillOnWiFiOnly())")
+        Self.debug.info("drain start: queued=\(queue.count) (user=\(userCount) backfill=\(queue.count - userCount)) expensiveNetwork=\(isOnExpensiveNetwork()) wifiOnlyBackfill=\(backfillOnWiFiOnly()) ledgerEntries=\(ledger.count)")
 
         // v1.8 L1: prune the backfill queue with ONE batch check
         // round-trip instead of a per-ride check inside the loop.
@@ -248,10 +248,20 @@ final class SyncCoordinator {
             let entries = await store.contentHashes(ids: backfillIds)
 
             var survivors: [(id: UUID, hash: String)] = []
+            var sampled = 0
             for entry in entries {
                 if ledger.isCurrent(id: entry.id, hash: entry.hash) {
                     queue.remove(entry.id)
                 } else {
+                    // v2.1 U10: show why a miss is a miss, for the first few
+                    // only.  "stored=none" means the ledger never recorded this
+                    // ride (persistence); a different stored hash means the
+                    // body we encode is not byte-stable between drains.
+                    if sampled < 4 {
+                        sampled += 1
+                        let stored = ledger.hash(for: entry.id).map { String($0.prefix(12)) } ?? "none"
+                        Self.debug.info("ledger miss \(entry.id.uuidString.prefix(8)): computed=\(entry.hash.prefix(12)) stored=\(stored)")
+                    }
                     survivors.append(entry)
                 }
             }
@@ -263,7 +273,13 @@ final class SyncCoordinator {
             // Anything the ledger couldn't vouch for is several MB of upload
             // each.  On a metered path, leave it queued for Wi-Fi; rides the
             // user just saved are unaffected and still drain below.
-            if !survivors.isEmpty, backfillOnWiFiOnly(), isOnExpensiveNetwork() {
+            //
+            // v2.1 U10: this is only the *initial* read.  The loop re-checks on
+            // every ride, because a drain that begins on Wi-Fi and runs for half
+            // an hour will follow the rider onto cellular — which is exactly what
+            // happened on 15 Sep: the drain started at 12:36 on Wi-Fi, the ride
+            // began at 12:38, and it kept uploading, 453 MB in one pass.
+            if !survivors.isEmpty, shouldHoldBackfill() {
                 backfillHeldForWiFi = true
                 log.info("Holding \(survivors.count, privacy: .public) backfill ride(s) for Wi-Fi")
                 Self.debug.info("holding \(survivors.count) backfill ride(s) for Wi-Fi (on a metered path)")
@@ -330,6 +346,15 @@ final class SyncCoordinator {
             }
 
             let userInitiated = queuedRides.first { queue.userInitiatedIds.contains($0.id) }
+            // Re-read the network on every ride, not just at drain start — the
+            // rider can set off mid-drain.  Once held, stay held for the rest of
+            // this drain so we don't flap across a patchy boundary.
+            if !backfillHeldForWiFi, shouldHoldBackfill() {
+                backfillHeldForWiFi = true
+                let held = queue.all().filter { !queue.userInitiatedIds.contains($0) }.count
+                log.info("Network became metered mid-drain — holding \(held, privacy: .public) backfill ride(s)")
+                Self.debug.info("network became metered mid-drain: holding \(held) backfill ride(s) for Wi-Fi")
+            }
             // While backfill is held for Wi-Fi, only user-initiated rides are
             // eligible; when they run out the drain ends and the held rides
             // stay queued for the next kick (reachability change, next launch).
@@ -500,10 +525,18 @@ final class SyncCoordinator {
     /// completion with an empty buffer; never a failure, the upload
     /// itself succeeded).
     @discardableResult
+    /// Should backfill wait?  Read fresh each time — see the drain loop.
+    private func shouldHoldBackfill() -> Bool {
+        backfillOnWiFiOnly() && isOnExpensiveNetwork()
+    }
+
     private func uploadViaBackgroundSession(body: Data, rideId: UUID, token: String, isBackfill: Bool = false) async throws -> WebSyncClient.RideSyncResponse? {
         var request = await client.rideUploadRequest(token: token)
-        // Belt and braces alongside the drain-level hold: even if the path
-        // changes to cellular mid-transfer, a backfill body won't ride it.
+        // These are a hint, not a guarantee: on a *background* URLSession the
+        // equivalent session-level policy governs, and per-request flags are
+        // not reliably honoured (15 Sep sent 453 MB in a drain despite them).
+        // The real control is the per-ride check in the drain loop; this just
+        // costs nothing to also ask for.
         if isBackfill && backfillOnWiFiOnly() {
             request.allowsExpensiveNetworkAccess = false
             request.allowsConstrainedNetworkAccess = false
