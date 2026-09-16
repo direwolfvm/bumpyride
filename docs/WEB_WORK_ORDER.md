@@ -6,7 +6,13 @@ and acceptance criteria. Convention unchanged: when an item ships,
 append a Status appendix to its handoff doc (as done for
 `RIDE_EDIT_WEB_HANDOFF.md`) so the iOS side picks it up.
 
-> **2026-07-30: this queue is empty — every item below is shipped and
+> **2026-09-16: one new item — see item 4.** The batch sync check
+> ships and answers, but has never pruned a single ride; evidence and
+> a one-query diagnostic are in the appendix to
+> `SYNC_BATCH_CHECK_WEB_HANDOFF.md`. Not blocking (iOS v2.1 works
+> around it locally), but the endpoint is currently a no-op.
+>
+> **2026-07-30: this queue was empty — every item 1-3 is shipped and
 > verified server-side.** Items 2/2a/3 had in fact shipped before this
 > work order was written (web PRs #63, #65, #66); their handoff docs
 > were missing the Status appendix, which is why they still read
@@ -21,7 +27,7 @@ append a Status appendix to its handoff doc (as done for
 | Achievements (`ACHIEVEMENTS_IOS_HANDOFF.md`) | web → iOS | **Shipped both sides** |
 | Ride edit + `editedAt` (`RIDE_EDIT_WEB_HANDOFF.md`) | iOS → web | **Shipped both sides** (incl. iOS pull-on-conflict) |
 | Other events (`OTHER_EVENTS_WEB_HANDOFF.md`) | iOS → web | **Shipped both sides** — see doc appendix |
-| Batch sync check (`SYNC_BATCH_CHECK_WEB_HANDOFF.md`) | iOS → web | **Shipped both sides** — see doc appendix |
+| Batch sync check (`SYNC_BATCH_CHECK_WEB_HANDOFF.md`) | iOS → web | Shipped both sides, but **never prunes** — see item 4 |
 
 ## 1. URGENT — verify `otherEvents` round-trip survival
 
@@ -144,12 +150,39 @@ deduped, **first entry wins**. The web-edit / `content_hash`
 interaction you flagged behaves exactly as you predicted — see the
 handoff doc's appendix.
 
+## 4. Batch sync check returns every ride as `needed`
+
+**Reported from the field 2026-09-16.** The endpoint is live and
+well-formed, but `needed` has always come back containing 100 % of the
+submitted ids — including rides uploaded successfully minutes earlier.
+On device this drove repeated whole-library re-uploads: 453 MB in one
+drain, 519 MB of cellular in a day, against a 627 MB library.
+
+iOS has verified its half (hash is SHA-256 of the exact uploaded bytes;
+encoding is byte-stable across loads). Leading hypothesis is that
+`content_hash` is derived from the decomposed / re-materialized payload
+rather than from the raw upload body — Option B in
+`SYNC_CHECKSUM_WEB_HANDOFF.md` — in which case the timestamp
+normalization documented in item 1 alone guarantees a permanent
+mismatch. Cheaper alternative to check first: the column is simply NULL.
+
+- Diagnostic and full evidence: appendix to
+  `SYNC_BATCH_CHECK_WEB_HANDOFF.md`.
+- Acceptance: a ride uploaded via `POST /api/sync/ride` is absent from
+  `needed` on the next `check-batch` call with the same hash. Existing
+  rows backfilled.
+- **Not blocking.** iOS v2.1 added a local ledger that makes steady
+  state free regardless; this restores a cross-check rather than
+  unblocking anything.
+
 ## Priority order
 
 1. **Item 1** — cheap verification, guards against silent data loss.
 2. **Item 2** — unlocks community value of Blocked Lane + the
    `lane-scout` achievement (2a).
 3. **Item 3** — pure efficiency; whenever convenient.
+4. **Item 4** — the batch check is a no-op today; fix restores a
+   cross-check, but iOS no longer depends on it.
 
 ## Next up
 

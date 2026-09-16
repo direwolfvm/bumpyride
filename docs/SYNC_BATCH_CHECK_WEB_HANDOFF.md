@@ -110,3 +110,104 @@ That is correct and intended: the device copy really is stale. When
 iOS then uploads, the `editedAt` conflict rule returns `409 {"error":
 "edit conflict", "serverEditedAt": ...}` and the client pulls the
 server copy instead. See `RIDE_EDIT_WEB_HANDOFF.md`.
+
+---
+
+## Field report 2026-09-16 — the endpoint has never pruned anything
+
+**iOS → web. Not urgent (the client now works around it), but the
+endpoint is currently a no-op and should either be fixed or retired.**
+
+### Symptom
+
+Every drain, on a fully-backfilled library, gets back *all* rides in
+`needed`:
+
+```
+drain start: queued=238 (user=1 backfill=237) ...
+server batch check: 0/237 already on server, 237 to upload
+```
+
+That is 0 pruned out of 237, on every request. The decisive detail:
+one drain uploaded **131 rides successfully (HTTP 200)**, and the very
+next check, minutes later, still reported `0/239 already on server`.
+Uploading does not make a ride subsequently report as present.
+
+Consequence on the device: the app re-uploaded its library repeatedly —
+**453 MB in a single drain, 519 MB of cellular in one day** against a
+627 MB library.
+
+### Ruled out on the iOS side
+
+Before raising this we checked our own half of the contract:
+
+- The submitted `hash` is SHA-256 (lowercase hex) of the **exact bytes**
+  sent as the `POST /api/sync/ride` body. The upload writes that same
+  buffer to a file and uploads from it; nothing re-encodes in between.
+- Encoding is byte-stable: `encode(decode(file))` produces identical
+  bytes across independent loads (tested directly), so our hash for an
+  unchanged ride does not drift between drains.
+- The client also keeps its own record of the hash the server accepted,
+  and that record likewise never matched — consistent with the server
+  storing something other than what we sent, rather than with client
+  instability.
+
+### Leading hypothesis
+
+`content_hash` looks like it is derived from the **re-materialized**
+payload rather than from the raw upload body — Option B in
+`SYNC_CHECKSUM_WEB_HANDOFF.md`, which that doc flags as "strongly
+discouraged" precisely because "any subtle difference in key ordering,
+whitespace, floating-point repr, or date format ... will produce a
+mismatch even when the rides are semantically identical."
+
+Two things in `WEB_WORK_ORDER.md` item 1 make that fit:
+
+1. Ride payloads are stored **decomposed into relational tables** and
+   re-materialized from columns, so there is no raw body retained to
+   hash unless it is hashed at ingest.
+2. The documented normalization — restored timestamps come back as
+   `...T10:01:00.000Z` whatever offset form was uploaded, "key-complete,
+   not byte-identical". A date-format difference **alone** guarantees a
+   permanent mismatch for every ride.
+
+Alternative worth checking first because it is cheaper: `content_hash`
+is simply NULL for these rows. The shipped notes above already list
+"null stored hash (pre-migration-0015 rides)" as always-`needed`, and
+if the upload path never populates it, every ride stays in that state
+forever.
+
+### Cheapest diagnostic
+
+Take one ride that iOS has definitely uploaded. Compare:
+
+```sql
+SELECT content_hash FROM rides WHERE ride_uuid = '<id>';
+```
+
+against `sha256(<raw bytes of the last POST /api/sync/ride body>)`.
+
+- NULL → the upload path isn't populating it.
+- Present but different → it is being computed from the decomposed or
+  re-materialized form; switch to hashing the request body at ingest
+  (Option A) and backfill.
+
+### What we need
+
+`content_hash` = `sha256(raw request body)` recorded at upload time, so
+that a ride just uploaded reports as present on the next check. Existing
+rows need a backfill, or they will report `needed` until their next
+upload.
+
+### Not blocking
+
+iOS v2.1 added a local ledger (`SyncLedger`) recording the hash of the
+body the server accepted per ride, pruned before any network call. Steady
+state is now zero requests instead of one per ride, so the batch endpoint
+is no longer load-bearing for us. Fixing it restores a useful
+cross-check; leaving it as-is costs a redundant round-trip per drain.
+
+**Note the web-side-edit case documented above is different and remains
+correct** — a ride edited on the web *should* report `needed`. What is
+wrong here is that rides never touched by the web editor also always do.
+
