@@ -163,13 +163,30 @@ submitted ids — including rides uploaded successfully minutes earlier.
 On device this drove repeated whole-library re-uploads: 453 MB in one
 drain, 519 MB of cellular in a day, against a 627 MB library.
 
-iOS has verified its half (hash is SHA-256 of the exact uploaded bytes;
+~~iOS has verified its half (hash is SHA-256 of the exact uploaded bytes;
 encoding is byte-stable across loads). Leading hypothesis is that
 `content_hash` is derived from the decomposed / re-materialized payload
 rather than from the raw upload body — Option B in
 `SYNC_CHECKSUM_WEB_HANDOFF.md` — in which case the timestamp
 normalization documented in item 1 alone guarantees a permanent
-mismatch. Cheaper alternative to check first: the column is simply NULL.
+mismatch. Cheaper alternative to check first: the column is simply
+NULL.~~
+
+**Struck 2026-09-16 — both hypotheses were wrong** (see the doc's "Web
+response" appendix: `content_hash` is populated for 242 of 246 rides and
+is taken from the raw request body at ingest). Two corrections to the
+original report, for the record:
+
+- "iOS has verified its half" was overstated. Byte-stable
+  `encode(decode(file))` proves the *encoder* is deterministic; it does
+  not prove the hashed buffer equals the uploaded buffer. Re-examined
+  since — same code path, same encoder, buffer written straight to the
+  upload file with no re-encode — so the gap is still not visible from
+  the iOS side either.
+- The report cited the local ledger's misses as corroboration. That was
+  wrong and is withdrawn: the ledger was being wiped on any 401
+  (iOS-side bug, fixed in v2.1 U10), so it would have reported zero
+  matches regardless of hashing.
 
 - Diagnostic and full evidence: appendix to
   `SYNC_BATCH_CHECK_WEB_HANDOFF.md`.
@@ -179,6 +196,21 @@ mismatch. Cheaper alternative to check first: the column is simply NULL.
 - **Not blocking.** iOS v2.1 added a local ledger that makes steady
   state free regardless; this restores a cross-check rather than
   unblocking anything.
+
+### Status 2026-09-16 — instrumented both sides, cause still unknown
+
+Server echoes `contentHash` on upload and on `GET /api/sync/rides`
+(web, shipped). iOS v2.1 U11 parses the upload echo and logs any
+divergence — both hashes and the body length — to the on-device ride
+sidecar. **The next upload identifies the culprit.**
+
+One hazard flagged against the suggested iOS-side fix, before anyone
+builds it: if iOS submits the *server's* hash to `check-batch`, the
+comparison becomes server-hash vs server-hash and always matches —
+including for a ride edited locally since upload, which would then be
+pruned and never uploaded. A server-supplied hash cannot answer "does
+the server have my current bytes"; only a local record of what we last
+sent can. Detail in the doc's "iOS reply" appendix.
 
 ### ✅ INVESTIGATED + FIXED 2026-09-16 — but not the way the report expected
 
