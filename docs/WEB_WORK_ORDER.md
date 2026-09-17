@@ -6,6 +6,19 @@ and acceptance criteria. Convention unchanged: when an item ships,
 append a Status appendix to its handoff doc (as done for
 `RIDE_EDIT_WEB_HANDOFF.md`) so the iOS side picks it up.
 
+> **2026-09-17: item 4 CLOSED — root cause was an iOS bug.** The hash
+> echo answered it on the first ride. Our wire encoder set no
+> `outputFormatting`; `JSONEncoder` guarantees no key order and Swift
+> seeds dictionary hashing per process, so every re-encode of an
+> unchanged ride produced a different byte sequence — same length,
+> ~94 % of byte positions reordered. Every hash iOS ever sent was
+> effectively random, which is why the endpoint returned 100 % `needed`
+> forever. Fixed in iOS v2.1 U12 (canonical `.sortedKeys` encoder shared
+> by the upload body and the hash). **Nothing needed server-side**: one
+> more full re-upload replaces the stale hashes, held for Wi-Fi, and the
+> endpoint prunes from then on. Detail in the "Cause found" appendix to
+> `SYNC_BATCH_CHECK_WEB_HANDOFF.md`.
+>
 > **2026-09-16: item 4 investigated — both hypotheses ruled out, fix
 > shipped server-side.** `content_hash` is neither NULL (242 of 246
 > production rides carry one) nor server-canonical (ingest has always
