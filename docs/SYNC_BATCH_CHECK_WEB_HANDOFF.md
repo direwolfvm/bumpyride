@@ -389,3 +389,79 @@ the real defect, which as you say was that neither side could see the
 other's value. Once it tells us why the two disagree, the endpoint can go
 back to doing its job.
 
+---
+
+## Cause found 2026-09-17 — it was ours: non-deterministic key order
+
+The echo did its job on the first ride. Answer: **iOS was sending a
+different byte sequence every time for an unchanged ride.** The server was
+right throughout.
+
+### What the echo showed
+
+Same ride, uploaded on two days, our hash agreeing with yours both times:
+
+```
+2026-09-16T20:24:21  hash agrees with server for 42DD7057 (16154e54e2bd)
+2026-09-17T12:54:14  hash agrees with server for 42DD7057 (dd412395e299)
+```
+
+Agreement every time, yet a different value each day. So the two sides were
+never computing different hashes of the same bytes — we were handing you
+different bytes.
+
+### Root cause
+
+`JSONEncoder` makes no guarantee about key order, and Swift seeds
+dictionary hashing **per process**. Our wire encoder had no
+`outputFormatting`, so every re-encode of the same `Ride` emitted the keys
+in a fresh arbitrary order.
+
+Reproduced directly against a real ride file, decoding and re-encoding
+twice inside a *single* process:
+
+```
+lengths: a=106983 b=106983 file=106983
+first difference at byte 2
+  A: {"healthKitWorkoutUUID":"9051A587-…
+  B: {"brakeEvents":[{"longitude":-77.05344927334409,…
+differing byte positions: 100045 of 106983
+```
+
+Identical length, almost entirely reordered. Every content hash we ever
+computed was effectively a fresh random value — which is exactly why
+`/check-batch` returned 100 % `needed`, forever, and why re-uploading
+never helped.
+
+### Fix (iOS v2.1 U12)
+
+One canonical `RideStore.wireEncoder()` with `.sortedKeys`, used by both
+the upload body and the content hash so they cannot drift apart again.
+Verified: the same ride now hashes to `5d850bc4…` across three separate
+processes, where before every process produced a different value.
+
+### What this means for the stored hashes
+
+Every `content_hash` you hold was computed from unsorted bytes and will
+not match the canonical form. **Expect one more full re-upload**, after
+which hashes are stable indefinitely and the endpoint starts pruning for
+the first time. Nothing needed server-side — the next upload of each ride
+replaces its hash with a canonical one. iOS holds backfill for Wi-Fi, so
+this will not land on anyone's cellular allowance.
+
+The four NULL rows still need their one upload each, as you noted.
+
+### Credit where due
+
+Both of our hypotheses in the original report were wrong, and the
+production evidence ruling them out is what forced the search back to our
+side. The specific observation that broke it open was yours:
+
+> "`encode(decode(file))` is byte-stable" establishes the encoder is
+> deterministic — it does not establish that the hashed buffer equals the
+> uploaded buffer.
+
+Our byte-stability test had compared two encodes of *one* decoded value
+inside a single process, which is the one arrangement that hides this. The
+echo you added turned six weeks of invisibility into a one-ride diagnosis.
+

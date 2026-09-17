@@ -262,13 +262,33 @@ final class RideStore {
     /// v2.0 P1: sync-path helper — the wire-format encode of one ride,
     /// produced off-main and not retained.  nil = ride file is gone
     /// (deleted) or undecodable.
+    /// v2.1 U12: the **canonical** wire encoder.  Both the upload body and the
+    /// content hash must come from here.
+    ///
+    /// `.sortedKeys` is not cosmetic, it is load-bearing.  `JSONEncoder` makes
+    /// no guarantee about key order, and Swift seeds dictionary hashing per
+    /// process, so the same `Ride` re-encoded produced a *different key order*
+    /// every time — measured: two decodes of one file in a single process
+    /// differed in 100,045 of 106,983 byte positions, identical length, wholly
+    /// reordered. Every content hash we computed was therefore a fresh random
+    /// value, which is why `/check-batch` never pruned and the app re-uploaded
+    /// its whole library. With `.sortedKeys` the same ride hashes identically
+    /// across separate processes.
+    ///
+    /// Do not add `.prettyPrinted` or remove `.sortedKeys` without
+    /// understanding that it invalidates every stored hash.
+    nonisolated static func wireEncoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }
+
     func encodedBody(id: UUID) async -> Data? {
         let dir = directoryURL
         return await Task.detached(priority: .userInitiated) { () -> Data? in
             guard let ride = Self.loadFullRide(id: id, in: dir) else { return nil }
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            return try? encoder.encode(ride)
+            return try? Self.wireEncoder().encode(ride)
         }.value
     }
 
@@ -278,8 +298,7 @@ final class RideStore {
     func contentHashes(ids: [UUID]) async -> [(id: UUID, hash: String)] {
         let dir = directoryURL
         return await Task.detached(priority: .utility) {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
+            let encoder = Self.wireEncoder()
             var out: [(id: UUID, hash: String)] = []
             for id in ids {
                 // See foldRides for why each iteration gets its own pool:

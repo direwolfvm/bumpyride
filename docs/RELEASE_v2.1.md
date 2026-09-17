@@ -323,6 +323,24 @@ full day on it. Payload naming: `metrics-<date>` covers the *previous* day.
   from ~17 Hz to the GPS rate, but that is evidently not what the GPU cost
   was made of. See U7.
 
+- **U12 — the content-hash mystery: our wire encoding was
+  non-deterministic.** `JSONEncoder` guarantees no key order and Swift
+  seeds dictionary hashing per process, so re-encoding an unchanged ride
+  produced a different byte sequence every time: identical length,
+  100,045 of 106,983 byte positions reordered, measured on a real ride
+  file across two decodes in one process. Every content hash we computed
+  was effectively random, which is why `/check-batch` returned 100 %
+  `needed` forever and why the library kept re-uploading.
+  Fix: one canonical `RideStore.wireEncoder()` with `.sortedKeys`, shared
+  by the upload body and the hash so they cannot drift. Verified stable
+  across three separate processes.
+  Consequence: every stored server hash and ledger entry is stale, so
+  expect one more full re-upload — held for Wi-Fi — after which the
+  endpoint prunes for the first time.
+  Note both hypotheses in our report to the web side were wrong, and our
+  own byte-stability test had been arranged in the one way that hides
+  this (two encodes of a single decoded value inside one process).
+
 **Third verification round (16 Sep)**
 
 | Covers | GPU / foreground | nav-accuracy loc | cell upload | battery (unplugged, 12.5 km) |
