@@ -1,81 +1,238 @@
-# Release v2.1 — IN PROGRESS
+# Release v2.1
 
-**Not finalized.** Version and build are still `2.0` / `30`; the bump
-happens at finalize time, as with 2.0. Add items to the sections below
-as they land. Series letter for this cycle: **T**.
+Build **31**. MARKETING_VERSION `2.1`.
 
-Follows the same shape as `RELEASE_v2.0.md`: §1 is pasted into App Store
-Connect as-is; §2 and §3 are *deltas* to fold into the cumulative
-description and review notes at finalize time (review notes budget is
-4,000 characters — `RELEASE_v2.0.md` §3 measures 3,895, so anything
-added there needs a matching cut).
+A maintenance release with one theme: energy. It began as five
+reported issues, grew an instrumentation layer to answer "is this
+actually better?", and then spent most of its length chasing what
+that instrumentation found — including two fixes that measurably did
+nothing, and one six-week-old sync bug that turned out to be ours.
+
+> **Note on the doc**: the three sections below are what gets pasted
+> into App Store Connect — release notes, product description, and
+> App Review notes. Description and review notes are *cumulative*
+> (complete text as of 2.1, not deltas). **The review notes fit App
+> Store Connect's 4,000-character limit** — the block below measures
+> **3899**, leaving ~101. Any addition needs a matching cut.
+> Re-measure with:
+> `python3 -c "s=open('docs/RELEASE_v2.1.md').read();i=s.index('ABOUT'+chr(10)*2+'BumpyRide records');print(len(s[i:s.index(chr(10)+'\`\`\`',i)]))"`
 
 ---
 
-## 1. What's New (draft)
+## 1. What's New
 
 ```
-BumpyRide 2.1 tidies up the map and takes better care of your battery.
-
-MAPS
-• The Bump Map opens where your riding actually is. One long trip no
-  longer zooms the map out so far that nothing renders.
-• When you stop a ride, the map stops following you and shows the
-  whole route. Saved rides open the same way, without the location
-  dot.
-• The purple "I've been here" layer appears immediately instead of
-  waiting for every past ride to be re-read.
+BumpyRide 2.1 is about battery, and about the map behaving
+itself.
 
 BATTERY
-• A ride left running with no movement for 15 minutes now pauses
-  itself and turns GPS off. Tap Resume to carry on. Off switch in
-  Settings › Recording.
-• Fixed a case where, after the app was force-quit mid-ride, iOS
-  could keep waking it in the background on every few blocks of
-  movement.
+• Recording now costs about half what it did. Same ride, same
+  route: roughly 21% of a charge per hour before, about 10% now,
+  and the phone no longer gets warm doing it.
+• A ride left running with no movement for 15 minutes pauses
+  itself and switches GPS off. Tap Resume to carry on, or turn it
+  off in Settings › Recording.
+• Fixed a case where force-quitting mid-ride could leave iOS
+  waking the app in the background for days afterwards.
 
-SCORING
+MAPS
+• The Bump Map opens where your riding actually is. One long trip
+  no longer zooms it out so far that nothing draws.
+• Stop a ride and the map stops following you and shows the whole
+  route. Saved rides open the same way, without the location dot.
+• The purple "I've been here" layer appears immediately instead
+  of waiting for every past ride to be re-read.
+
+SYNC
+• Fixed a bug that could re-upload your entire ride library —
+  repeatedly, over cellular. Backing up older rides now waits for
+  Wi-Fi by default; rides you just finished still upload straight
+  away.
+
+ALSO
 • Rides you've earned points for show them in the Saved list.
+• Heart rate from your Apple Watch attaches to the Health workout
+  properly. If you use it, re-authorise under Settings › Apple
+  Health so the trace can attach.
 ```
 
 ---
 
-## 2. Description delta
-
-Add to the feature list after the "Ride editor" bullet:
+## 2. Updated Description (cumulative)
 
 ```
-• Auto-pause — a ride left running without movement pauses itself
-  and turns off GPS
+BumpyRide is for cyclists who want to know which streets are
+smooth and which aren't — and to flag what they run into along
+the way.
+
+During every ride, BumpyRide records vibration through your
+phone's motion sensors and pairs each reading with your GPS
+location. After the ride, see a colored route map showing exactly
+where the road was smooth (green) and where it was rough (yellow
+→ red → purple).
+
+Ride enough and your personal Bump Map fills in — a permanent
+heat map of every street you've ever ridden. Pick smoother routes
+for your commute. Avoid the worst potholes on your favorite loop.
+
+Features:
+• Live recording with route, bumpiness, and weather overlay
+• Elapsed time, current speed, and average speed while you ride
+• Live wind readout — headwind, tailwind, or crosswind relative
+  to the way you're heading
+• Report close calls (vehicle / bike / pedestrian), blocked
+  lanes, and your own custom event types
+• Automatic hard-brake detection, taggable as safety, other, or
+  a false trigger
+• Reporting mode — collapse the map for oversized, no-look
+  report buttons mid-ride
+• Apple Watch app — start, pause, resume, stop, and log close
+  calls from your wrist; heart rate added to your Health workout
+• Personal heat map of every road you've ridden, plus an overlay
+  of your coverage on the live map
+• Achievements and scoring — bonus points for distance,
+  exploration, smooth roads, and safety reporting, through the
+  free bumpyride.me companion web app
+• Ride editor — trim or split a saved ride
+• Auto-pause — a ride left running without movement pauses
+  itself and switches off GPS
+• Share a summary photo of any ride
+• Adjustable color thresholds — tune what "rough" means to you
+• Pocket mode — filters out pedaling cadence so your cranks
+  don't register as bumpiness
+• Apple Health integration — rides appear in Fitness and credit
+  your activity rings
+• iCloud Drive backup, and server-side restore after a reinstall
+  or a new phone
+• Optional sync with bumpyride.me for storage, scoring, and
+  community heat maps
+
+Privacy: rides are stored on your phone and, optionally, your
+iCloud Drive. Sync to bumpyride.me is opt-in and uses a pairing
+code — no email, no password on the device. Custom event types
+you define stay private to your own account and never appear on
+community maps.
 ```
 
 ---
 
-## 3. Review notes delta
+## 3. App Review Information — Review Notes (cumulative)
 
-Fold into the BACKGROUND LOCATION section of the cumulative notes.
-Suggested cut to stay under budget: trim the DIAGNOSTICS paragraph.
+> Changed from 2.0: heart rate moved from read-only to a **write**
+> type (it is needed to associate the watch's existing samples with
+> the workout — see U5); the background-location section gains the
+> 15-minute auto-pause and the launch-time SLC clear; diagnostics
+> now discloses MetricKit payload storage. Paid for by tightening
+> prose throughout — no substantive claim was dropped.
 
 ```
-Two 2.1 changes reduce location use further. (1) If a recording sees
-no movement for 15 minutes, the app pauses the ride and stops both
-location updates and motion sampling; the rider must tap Resume.
-(2) At every launch the app explicitly stops Significant Location
-Change monitoring and clears the background-location opt-in, so a
-registration left behind by a force-quit mid-ride cannot keep waking
-the app afterwards. Outside an active recording the app now holds no
-location registration of any kind.
+ABOUT
 
-DIAGNOSTICS addition: with the same off-by-default "Write Debug Log"
-toggle on, the app also stores its own daily MetricKit payloads
-(power and performance aggregates Apple provides to every app about
-itself) alongside the ride files, for the rider's own battery
-troubleshooting. No third party receives them.
+BumpyRide records cycling rides with the iPhone's accelerometer
+and GPS, then shows where the road was rough or smooth and builds
+a heat map across rides. Riders can also report close calls and
+road events. An Apple Watch companion adds wrist controls and
+heart rate.
+
+BACKGROUND LOCATION — please read
+
+Rides last 30+ minutes with the screen off or the phone in a
+pocket, so location must continue in the background. We request
+"When In Use" at first launch, then "Always" the first time a
+recording starts.
+
+"Always" is needed for one specific reason: Significant Location
+Change only delivers to backgrounded apps holding Always, and we
+use SLC purely to recover if iOS suspends our continuous updates
+mid-ride. Without it, long rides develop unusable GPS gaps. We do
+not track users when they aren't recording.
+
+Recording is always explicitly started and stopped by the user,
+on the Ride tab or the watch, and the system background-location
+indicator is visible throughout.
+
+Two 2.1 changes cut this further. A recording with no movement
+for 15 minutes pauses itself, stopping location and motion until
+the rider taps Resume. And every launch clears any SLC
+registration left by a force-quit mid-ride. Outside an active
+recording the app now holds no location registration at all.
+
+MOTION
+
+CMDeviceMotion at 50 Hz during recording only; the vertical
+acceleration component gives bumpiness. Started and stopped with
+the recording. No background-only access.
+
+HEALTHKIT (optional, opt-in)
+
+Enabled from Settings → Apple Health, which presents the standard
+authorization sheet. Nothing is written unless the user opts in.
+
+Write: HKWorkout (cycling/outdoor), workout route, cycling
+distance, active energy, and heart rate — the last solely to
+associate the watch's existing samples, never to write new ones.
+Read: body mass (to estimate calories) and heart rate.
+
+Heart rate detail: with "Open watch app with this app" on, the
+watch runs an HKWorkoutSession so watchOS samples heart rate at
+workout rate, then DISCARDS its own workout. Only the iPhone
+writes an HKWorkout — one per ride, not two. Samples are
+associated, never duplicated; each workout carries the ride's
+UUID, so re-export is idempotent.
+
+WEATHERKIT
+
+The recording map shows temperature and wind, queried at most
+once per ~15 minutes or ~2 miles of movement, from the ride's own
+GPS fixes. "Apple Weather" attribution is always displayed.
+
+USER-GENERATED CONTENT
+
+Riders may define their own event type labels in Settings. These
+stay private to the rider's account — never shown to other users,
+never on community maps. Only a fixed, app-defined list
+(currently "Blocked Lane") can feed public maps, and a public map
+cell needs reports from at least three riders before anything is
+shown.
+
+DIAGNOSTICS
+
+Settings → Diagnostics has an off-by-default "Write Debug Log"
+toggle. With it on the app stores a plain-text log of its own
+events, plus the daily MetricKit payloads iOS gives every app
+about itself (power, memory, network), beside the rider's ride
+files so they can send them to us. No personal data beyond the
+rider's own ride identifiers; nothing goes to a third party. Logs
+are deleted after 14 days, metrics after 60.
+
+DATA, SYNC, AND ACCOUNTS
+
+Rides are stored on-device, and in the user's own iCloud Drive if
+enabled. Sync to our companion web app (bumpyride.me) is opt-in:
+the user signs in through a secure web window and a token is
+returned — no password is ever entered in the app. Users can
+unpair, clear server data, or delete their account from
+Settings.
+
+No account is required to review the app. Recording, the bump
+map, event reporting, ride editing, Apple Health and the watch
+app all work fully offline and signed-out; an account only adds
+backup, scoring and community maps. Hence no test credentials.
+
+CONTACT
+
+Happy to clarify anything — we respond within hours at the
+contact email on this record.
 ```
 
 ---
 
 ## Changes since 2.0 (engineering index)
+
+Two series. **T1-T6** are the reported issues plus the field energy
+telemetry that T6 added. **U1-U12** are what that telemetry then found,
+including the verification rounds that showed two of the fixes did
+nothing measurable. Series letters match commit prefixes.
 
 **Maps**
 - T1 Bump Map opening frame: `BumpGrid.focusBounds` (2 %/98 % of
