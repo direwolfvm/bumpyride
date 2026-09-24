@@ -171,6 +171,17 @@ final class SyncCoordinator {
         for id in rideIds { queue.insert(id, isBackfill: true) }
     }
 
+    /// v2.1 U13: a background upload landed while no drain was awaiting it
+    /// (iOS relaunched us to deliver the completion). Retire the queue entry,
+    /// record what the server accepted, and kick so the next ride goes out —
+    /// which is what keeps a backfill moving while the app is suspended.
+    func noteBackgroundUploadCompleted(rideId: UUID, bodyHash: String) {
+        queue.remove(rideId)
+        ledger.record(id: rideId, hash: bodyHash)
+        Self.debug.info("background upload of \(rideId.uuidString.prefix(8)) landed after relaunch; \(queue.count) still queued")
+        kick()
+    }
+
     /// Try to drain the queue if conditions are right.  Idempotent — safe to call
     /// from many event handlers.  Cancels any pending backoff timer so the user's
     /// implicit "do this now" intent (e.g. re-pairing) takes effect immediately.

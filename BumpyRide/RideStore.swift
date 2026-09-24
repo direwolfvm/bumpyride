@@ -88,6 +88,41 @@ final class RideStore {
             .appendingPathComponent("ride-summaries.json")
     }
 
+    /// v2.1 U13: cache of wire-content hashes, keyed on file identity.
+    ///
+    /// Hashing the library means decoding *and* re-encoding every ride —
+    /// ~650 MB of work that took 31 s at the head of every drain, before a
+    /// single byte could be uploaded. That is affordable once; it is not
+    /// affordable on every kick, and it would consume the whole budget of a
+    /// background relaunch. A ride whose file has not changed cannot have a
+    /// different hash, so size + mtime is a sound key — the same reasoning
+    /// (and the same device-local caveat) as the summary cache above.
+    nonisolated private struct HashCacheEntry: Codable {
+        let hash: String
+        let fileSize: Int
+        let fileModifiedEpoch: TimeInterval
+    }
+
+    nonisolated private static var hashCacheURL: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ride-content-hashes.json")
+    }
+
+    private var hashCache: [UUID: HashCacheEntry] = {
+        guard let data = try? Data(contentsOf: RideStore.hashCacheURL),
+              let decoded = try? JSONDecoder().decode([UUID: HashCacheEntry].self, from: data)
+        else { return [:] }
+        return decoded
+    }()
+
+    private func persistHashCacheSoon() {
+        let snapshot = hashCache
+        Task.detached(priority: .utility) {
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            try? data.write(to: Self.hashCacheURL, options: .atomic)
+        }
+    }
+
     /// In-memory mirror of the persisted cache, mutated on save/delete
     /// and flushed via `persistSummaryCacheSoon`.
     private var summaryCache: [UUID: SummaryCacheEntry] = [:]
@@ -297,22 +332,39 @@ final class RideStore {
     /// omitted from the result.
     func contentHashes(ids: [UUID]) async -> [(id: UUID, hash: String)] {
         let dir = directoryURL
-        return await Task.detached(priority: .utility) {
+        let cached = hashCache
+        let (out, fresh) = await Task.detached(priority: .utility) { () -> ([(id: UUID, hash: String)], [UUID: HashCacheEntry]) in
             let encoder = Self.wireEncoder()
             var out: [(id: UUID, hash: String)] = []
+            var fresh: [UUID: HashCacheEntry] = [:]
             for id in ids {
+                let url = dir.appendingPathComponent("\(id.uuidString).json")
+                let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                let size = values?.fileSize ?? -1
+                let mtime = values?.contentModificationDate?.timeIntervalSince1970 ?? -1
+                // Unchanged file ⇒ unchanged bytes ⇒ unchanged hash.
+                if let hit = cached[id], hit.fileSize == size, hit.fileModifiedEpoch == mtime {
+                    out.append((id: id, hash: hit.hash))
+                    continue
+                }
                 // See foldRides for why each iteration gets its own pool:
-                // this loop decodes *and* re-encodes every ride, so it is
-                // the heavier of the two.
+                // this loop decodes *and* re-encodes a ride, so it is the
+                // heavier of the two.
                 autoreleasepool {
                     guard let ride = Self.loadFullRide(id: id, in: dir),
                           let body = try? encoder.encode(ride) else { return }
                     let hash = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
                     out.append((id: id, hash: hash))
+                    fresh[id] = HashCacheEntry(hash: hash, fileSize: size, fileModifiedEpoch: mtime)
                 }
             }
-            return out
+            return (out, fresh)
         }.value
+        if !fresh.isEmpty {
+            for (id, entry) in fresh { hashCache[id] = entry }
+            persistHashCacheSoon()
+        }
+        return out
     }
 
     // MARK: - Mutations
@@ -365,6 +417,7 @@ final class RideStore {
         coordinatedRemove(at: url)
         rides.removeAll { $0.id == id }
         summaryCache.removeValue(forKey: id)
+        hashCache.removeValue(forKey: id)
         invalidateFullRide(id: id)
         persistSummaryCacheSoon()
         onRideDeleted?(id)

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import OSLog
 
@@ -72,6 +73,11 @@ final class BackgroundUploadClient: NSObject {
         session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }
 
+    /// Called when an upload finishes while no drain is awaiting it — i.e.
+    /// iOS relaunched us to deliver the completion. Carries the ride id and
+    /// the hash of the bytes that were actually sent. Set by `ContentView`.
+    var onBackgroundUploadCompleted: ((UUID, String) -> Void)?
+
     /// Upload `bodyFile` with `request` through the background session.
     /// Returns the HTTP status code + response body; throws
     /// `WebSyncClient.ClientError.transport` on transport failure.  The
@@ -96,16 +102,30 @@ final class BackgroundUploadClient: NSObject {
     }
 
     private func finish(taskIdentifier: Int, status: Int?, transportFailed: Bool, bodyFilePath: String?) {
+        // v2.1 U13: hash the body *before* deleting it — on the relaunch path
+        // below it is the only remaining record of what we actually sent.
+        var uploaded: (id: UUID, hash: String)?
         if let path = bodyFilePath {
-            try? FileManager.default.removeItem(atPath: path)
+            let url = URL(fileURLWithPath: path)
+            if continuations[taskIdentifier] == nil,
+               let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent),
+               let data = try? Data(contentsOf: url) {
+                uploaded = (id, SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+            }
+            try? FileManager.default.removeItem(at: url)
         }
         let body = responseBuffers.removeValue(forKey: taskIdentifier) ?? Data()
         guard let continuation = continuations.removeValue(forKey: taskIdentifier) else {
-            // Process was relaunched after the awaiting drain died —
-            // the queue entry reconciles via the next drain's batch
-            // check.  Nothing to resume; the file cleanup above is the
-            // useful work.
-            Self.log.notice("Background upload task \(taskIdentifier) completed with no awaiting continuation (relaunch) — status \(status.map(String.init) ?? "n/a")")
+            // Process was relaunched after the awaiting drain died. The upload
+            // itself succeeded, so tell the coordinator: it can retire the
+            // queue entry, record the hash, and start the next ride. That
+            // hand-off is what lets a backfill continue while the app is
+            // suspended — previously the chain ended here and the ride was
+            // simply re-uploaded on some later foreground drain.
+            Self.log.notice("Background upload task \(taskIdentifier) completed after relaunch — status \(status.map(String.init) ?? "n/a")")
+            if let uploaded, let status, (200..<300).contains(status) {
+                onBackgroundUploadCompleted?(uploaded.id, uploaded.hash)
+            }
             return
         }
         if transportFailed || status == nil {
@@ -149,12 +169,36 @@ extension BackgroundUploadClient: URLSessionTaskDelegate, URLSessionDataDelegate
     }
 
     nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-        // All queued events for a background relaunch have been
-        // delivered — tell the system we're done so it can snapshot
-        // and re-suspend.  Must be called on the main thread.
+        // All queued events for a background relaunch have been delivered.
+        // Calling the completion handler tells iOS it may snapshot and
+        // re-suspend us, so before doing that give the drain a moment to
+        // enqueue the next ride (v2.1 U13) — otherwise the backfill chain
+        // ends here and only resumes when the app is next opened, which is
+        // how a 900 MB backlog came to move at ~7 rides a day.
+        //
+        // Waiting on a real signal, not a fixed sleep: as soon as any task
+        // exists on the session the transfer is the system's problem and we
+        // can safely hand control back. The ceiling is generous because a
+        // background relaunch also has to finish loading the ride library
+        // before the drain can pick anything.
         Task { @MainActor in
+            await self.awaitNextEnqueuedTask(on: session, timeout: 10)
             self.backgroundCompletionHandler?()
             self.backgroundCompletionHandler = nil
         }
+    }
+
+    /// Poll until the session has a task to work on, or `timeout` elapses.
+    private func awaitNextEnqueuedTask(on session: URLSession, timeout: TimeInterval) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let count = await session.allTasks.count
+            if count > 0 {
+                Self.log.notice("Next background upload enqueued; handing control back to the system")
+                return
+            }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+        }
+        Self.log.notice("No follow-on upload enqueued within \(Int(timeout))s; ending the background chain")
     }
 }

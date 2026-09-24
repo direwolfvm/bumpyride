@@ -1,6 +1,6 @@
 # Release v2.1
 
-Build **31**. MARKETING_VERSION `2.1`.
+Build **32**. MARKETING_VERSION `2.1`.
 
 A maintenance release with one theme: energy. It began as five
 reported issues, grew an instrumentation layer to answer "is this
@@ -46,8 +46,8 @@ MAPS
 SYNC
 • Fixed a bug that could re-upload your entire ride library —
   repeatedly, over cellular. Backing up older rides now waits for
-  Wi-Fi by default; rides you just finished still upload straight
-  away.
+  Wi-Fi by default and continues while the app is closed; rides
+  you just finished still upload straight away.
 
 ALSO
 • Rides you've earned points for show them in the Saved list.
@@ -226,6 +226,27 @@ contact email on this record.
 ```
 
 ---
+
+- U13 Backfill now continues in the background. Three parts, after
+  five days of field data showed the one-time re-upload moving at
+  ~7 rides/day (199 → 164 remaining, 20 min of progress per launch):
+  (a) `RideStore` caches wire-content hashes keyed on file size +
+  mtime — hashing the library is a decode *and* re-encode of ~650 MB
+  and took 31 s at the head of **every** drain, before a byte could
+  go out, which would also have consumed a whole background window;
+  (b) `BackgroundUploadClient` hashes the body before deleting it and
+  hands ride id + hash to `SyncCoordinator.noteBackgroundUploadCompleted`
+  when a completion arrives with no drain awaiting it, so a relaunch
+  retires the queue entry, records the ledger hash and kicks the next
+  ride instead of dead-ending (8 such completions were previously
+  uploaded and then re-uploaded later);
+  (c) `urlSessionDidFinishEvents` waits for the next task to be
+  enqueued (polling `session.allTasks`, 10 s ceiling) before calling
+  the system's completion handler, since calling it immediately let
+  iOS re-suspend us before the chain could advance.
+  Net effect: the chain self-sustains across suspensions on an
+  unmetered network. The Wi-Fi hold and its mid-drain re-check are
+  unchanged, so this cannot spend cellular.
 
 ## Changes since 2.0 (engineering index)
 

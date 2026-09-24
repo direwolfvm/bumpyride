@@ -430,6 +430,10 @@ struct ContentView: View {
                     }
                 }
             }
+            // v2.1 U13: keep a backfill advancing across background relaunches.
+            BackgroundUploadClient.shared.onBackgroundUploadCompleted = { rideId, bodyHash in
+                syncCoordinator.noteBackgroundUploadCompleted(rideId: rideId, bodyHash: bodyHash)
+            }
             store.onRideDeleted = { id in
                 syncCoordinator.remove(id)
                 syncLedger.forget(id)
